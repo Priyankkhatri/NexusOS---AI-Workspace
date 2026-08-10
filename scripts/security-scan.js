@@ -16,6 +16,7 @@ const SECRET_PATTERNS = [
 ];
 
 const FORBIDDEN_SECRET_FILES = ['.env', '.env.local', '.env.production', '.env.staging'];
+const IGNORED_DIRECTORIES = ['node_modules', '.git', 'dist', 'build', '.pnpm-store', 'coverage'];
 
 console.log('🛡️ Running NexusOS Phase 0 Security & Secret Scanner...\n');
 
@@ -33,7 +34,7 @@ for (const envFile of FORBIDDEN_SECRET_FILES) {
 function scanDir(dir) {
   const entries = fs.readdirSync(dir, { withFileTypes: true });
   for (const entry of entries) {
-    if (['node_modules', '.git', 'dist', 'build'].includes(entry.name)) continue;
+    if (IGNORED_DIRECTORIES.includes(entry.name)) continue;
 
     const fullPath = path.join(dir, entry.name);
     if (entry.isDirectory()) {

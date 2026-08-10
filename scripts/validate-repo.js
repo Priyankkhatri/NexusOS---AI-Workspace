@@ -44,7 +44,7 @@ let failed = false;
 
 // 1. Validate required logical directories
 for (const dir of REQUIRED_DIRECTORIES) {
-  const fullPath = path.join(rootDir, dir);
+  const fullPath = path.join(rootDir, ...dir.split('/'));
   if (!fs.existsSync(fullPath) || !fs.statSync(fullPath).isDirectory()) {
     console.error(`❌ MISSING DIRECTORY: ${dir}`);
     failed = true;
@@ -55,7 +55,7 @@ for (const dir of REQUIRED_DIRECTORIES) {
 
 // 2. Validate required root & governance files
 for (const file of REQUIRED_FILES) {
-  const fullPath = path.join(rootDir, file);
+  const fullPath = path.join(rootDir, ...file.split('/'));
   if (!fs.existsSync(fullPath) || !fs.statSync(fullPath).isFile()) {
     console.error(`❌ MISSING FILE: ${file}`);
     failed = true;
