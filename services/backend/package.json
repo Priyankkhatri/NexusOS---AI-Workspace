@@ -1,0 +1,20 @@
+{
+  "name": "@nexusos/backend",
+  "version": "0.1.0-sprint0",
+  "description": "NexusOS Control-Plane Backend Service Foundation",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@nexusos/contracts": "workspace:*",
+    "zod": "3.24.2"
+  },
+  "devDependencies": {
+    "@types/node": "24.0.0",
+    "typescript": "5.7.3"
+  }
+}
