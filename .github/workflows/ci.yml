@@ -35,14 +35,14 @@ jobs:
       - name: Linter Check
         run: pnpm run lint
 
+      - name: Build Monorepo Packages & Services
+        run: pnpm run build
+
       - name: TypeScript Typecheck
         run: pnpm run typecheck
 
       - name: Execute Test Suite
         run: pnpm run test
-
-      - name: Build Contract Packages
-        run: pnpm run build
 
       - name: Validate Repository Architecture Boundaries
         run: pnpm run validate

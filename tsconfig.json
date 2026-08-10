@@ -24,7 +24,9 @@
     "declarationMap": true,
     "baseUrl": ".",
     "paths": {
-      "@nexusos/contracts": ["packages/contracts/src/index.ts"]
+      "@nexusos/contracts": ["packages/contracts/src/index.ts"],
+      "@nexusos/backend": ["services/backend/src/index.ts"],
+      "@nexusos/identity": ["services/identity/src/index.ts"]
     }
   },
   "exclude": ["node_modules", "dist", "build"]
