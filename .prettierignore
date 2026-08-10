@@ -1,0 +1,14 @@
+node_modules
+dist
+build
+coverage
+.git
+.npm
+*.lock
+pnpm-lock.yaml
+package-lock.json
+
+# Authoritative documents MUST remain untouched byte-for-byte
+docs/PRDs/
+docs/EDDs/
+docs/Architecture_and_Specs/

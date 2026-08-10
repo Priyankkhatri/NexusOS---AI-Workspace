@@ -1,0 +1,11 @@
+packages:
+  - 'packages/*'
+  - 'apps/*'
+  - 'services/*'
+  - 'runtimes/*'
+  - 'infrastructure/*'
+  - 'tests/*'
+  - 'tools/*'
+  - 'scripts/*'
+allowBuilds:
+  esbuild: true

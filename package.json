@@ -1,0 +1,41 @@
+{
+  "name": "nexusos-monorepo",
+  "version": "0.1.0-sprint0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.21.0",
+  "description": "NexusOS Monorepo Foundation — Enterprise AI Operating System",
+  "workspaces": [
+    "packages/*",
+    "apps/*",
+    "services/*",
+    "runtimes/*",
+    "infrastructure/*",
+    "tests/*",
+    "tools/*",
+    "scripts/*"
+  ],
+  "scripts": {
+    "build": "pnpm -r run build",
+    "test": "node --import tsx/esm --test tests/sanity.test.ts packages/contracts/tests/contracts.test.ts",
+    "lint": "eslint .",
+    "format": "prettier --write \"**/*.{js,ts,jsx,tsx,json,md,yml,yaml}\"",
+    "format:check": "prettier --check \"**/*.{js,ts,jsx,tsx,json,md,yml,yaml}\"",
+    "typecheck": "tsc --noEmit",
+    "validate": "node scripts/validate-repo.js",
+    "security": "node scripts/security-scan.js"
+  },
+  "devDependencies": {
+    "@types/node": "24.0.0",
+    "eslint": "9.20.0",
+    "globals": "15.15.0",
+    "prettier": "3.5.0",
+    "tsx": "4.19.0",
+    "typescript": "5.7.3",
+    "typescript-eslint": "8.24.0"
+  },
+  "engines": {
+    "node": "24.14.1",
+    "pnpm": "11.21.0"
+  }
+}
