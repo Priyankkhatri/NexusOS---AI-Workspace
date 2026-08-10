@@ -1,0 +1,51 @@
+name: NexusOS Monorepo CI Quality Gates
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  validate-and-test:
+    name: Monorepo Quality & Security Gates (pnpm)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm Package Manager
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.21.0
+
+      - name: Setup Node.js Environment
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+
+      - name: Install Monorepo Dependencies (Frozen Lockfile)
+        run: pnpm install --frozen-lockfile
+
+      - name: Code Formatting Check
+        run: pnpm run format:check
+
+      - name: Linter Check
+        run: pnpm run lint
+
+      - name: TypeScript Typecheck
+        run: pnpm run typecheck
+
+      - name: Execute Test Suite
+        run: pnpm run test
+
+      - name: Build Contract Packages
+        run: pnpm run build
+
+      - name: Validate Repository Architecture Boundaries
+        run: pnpm run validate
+
+      - name: Secret & Dependency Security Scan
+        run: pnpm run security
