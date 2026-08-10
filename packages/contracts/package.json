@@ -1,13 +1,16 @@
 {
   "name": "@nexusos/contracts",
   "version": "0.1.0-sprint0",
-  "description": "Implementation-independent public contracts, error taxonomy, and schema definitions for NexusOS",
+  "description": "Implementation-independent public contracts, error taxonomy, schema definitions, and event envelopes for NexusOS",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "type": "module",
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "zod": "3.24.2"
   },
   "devDependencies": {
     "typescript": "5.7.3"
