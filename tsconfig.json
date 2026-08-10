@@ -27,7 +27,8 @@
       "@nexusos/contracts": ["packages/contracts/src/index.ts"],
       "@nexusos/backend": ["services/backend/src/index.ts"],
       "@nexusos/identity": ["services/identity/src/index.ts"],
-      "@nexusos/policy": ["services/policy/src/index.ts"]
+      "@nexusos/policy": ["services/policy/src/index.ts"],
+      "@nexusos/desktop-agent": ["apps/desktop-agent/src/index.ts"]
     }
   },
   "exclude": ["node_modules", "dist", "build"]

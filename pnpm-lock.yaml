@@ -33,6 +33,31 @@ importers:
         specifier: 8.24.0
         version: 8.24.0(eslint@9.20.0(supports-color@7.2.0))(supports-color@7.2.0)(typescript@5.7.3)
 
+  apps/desktop-agent:
+    dependencies:
+      '@nexusos/backend':
+        specifier: workspace:*
+        version: link:../../services/backend
+      '@nexusos/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+      '@nexusos/identity':
+        specifier: workspace:*
+        version: link:../../services/identity
+      '@nexusos/policy':
+        specifier: workspace:*
+        version: link:../../services/policy
+      zod:
+        specifier: 3.24.2
+        version: 3.24.2
+    devDependencies:
+      '@types/node':
+        specifier: 24.0.0
+        version: 24.0.0
+      typescript:
+        specifier: 5.7.3
+        version: 5.7.3
+
   packages/contracts:
     dependencies:
       zod:
