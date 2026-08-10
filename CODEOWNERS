@@ -1,0 +1,25 @@
+# Global Code Ownership Governance
+
+# Architecture and Specifications
+/docs/                    @Priyankkhatri/nexusos-core-architects
+/architecture/            @Priyankkhatri/nexusos-core-architects
+/adrs/                    @Priyankkhatri/nexusos-core-architects
+/threat-models/           @Priyankkhatri/nexusos-security-team
+
+# Shared Contracts & SDKs
+/packages/contracts/      @Priyankkhatri/nexusos-contracts-team
+/packages/                @Priyankkhatri/nexusos-platform-lead
+
+# Logical Subsystems
+/apps/                    @Priyankkhatri/nexusos-frontend-team
+/services/                @Priyankkhatri/nexusos-backend-team
+/runtimes/                @Priyankkhatri/nexusos-runtime-team
+/infrastructure/          @Priyankkhatri/nexusos-infra-team
+
+# Quality, Security & Governance
+/tests/                   @Priyankkhatri/nexusos-qa-lead
+/tools/                   @Priyankkhatri/nexusos-dev-experience
+/scripts/                 @Priyankkhatri/nexusos-dev-experience
+/.github/                 @Priyankkhatri/nexusos-infra-team
+SECURITY.md               @Priyankkhatri/nexusos-security-team
+CODEOWNERS                @Priyankkhatri/nexusos-platform-lead

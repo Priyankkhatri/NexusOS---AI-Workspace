@@ -1,0 +1,50 @@
+# Secrets and Environment Variables
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.crt
+secrets/
+config/local.json
+
+# Dependencies
+node_modules/
+.pnpm-store/
+.yarn/
+
+# Build Outputs
+dist/
+build/
+out/
+target/
+.next/
+*.tsbuildinfo
+
+# Logs & Telemetry
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Testing & Coverage
+coverage/
+.nyc_output/
+.vitest/
+
+# IDE & System Files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+*.swp
+*.swo
+
+# Temporary Files
+tmp/
+temp/
+scratch/
