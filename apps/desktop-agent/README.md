@@ -63,25 +63,27 @@ Valid transitions are enforced by the `AgentLifecycleManager` state machine.
 
 ## Modules
 
-| Module                   | File                                        | Purpose                                            |
-| ------------------------ | ------------------------------------------- | -------------------------------------------------- |
-| Config                   | `src/config/index.ts`                       | Zod-validated agent configuration from env vars    |
-| Lifecycle Manager        | `src/lifecycle/index.ts`                    | State machine with validated transitions           |
-| Agent Identity           | `src/identity/agent-identity.ts`            | Device identity, fingerprint, attestation boundary |
-| Control Plane Client     | `src/communication/control-plane-client.ts` | Registration, heartbeat, disconnect interface      |
-| Capability Registry      | `src/registry/capability-registry.ts`       | Capability vs permission separation                |
-| Runtime Registry         | `src/registry/runtime-registry.ts`          | Runtime descriptors with zero-executable guard     |
-| Execution Lease Boundary | `src/permissions/lease-boundary.ts`         | Lease schema validation, expiry, policy check      |
-| Local State Store        | `src/state/local-state-store.ts`            | Immutable state snapshots (in-memory)              |
-| Agent Logger             | `src/observability/agent-logger.ts`         | Structured logging with secret key redaction       |
-| Sandbox Isolation        | `src/sandbox/isolation-boundary.ts`         | Logical isolation policy (OS sandbox planned)      |
-| Agent Orchestrator       | `src/agent.ts`                              | Startup, registration, heartbeat, shutdown         |
+| Module                   | File                                        | Purpose                                                        |
+| ------------------------ | ------------------------------------------- | -------------------------------------------------------------- |
+| Config                   | `src/config/index.ts`                       | Zod-validated agent configuration from env vars                |
+| Lifecycle Manager        | `src/lifecycle/index.ts`                    | State machine with validated transitions                       |
+| Agent Identity           | `src/identity/agent-identity.ts`            | Software-derived device fingerprint (NOT hardware attestation) |
+| Control Plane Client     | `src/communication/control-plane-client.ts` | Registration, heartbeat, disconnect interface                  |
+| Capability Registry      | `src/registry/capability-registry.ts`       | Capability vs permission separation                            |
+| Runtime Registry         | `src/registry/runtime-registry.ts`          | Runtime descriptors with zero-executable guard                 |
+| Execution Lease Boundary | `src/permissions/lease-boundary.ts`         | Lease schema validation, expiry, policy check                  |
+| Local State Store        | `src/state/local-state-store.ts`            | Immutable state snapshots (in-memory)                          |
+| Agent Logger             | `src/observability/agent-logger.ts`         | Structured logging with secret key redaction                   |
+| Sandbox Isolation        | `src/sandbox/isolation-boundary.ts`         | Logical isolation policy (OS sandbox planned)                  |
+| Agent Orchestrator       | `src/agent.ts`                              | Startup, registration, heartbeat, shutdown                     |
 
 ## Security Boundaries
 
-1. **Zero-Executable Foundation**: The `RuntimeRegistry` rejects any runtime
-   descriptor with `isExecutable: true`. No filesystem, terminal, browser,
-   or model execution is possible in this foundation layer.
+1. **Zero-Executable Foundation**: The `RuntimeRegistry` enforces a
+   `RuntimeExecutionPolicy`. The default `FoundationExecutionPolicy` rejects
+   any runtime descriptor with `isExecutable: true`. Future runtime phases
+   must inject an explicit policy that gates enablement through the required
+   authorization chain (see "Future Runtime Enablement" below).
 
 2. **Lease Validation**: Every execution request must pass through the
    `ExecutionLeaseBoundary`, which validates the lease schema against
@@ -94,8 +96,41 @@ Valid transitions are enforced by the `AgentLifecycleManager` state machine.
 4. **Immutable State**: Identity objects and state snapshots are frozen
    via `Object.freeze()`.
 
-5. **Sandbox Isolation**: Logical isolation is enabled by default. OS-level
-   process sandboxing is planned for future runtime phases.
+5. **Sandbox Isolation**: Logical permission boundaries are active by
+   default (`enableLogicalIsolation: true`). This is **not** OS-level
+   process sandboxing — `enableOSProcessSandbox` is explicitly `false`.
+   Actual OS-level isolation (Windows Job Objects, AppContainers, etc.)
+   is planned for future runtime phases.
+
+6. **Device Fingerprint ≠ Hardware Attestation**: The `deviceFingerprint`
+   is a deterministic SHA-256 hash derived from the configured device ID.
+   It does **not** prove physical hardware identity, TPM-backed key
+   binding, or machine authenticity. The `verifyHardwareAttestation()`
+   boundary returns `NOT_IMPLEMENTED` in the foundation layer. Future
+   phases may integrate Windows TPM 2.0 or platform attestation APIs.
+
+## Future Runtime Enablement
+
+Runtime execution is gated by a `RuntimeExecutionPolicy`. To enable a
+runtime in a future task:
+
+```
+Runtime registered (non-executable descriptor)
+        ↓
+Runtime capability declared in CapabilityRegistry
+        ↓
+Runtime authorization/policy requirements satisfied
+        ↓
+Valid execution lease obtained
+        ↓
+Custom RuntimeExecutionPolicy injected into RuntimeRegistry
+        ↓
+Runtime descriptor registered as executable
+```
+
+The foundation remains fail-closed. No runtime can become executable by
+merely removing a guard — an explicit, policy-authorized mechanism is
+required.
 
 ## Dependencies
 

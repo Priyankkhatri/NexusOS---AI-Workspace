@@ -1,6 +1,13 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert';
-import { CapabilityRegistry, RuntimeRegistry, RuntimeCategory } from '../src/index.js';
+import {
+  CapabilityRegistry,
+  RuntimeRegistry,
+  RuntimeCategory,
+  FoundationExecutionPolicy,
+  RuntimeExecutionPolicy,
+  ToolRuntimeDescriptor,
+} from '../src/index.js';
 
 describe('Capability Registry', () => {
   it('registers and retrieves a capability', () => {
@@ -82,7 +89,7 @@ describe('Runtime Registry — Zero-Executable Foundation Security', () => {
     assert.strictEqual(rt.isExecutable, false);
   });
 
-  it('rejects executable runtime registration in Task 03A foundation', () => {
+  it('rejects executable runtime registration under default FoundationExecutionPolicy', () => {
     const registry = new RuntimeRegistry();
     assert.throws(
       () =>
@@ -141,5 +148,69 @@ describe('Runtime Registry — Zero-Executable Foundation Security', () => {
     assert.strictEqual(runtimes.length, 2);
     assert.strictEqual(runtimes[0]!.runtimeId, 'rt:a');
     assert.strictEqual(runtimes[1]!.runtimeId, 'rt:b');
+  });
+});
+
+describe('Runtime Execution Policy — Future Enablement Architecture', () => {
+  it('FoundationExecutionPolicy always denies executable registration', () => {
+    const policy = new FoundationExecutionPolicy();
+    const result = policy.allowExecutableRegistration({
+      runtimeId: 'rt:fs',
+      category: RuntimeCategory.FILESYSTEM,
+      version: '1.0.0',
+      isExecutable: true,
+      supportedActions: ['read', 'write'],
+    });
+    assert.strictEqual(result, false);
+  });
+
+  it('custom RuntimeExecutionPolicy can selectively authorize specific runtimes', () => {
+    // Simulates a future task providing explicit authorization
+    class AuthorizedFilesystemPolicy implements RuntimeExecutionPolicy {
+      allowExecutableRegistration(descriptor: ToolRuntimeDescriptor): boolean {
+        return descriptor.category === RuntimeCategory.FILESYSTEM;
+      }
+    }
+
+    const registry = new RuntimeRegistry(new AuthorizedFilesystemPolicy());
+
+    // Filesystem: authorized by policy → allowed
+    registry.registerRuntime({
+      runtimeId: 'rt:fs-authorized',
+      category: RuntimeCategory.FILESYSTEM,
+      version: '1.0.0',
+      isExecutable: true,
+      supportedActions: ['read', 'write'],
+    });
+    assert.strictEqual(registry.hasRuntime('rt:fs-authorized'), true);
+    assert.strictEqual(registry.getRuntime('rt:fs-authorized')!.isExecutable, true);
+
+    // Terminal: NOT authorized by policy → denied
+    assert.throws(
+      () =>
+        registry.registerRuntime({
+          runtimeId: 'rt:terminal-unauthorized',
+          category: RuntimeCategory.TERMINAL,
+          version: '1.0.0',
+          isExecutable: true,
+          supportedActions: ['execute'],
+        }),
+      /\[RuntimeRegistrySecurityError\]/,
+    );
+  });
+
+  it('registry without explicit policy defaults to FoundationExecutionPolicy (deny-all)', () => {
+    const registry = new RuntimeRegistry(); // no policy argument
+    assert.throws(
+      () =>
+        registry.registerRuntime({
+          runtimeId: 'rt:anything',
+          category: RuntimeCategory.LOCAL_AI,
+          version: '1.0.0',
+          isExecutable: true,
+          supportedActions: ['infer'],
+        }),
+      /\[RuntimeRegistrySecurityError\]/,
+    );
   });
 });

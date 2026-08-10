@@ -17,8 +17,47 @@ export interface ToolRuntimeDescriptor {
   supportedActions: string[];
 }
 
+/**
+ * Controls whether a runtime descriptor may be registered as executable.
+ *
+ * The foundation layer uses FoundationExecutionPolicy, which always denies.
+ * Future runtime phases provide an explicit policy that gates enablement
+ * through the required authorization chain:
+ *
+ *   Runtime registered
+ *     → Runtime capability declared
+ *       → Runtime authorization/policy requirements satisfied
+ *         → Valid execution lease
+ *           → Runtime allowed to execute
+ *
+ * This keeps the fail-closed default without requiring a code removal
+ * to enable future authorized runtimes.
+ */
+export interface RuntimeExecutionPolicy {
+  /**
+   * Returns true if the given runtime descriptor is allowed to be
+   * registered as executable. Returns false to deny.
+   */
+  allowExecutableRegistration(descriptor: ToolRuntimeDescriptor): boolean;
+}
+
+/**
+ * Foundation-layer execution policy: always deny executable registration.
+ * This is the default and MUST NOT be bypassed in Task 03A.
+ */
+export class FoundationExecutionPolicy implements RuntimeExecutionPolicy {
+  allowExecutableRegistration(_descriptor: ToolRuntimeDescriptor): boolean {
+    return false;
+  }
+}
+
 export class RuntimeRegistry {
   private readonly runtimes = new Map<string, ToolRuntimeDescriptor>();
+  private readonly executionPolicy: RuntimeExecutionPolicy;
+
+  constructor(executionPolicy?: RuntimeExecutionPolicy) {
+    this.executionPolicy = executionPolicy ?? new FoundationExecutionPolicy();
+  }
 
   registerRuntime(descriptor: ToolRuntimeDescriptor): void {
     if (this.runtimes.has(descriptor.runtimeId)) {
@@ -27,10 +66,12 @@ export class RuntimeRegistry {
       );
     }
 
-    // Safety invariant: Runtime foundation descriptors MUST NOT be registered as executable in Task 03A
-    if (descriptor.isExecutable) {
+    // Executable runtime registration requires explicit policy authorization.
+    // The foundation-layer FoundationExecutionPolicy always denies.
+    if (descriptor.isExecutable && !this.executionPolicy.allowExecutableRegistration(descriptor)) {
       throw new Error(
-        `[RuntimeRegistrySecurityError] Dangerous runtime execution is prohibited in Task 03A foundation ('${descriptor.runtimeId}').`,
+        `[RuntimeRegistrySecurityError] Executable runtime registration denied by execution policy ('${descriptor.runtimeId}'). ` +
+          `Future runtime enablement requires: capability declaration → policy authorization → valid execution lease.`,
       );
     }
 

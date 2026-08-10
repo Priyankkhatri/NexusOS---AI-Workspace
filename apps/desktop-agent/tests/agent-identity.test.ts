@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert';
 import crypto from 'node:crypto';
-import { DefaultAgentIdentityProvider } from '../src/index.js';
+import { DefaultAgentIdentityProvider, HardwareAttestationStatus } from '../src/index.js';
 
 describe('Desktop Agent Identity Boundary', () => {
   it('resolves a valid AgentIdentity with deterministic fingerprint', async () => {
@@ -46,9 +46,33 @@ describe('Desktop Agent Identity Boundary', () => {
     assert.strictEqual(identity.deviceFingerprint, expected);
   });
 
-  it('hardware attestation boundary returns true (foundation placeholder)', async () => {
+  it('hardware attestation returns NOT_IMPLEMENTED in foundation (not VERIFIED)', async () => {
     const provider = new DefaultAgentIdentityProvider();
     const result = await provider.verifyHardwareAttestation();
-    assert.strictEqual(result, true);
+
+    assert.strictEqual(result.status, HardwareAttestationStatus.NOT_IMPLEMENTED);
+    assert.notStrictEqual(
+      result.status,
+      HardwareAttestationStatus.VERIFIED,
+      'Foundation MUST NOT claim hardware attestation is verified',
+    );
+    assert.ok(result.reason.length > 0, 'Must provide a reason for NOT_IMPLEMENTED status');
+  });
+
+  it('deviceFingerprint is a software-derived SHA-256 hash, not hardware attestation', async () => {
+    const deviceId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+    const provider = new DefaultAgentIdentityProvider(deviceId);
+    const identity = await provider.getIdentity();
+
+    // Fingerprint is deterministic and derived from software deviceId
+    const expected = crypto
+      .createHash('sha256')
+      .update(`device:${deviceId}:nexusos-desktop-agent-v1`)
+      .digest('hex');
+    assert.strictEqual(identity.deviceFingerprint, expected);
+
+    // Attestation is NOT_IMPLEMENTED — fingerprint ≠ hardware proof
+    const attestation = await provider.verifyHardwareAttestation();
+    assert.strictEqual(attestation.status, HardwareAttestationStatus.NOT_IMPLEMENTED);
   });
 });
