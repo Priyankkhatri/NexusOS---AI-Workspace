@@ -132,6 +132,22 @@ The foundation remains fail-closed. No runtime can become executable by
 merely removing a guard — an explicit, policy-authorized mechanism is
 required.
 
+## Implemented Runtimes
+
+### Filesystem Runtime (`@nexusos/desktop-agent/runtimes/filesystem`)
+
+The Filesystem Runtime is the first executable tool runtime enabled in Task 03B. It operates under `FilesystemExecutionPolicy`, which authorizes `RuntimeCategory.FILESYSTEM` while keeping all other categories fail-closed.
+
+**Key Security Controls:**
+
+1. **Centralized Path Security (`PathSecurityService`)**: Canonical path resolution, traversal prevention (`..`, `..\`, null bytes, device paths), and strict scope checking against authorized root directories. Symlinks pointing outside authorized scopes trigger `SYMLINK_SCOPE_ESCAPE`.
+2. **Policy & Lease Authorization**: Every operation requires a valid `ExecutionLeaseHeader` containing the required capability scope (`fs:read`, `fs:write`, `fs:list`, `fs:stat`, `fs:copy`, `fs:move`, `fs:delete`).
+3. **Precondition Enforcement**: Supports asserting file existence, non-existence, expected file size, and SHA-256 hash before mutation to prevent stale overwrites.
+4. **Atomic Safe Writes**: Writes use `.tmp` file buffering, fsync, and atomic rename replacement.
+5. **Snapshots**: Captures before-mutation backup copies and metadata for overwrites, moves, and deletes.
+6. **Resource Governance**: Enforces `maxFileSizeByte`, `maxDirectoryEntries`, and `maxRecursionDepth`.
+7. **Evidence & Non-Disclosure**: Emits structured `EventEnvelope` events (`nexusos.events.filesystem.*.v1`). Raw file content and secrets are **never** logged or included in event payloads.
+
 ## Dependencies
 
 | Package              | Purpose                             |
@@ -145,9 +161,8 @@ required.
 ## Not Yet Implemented
 
 The following modules from the Desktop Agent EDD are **not** implemented
-in Task 03A and are deferred to future phases:
+yet and are deferred to future phases:
 
-- Filesystem Runtime
 - Terminal Runtime
 - Browser Runtime
 - Plugin Host Manager

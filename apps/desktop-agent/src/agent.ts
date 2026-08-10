@@ -10,6 +10,8 @@ import { LocalStateStore } from './state/local-state-store.js';
 import { AgentLogger } from './observability/agent-logger.js';
 import { SandboxIsolationBoundary } from './sandbox/isolation-boundary.js';
 
+import { FilesystemExecutionPolicy } from './runtimes/filesystem/policy.js';
+
 export class DesktopAgent {
   public readonly lifecycle: AgentLifecycleManager;
   public readonly capabilityRegistry: CapabilityRegistry;
@@ -27,10 +29,12 @@ export class DesktopAgent {
     public readonly leaseBoundary: ExecutionLeaseBoundary,
     private readonly stateStore: LocalStateStore,
     baseLogger: Logger,
+    customRuntimeRegistry?: RuntimeRegistry,
   ) {
     this.lifecycle = new AgentLifecycleManager();
     this.capabilityRegistry = new CapabilityRegistry();
-    this.runtimeRegistry = new RuntimeRegistry();
+    this.runtimeRegistry =
+      customRuntimeRegistry || new RuntimeRegistry(new FilesystemExecutionPolicy());
     this.isolationBoundary = new SandboxIsolationBoundary();
     this.logger = new AgentLogger(baseLogger);
   }
