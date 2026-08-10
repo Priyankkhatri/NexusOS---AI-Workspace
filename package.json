@@ -17,7 +17,7 @@
   ],
   "scripts": {
     "build": "pnpm -r run build",
-    "test": "node --import tsx/esm --test tests/sanity.test.ts packages/contracts/tests/contracts.test.ts",
+    "test": "node --import tsx/esm --test tests/sanity.test.ts packages/contracts/tests/contracts.test.ts services/backend/tests/config.test.ts services/backend/tests/server.test.ts services/backend/tests/lifecycle.test.ts",
     "lint": "eslint .",
     "format": "prettier --write \"**/*.{js,ts,jsx,tsx,json,md,yml,yaml}\"",
     "format:check": "prettier --check \"**/*.{js,ts,jsx,tsx,json,md,yml,yaml}\"",
