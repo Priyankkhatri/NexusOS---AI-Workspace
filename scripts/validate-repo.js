@@ -65,23 +65,31 @@ for (const file of REQUIRED_FILES) {
 }
 
 // 3. Verify contract packages boundary (packages/contracts must not import service implementations)
-const contractsSrc = path.join(rootDir, 'packages', 'contracts', 'src');
-if (fs.existsSync(contractsSrc)) {
-  const files = fs.readdirSync(contractsSrc);
-  for (const f of files) {
-    const content = fs.readFileSync(path.join(contractsSrc, f), 'utf-8');
-    if (
-      content.includes('/services/') ||
-      content.includes('/runtimes/') ||
-      content.includes('/apps/')
-    ) {
-      console.error(
-        `❌ BOUNDARY VIOLATION in packages/contracts/src/${f}: Contracts must be implementation-independent.`,
-      );
-      failed = true;
+function checkContractsBoundary(dirPath) {
+  if (!fs.existsSync(dirPath)) return;
+  const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+  for (const entry of entries) {
+    const fullPath = path.join(dirPath, entry.name);
+    if (entry.isDirectory()) {
+      checkContractsBoundary(fullPath);
+    } else if (entry.isFile() && /\.(js|ts)$/i.test(entry.name)) {
+      const content = fs.readFileSync(fullPath, 'utf-8');
+      if (
+        content.includes('/services/') ||
+        content.includes('/runtimes/') ||
+        content.includes('/apps/')
+      ) {
+        console.error(
+          `❌ BOUNDARY VIOLATION in ${path.relative(rootDir, fullPath)}: Contracts must be implementation-independent.`,
+        );
+        failed = true;
+      }
     }
   }
 }
+
+const contractsSrc = path.join(rootDir, 'packages', 'contracts', 'src');
+checkContractsBoundary(contractsSrc);
 
 if (failed) {
   console.error('\n💥 Monorepo validation FAILED.');
