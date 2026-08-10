@@ -14,7 +14,10 @@ export const ACPMessageEnvelopeSchema = z.object({
   timestamp: z.string().datetime(),
   schema_id: z.string().min(1),
   policy_snapshot_hash: z.string().optional(),
+  auth_token: z.string().optional(),
   signature: z.string().optional(),
+  body_ref: z.string().optional(),
+  trace_hints: z.record(z.string()).optional(),
   payload: z.record(z.unknown()),
 });
 

@@ -12,6 +12,7 @@ export const EventEnvelopeSchema = z.object({
   occurred_at: z.string().datetime(),
   producer_id: z.string().min(1),
   payload: z.record(z.unknown()),
+  payload_ref: z.string().optional(),
   trace_id: z.string().optional(),
   retention_days: z.number().int().positive().optional(),
 });

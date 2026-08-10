@@ -17,7 +17,7 @@ import {
 } from '../src/index.js';
 import { z } from 'zod';
 
-describe('@nexusos/contracts Foundation & Schema Validation', () => {
+describe('@nexusos/contracts Foundation & Schema Validation Audit', () => {
   it('exposes a valid contract version string', () => {
     assert.strictEqual(typeof NEXUSOS_CONTRACT_VERSION, 'string');
     assert.strictEqual(NEXUSOS_CONTRACT_VERSION, '0.1.0-sprint0');
@@ -65,8 +65,8 @@ describe('@nexusos/contracts Foundation & Schema Validation', () => {
     });
   });
 
-  describe('Event Envelope Schema Validation', () => {
-    it('validates a valid event envelope', () => {
+  describe('Event Envelope Schema Audit & Validation', () => {
+    it('validates a valid event envelope with payload_ref and trace_id', () => {
       const corrId = crypto.randomUUID();
       const env = createEventEnvelope(
         'nexusos.system.task.created',
@@ -74,13 +74,15 @@ describe('@nexusos/contracts Foundation & Schema Validation', () => {
         'orchestrator-service',
         corrId,
         { taskId: 'task-123', status: 'PENDING' },
+        { payload_ref: 'art-99128', trace_id: 'tr-1102' },
       );
 
       assert.strictEqual(env.schema_id, 'nexusos.system.task.created');
       assert.strictEqual(env.version, '1.0');
       assert.strictEqual(env.producer_id, 'orchestrator-service');
       assert.strictEqual(env.correlation_id, corrId);
-      assert.strictEqual(env.payload.status, 'PENDING');
+      assert.strictEqual(env.payload_ref, 'art-99128');
+      assert.strictEqual(env.trace_id, 'tr-1102');
       assert.ok(EventEnvelopeSchema.safeParse(env).success);
     });
 
@@ -99,8 +101,8 @@ describe('@nexusos/contracts Foundation & Schema Validation', () => {
     });
   });
 
-  describe('ACP Message Envelope Schema Validation', () => {
-    it('validates a valid ACP message envelope', () => {
+  describe('ACP Message Envelope Schema Audit & Validation', () => {
+    it('validates a valid ACP message envelope with auth_token, body_ref, and trace_hints', () => {
       const corrId = crypto.randomUUID();
       const acpMsg = createACPMessageEnvelope(
         '1.0',
@@ -109,11 +111,19 @@ describe('@nexusos/contracts Foundation & Schema Validation', () => {
         'acp.heartbeat.v1',
         corrId,
         { status: 'HEALTHY', battery: 100 },
+        {
+          auth_token: 'bearer_token_xyz',
+          body_ref: 'art-88219',
+          trace_hints: { parent_span: 'span-01' },
+        },
       );
 
       assert.strictEqual(acpMsg.from_agent, 'agent-desktop-win01');
       assert.strictEqual(acpMsg.to_agent, 'device-gateway');
       assert.strictEqual(acpMsg.schema_id, 'acp.heartbeat.v1');
+      assert.strictEqual(acpMsg.auth_token, 'bearer_token_xyz');
+      assert.strictEqual(acpMsg.body_ref, 'art-88219');
+      assert.deepStrictEqual(acpMsg.trace_hints, { parent_span: 'span-01' });
       assert.ok(ACPMessageEnvelopeSchema.safeParse(acpMsg).success);
     });
 
@@ -132,8 +142,8 @@ describe('@nexusos/contracts Foundation & Schema Validation', () => {
     });
   });
 
-  describe('Execution Lease Header Schema Validation', () => {
-    it('validates a signed execution lease header', () => {
+  describe('Execution Lease Header Schema Audit & Validation', () => {
+    it('validates a signed execution lease header with nonce and policy_hash', () => {
       const lease = {
         lease_id: crypto.randomUUID(),
         task_id: crypto.randomUUID(),
@@ -143,10 +153,14 @@ describe('@nexusos/contracts Foundation & Schema Validation', () => {
         expires_at: new Date(Date.now() + 3600000).toISOString(),
         scopes: ['file:read', 'terminal:exec'],
         signature: 'sig_ecdsa_sample_123',
+        nonce: 'nonce-7712',
+        policy_hash: 'sha256:abc123def456',
       };
 
       const parsed = ExecutionLeaseHeaderSchema.parse(lease);
       assert.strictEqual(parsed.agent_id, 'agent-desktop-01');
+      assert.strictEqual(parsed.nonce, 'nonce-7712');
+      assert.strictEqual(parsed.policy_hash, 'sha256:abc123def456');
       assert.strictEqual(parsed.scopes.length, 2);
     });
 
