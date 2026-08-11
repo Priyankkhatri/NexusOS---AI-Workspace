@@ -98,7 +98,7 @@ export class PathSecurityService {
     });
 
     // 4. Resolve canonical realpath
-    let absolutePath = path.resolve(normalizedInput);
+    const absolutePath = path.resolve(normalizedInput);
     let isSymlink = false;
     let canonicalPath = absolutePath;
 
