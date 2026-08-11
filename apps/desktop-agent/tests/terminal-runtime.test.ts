@@ -141,6 +141,36 @@ describe('Terminal Runtime — Authorization, Execution, & Security', () => {
     assert.equal(event.schema_id, 'nexusos.events.terminal.denied.v1');
   });
 
+  it('rejects powershell -Command and cmd /c command string injection attempts', async () => {
+    const psResult = await runtime.executeCommand(
+      {
+        command: 'powershell',
+        args: ['-Command', 'Get-Process'],
+        cwd: tmpDir,
+      },
+      {
+        lease: validLease,
+        allowedRoots: [tmpDir],
+      },
+    );
+    assert.equal(psResult.result.success, false);
+    assert.equal(psResult.result.error?.code, 'UNAUTHORIZED_SHELL_EXECUTION');
+
+    const cmdResult = await runtime.executeCommand(
+      {
+        command: 'cmd',
+        args: ['/c', 'dir'],
+        cwd: tmpDir,
+      },
+      {
+        lease: validLease,
+        allowedRoots: [tmpDir],
+      },
+    );
+    assert.equal(cmdResult.result.success, false);
+    assert.equal(cmdResult.result.error?.code, 'UNAUTHORIZED_SHELL_EXECUTION');
+  });
+
   it('rejects working directory outside authorized allowedRoots', async () => {
     const outsideDir = path.dirname(tmpDir);
     const { result } = await runtime.executeCommand(

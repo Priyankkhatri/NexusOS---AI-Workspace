@@ -105,6 +105,55 @@ export class TerminalRuntime {
       );
     }
 
+    // 4b. Shell-String Execution Guard for Shell Interpreters (PowerShell / CMD)
+    const SHELL_INTERPRETERS = new Set([
+      'powershell',
+      'powershell.exe',
+      'pwsh',
+      'pwsh.exe',
+      'cmd',
+      'cmd.exe',
+    ]);
+    const PROHIBITED_SHELL_FLAGS = new Set([
+      '-command',
+      '/command',
+      '-c',
+      '/c',
+      '-encodedcommand',
+      '/encodedcommand',
+      '-e',
+      '/e',
+      '-ec',
+      '/ec',
+      '-file',
+      '/file',
+      '-f',
+      '/f',
+      '/k',
+      '-k',
+      '/r',
+      '-r',
+    ]);
+
+    if (SHELL_INTERPRETERS.has(cmdBasename)) {
+      for (const arg of request.args) {
+        const lowerArg = arg.toLowerCase().trim();
+        const isProhibited = Array.from(PROHIBITED_SHELL_FLAGS).some(
+          (flag) =>
+            lowerArg === flag || lowerArg.startsWith(`${flag}:`) || lowerArg.startsWith(`${flag}=`),
+        );
+        if (isProhibited) {
+          return this.buildDeniedResult(
+            TerminalOperationName.EXECUTE,
+            request.command,
+            context,
+            'UNAUTHORIZED_SHELL_EXECUTION',
+            `Shell-string execution flag '${arg}' is prohibited for '${request.command}' per EDD Section 3.6.`,
+          );
+        }
+      }
+    }
+
     // 5. Working Directory Path Security Check
     const pathSec = this.pathSecurity.validatePath(request.cwd, context.allowedRoots);
     if (!pathSec.valid) {
