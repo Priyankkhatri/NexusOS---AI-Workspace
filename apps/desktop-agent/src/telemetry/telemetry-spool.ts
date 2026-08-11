@@ -8,17 +8,19 @@ import { ITelemetrySpool, SpoolMetrics, TelemetryItem } from './types.js';
 export class TelemetrySpool implements ITelemetrySpool {
   private readonly items: TelemetryItem[] = [];
   private readonly hardMaxCapacity: number;
-  private readonly spoolFilePath: string;
+  private readonly spoolFilePath?: string;
 
   constructor(
     private readonly backpressureController: BackpressureController = new BackpressureController(),
     private readonly redactionFilter: RedactionFilter = new RedactionFilter(),
     private readonly maxQueueLength: number = 5000,
-    storageDir: string = '.',
+    storageDir?: string,
   ) {
     this.hardMaxCapacity = maxQueueLength * 2;
-    this.spoolFilePath = path.join(storageDir, '.nexusos-telemetry-spool.json');
-    this.loadSpoolFromStorage();
+    if (storageDir) {
+      this.spoolFilePath = path.join(storageDir, '.nexusos-telemetry-spool.json');
+      this.loadSpoolFromStorage();
+    }
   }
 
   public enqueueItem(item: TelemetryItem): boolean {
@@ -109,7 +111,12 @@ export class TelemetrySpool implements ITelemetrySpool {
    * Atomically persists spooled items to local storage file to survive process restart.
    */
   private persistSpoolToStorage(): void {
+    if (!this.spoolFilePath) return;
     try {
+      const dir = path.dirname(this.spoolFilePath);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
       const tmpPath = `${this.spoolFilePath}.tmp`;
       const data = JSON.stringify(this.items);
       fs.writeFileSync(tmpPath, data, 'utf-8');
@@ -124,6 +131,7 @@ export class TelemetrySpool implements ITelemetrySpool {
    * Loads persisted spooled items on process startup.
    */
   private loadSpoolFromStorage(): void {
+    if (!this.spoolFilePath) return;
     try {
       if (fs.existsSync(this.spoolFilePath)) {
         const raw = fs.readFileSync(this.spoolFilePath, 'utf-8');
