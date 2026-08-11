@@ -126,13 +126,11 @@ describe('Task 03G Configuration Manager — Validation, LKG, Secrets & Resource
     const validationEngine = new ConfigValidationEngine();
     const rollbackHandler = new ConfigRollbackHandler();
 
-    // Corrupt LKG
+    // Set schema-invalid LKG configuration
     store.setLKGConfig({
       version: 'invalid',
-      securityBaselines: {
-        policyDenyRulesEnabled: false,
-      } as unknown as ConfigurationSnapshot['securityBaselines'],
-    } as ConfigurationSnapshot);
+      settings: { deviceId: 'invalid-uuid-string' },
+    } as unknown as ConfigurationSnapshot);
 
     const restored = rollbackHandler.rollbackToLKG(store, validationEngine);
     assert.equal(restored.layer, ConfigLayer.IMMUTABLE_SHIPPED_DEFAULTS);
