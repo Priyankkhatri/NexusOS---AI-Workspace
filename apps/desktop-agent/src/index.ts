@@ -20,4 +20,5 @@ export * from './vault/index.js';
 export * from './health/index.js';
 export * from './telemetry/index.js';
 export * from './notifications/index.js';
+export * from './updater/index.js';
 export * from './agent.js';

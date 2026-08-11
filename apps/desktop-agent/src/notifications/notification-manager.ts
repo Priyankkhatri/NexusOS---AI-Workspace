@@ -32,15 +32,6 @@ export class NotificationManager implements INotificationManager {
 
   public setLockScreenActive(isActive: boolean): void {
     this.isLockScreenActive = isActive;
-    // Re-evaluate lock-screen redaction on pending queue items when lock screen transitions
-    const pending = this.queue.peekAll();
-    for (const item of pending) {
-      if (!item.isRead) {
-        const redacted = this.policyGate.sanitizeAndRedact(item, isActive);
-        item.message = redacted.message;
-        item.isPrivacyRedacted = redacted.isPrivacyRedacted;
-      }
-    }
   }
 
   public notify(params: {
@@ -150,8 +141,6 @@ export class NotificationManager implements INotificationManager {
     notificationId: string,
     actionId: string,
     providedAuthToken?: string,
-    expectedTaskId?: string,
-    expectedCorrelationId?: string,
   ): { success: boolean; reason?: string } {
     const all = this.queue.peekAll();
     const item = all.find((i) => i.id === notificationId);
@@ -160,15 +149,8 @@ export class NotificationManager implements INotificationManager {
       return { success: false, reason: 'Notification not found.' };
     }
 
-    // Revalidate action authorization with task & correlation context binding
-    const validation = this.policyGate.validateActionExecution(
-      item,
-      actionId,
-      providedAuthToken,
-      expectedTaskId,
-      expectedCorrelationId,
-    );
-
+    // Revalidate action authorization
+    const validation = this.policyGate.validateActionExecution(item, actionId, providedAuthToken);
     if (!validation.allowed) {
       this.logger.warn(`Notification action failed authorization`, {
         notificationId,
