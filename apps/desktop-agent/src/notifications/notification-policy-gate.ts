@@ -50,6 +50,8 @@ export class NotificationPolicyGate implements INotificationPolicyGate {
     item: NotificationItem,
     actionId: string,
     providedAuthToken?: string,
+    expectedTaskId?: string,
+    expectedCorrelationId?: string,
   ): { allowed: boolean; reason?: string } {
     if (!item) {
       return { allowed: false, reason: 'Notification record not found.' };
@@ -71,6 +73,25 @@ export class NotificationPolicyGate implements INotificationPolicyGate {
         allowed: false,
         reason:
           'Action execution requires valid revalidation auth token. Notification click alone is not authorization proof.',
+      };
+    }
+
+    // MANDATORY TASK & CORRELATION CONTEXT BINDING!
+    if (expectedTaskId && item.taskId && item.taskId !== expectedTaskId) {
+      return {
+        allowed: false,
+        reason: `Task ID mismatch. Action for task '${item.taskId}' cannot be executed under task context '${expectedTaskId}'.`,
+      };
+    }
+
+    if (
+      expectedCorrelationId &&
+      item.correlationId &&
+      item.correlationId !== expectedCorrelationId
+    ) {
+      return {
+        allowed: false,
+        reason: `Correlation ID mismatch. Action under correlation '${item.correlationId}' cannot be executed under correlation '${expectedCorrelationId}'.`,
       };
     }
 
