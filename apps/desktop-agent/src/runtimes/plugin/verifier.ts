@@ -68,7 +68,18 @@ export class PluginVerifier {
       };
     }
 
-    const trustLevel = pkg.manifest.trustLevel || 'UNVERIFIED';
+    // Derive publisher trust level from verified signature authority, NOT self-declared manifest claims
+    let trustLevel: PluginTrustLevel = 'UNVERIFIED';
+    if (pkg.signature.startsWith('sig_valid_enterprise')) {
+      trustLevel = 'ENTERPRISE_INTERNAL';
+    } else if (
+      pkg.signature.startsWith('sig_valid_official') ||
+      pkg.signature.startsWith('sig_valid_publisher')
+    ) {
+      trustLevel = 'VERIFIED_PUBLISHER';
+    } else if (pkg.signature.startsWith('sig_valid_')) {
+      trustLevel = 'VERIFIED_PUBLISHER';
+    }
 
     return {
       valid: true,

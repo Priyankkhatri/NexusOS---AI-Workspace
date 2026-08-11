@@ -35,6 +35,11 @@ export class PluginCatalog {
     const entry = this.entries.get(pluginId);
     if (!entry) return false;
 
+    // Validate state machine transitions: QUARANTINED plugins cannot transition directly to ACTIVATED or INSTALLED
+    if (entry.state === 'QUARANTINED' && (state === 'ACTIVATED' || state === 'INSTALLED')) {
+      return false;
+    }
+
     entry.state = state;
     entry.updatedAt = new Date().toISOString();
     return true;
