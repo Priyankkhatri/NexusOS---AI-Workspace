@@ -117,9 +117,6 @@ export class StructuredLogger implements IStructuredLogger {
    * Prevents log forging/JSON line injection by escaping newlines and control characters.
    */
   private sanitizeString(str: string): string {
-    return str
-      .replace(/\r/g, '\\r')
-      .replace(/\n/g, '\\n')
-      .replaceAll(String.fromCharCode(0), '');
+    return str.replace(/\r/g, '\\r').replace(/\n/g, '\\n').replaceAll(String.fromCharCode(0), '');
   }
 }
