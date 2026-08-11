@@ -137,14 +137,17 @@ export class BrowserRuntime {
         const lowerSelector = request.selector.toLowerCase();
         const isSensitive =
           request.isSensitiveForm ||
-          /password|login|auth|mfa|captcha|paywall|credit[_-]?card|ssn/i.test(lowerSelector);
+          request.actionType === 'submit' ||
+          /password|login|auth|mfa|captcha|paywall|credit[_-]?card|ssn|card|cvv|pin|checkout|pay|purchase|transfer|confirm|delete|account|security|submit|approve|withdraw/i.test(
+            lowerSelector,
+          );
 
         if (isSensitive) {
           return {
             activeUrl: session.activeUrl,
             data: false,
             humanInterventionRequired: true,
-            interventionReason: `Sensitive form field ('${request.selector}') requires explicit user authorization per PRD BRW-003.`,
+            interventionReason: `Sensitive form interaction ('${request.selector}', action: '${request.actionType}') requires explicit user authorization per PRD BRW-002/BRW-004.`,
           };
         }
 
@@ -231,6 +234,22 @@ export class BrowserRuntime {
             ErrorCategory.AUTHORIZATION,
             domainSec.error?.message || 'Download URL domain security check failed',
           );
+        }
+
+        // 1b. Validate redirect destination if download URL redirects
+        if (request.redirectUrl) {
+          const redirectSec = this.domainSecurity.validateRedirect(
+            request.downloadUrl,
+            request.redirectUrl,
+            request.allowedDomains,
+          );
+          if (!redirectSec.valid) {
+            throw createNexusOSError(
+              redirectSec.error?.code || 'UNAUTHORIZED_REDIRECT',
+              ErrorCategory.AUTHORIZATION,
+              redirectSec.error?.message || 'Download redirect security check failed',
+            );
+          }
         }
 
         // 2. Validate destination file path using PathSecurityService

@@ -30,6 +30,13 @@ describe('Domain Security Service — Navigation, SSRF, & Scheme Security', () =
     const r2 = service.validateUrl('http://127.0.0.1/admin', allowedDomains);
     assert.equal(r2.valid, false);
     assert.equal(r2.error?.code, 'PROHIBITED_DESTINATION');
+
+    const r3 = service.validateUrl('http://[::1]/admin', allowedDomains);
+    assert.equal(r3.valid, false);
+    assert.equal(r3.error?.code, 'PROHIBITED_DESTINATION');
+
+    const r4 = service.validateUrl('http://[::ffff:127.0.0.1]/admin', allowedDomains);
+    assert.equal(r4.valid, false);
   });
 
   it('rejects cloud metadata endpoints (169.254.169.254)', () => {
@@ -64,6 +71,6 @@ describe('Domain Security Service — Navigation, SSRF, & Scheme Security', () =
       allowedDomains,
     );
     assert.equal(r.valid, false);
-    assert.equal(r.error?.code, 'UNAUTHORIZED_DOMAIN');
+    assert.equal(r.error?.code, 'UNAUTHORIZED_REDIRECT');
   });
 });

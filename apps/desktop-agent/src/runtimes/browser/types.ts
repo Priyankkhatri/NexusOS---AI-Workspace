@@ -72,6 +72,7 @@ export interface ScreenshotRequest {
 export interface DownloadRequest {
   sessionId: string;
   downloadUrl: string;
+  redirectUrl?: string;
   destinationPath: string;
   allowedDomains: string[];
 }

@@ -77,4 +77,23 @@ export class BrowserSessionManager {
   public listSessions(): BrowserSession[] {
     return Array.from(this.sessions.values());
   }
+
+  /**
+   * Cleans up abandoned sessions created older than maxAgeMs.
+   */
+  public cleanupAbandonedSessions(maxAgeMs: number = 3600_000): number {
+    const now = Date.now();
+    let cleaned = 0;
+
+    for (const session of this.sessions.values()) {
+      const createdAtMs = new Date(session.createdAt).getTime();
+      if (now - createdAtMs >= maxAgeMs) {
+        if (this.clearSession(session.sessionId)) {
+          cleaned++;
+        }
+      }
+    }
+
+    return cleaned;
+  }
 }

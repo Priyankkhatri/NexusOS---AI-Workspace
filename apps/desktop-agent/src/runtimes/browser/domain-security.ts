@@ -69,16 +69,20 @@ export class DomainSecurityService {
       };
     }
 
-    const hostname = parsedUrl.hostname.toLowerCase().trim();
+    const rawHost = parsedUrl.hostname.toLowerCase().trim();
+    const hostname = rawHost.replace(/^\[|\]$/g, '');
 
     // 1. Check prohibited hostnames & loopback / metadata endpoints
-    if (DomainSecurityService.PROHIBITED_HOSTNAMES.has(hostname)) {
+    if (
+      DomainSecurityService.PROHIBITED_HOSTNAMES.has(rawHost) ||
+      DomainSecurityService.PROHIBITED_HOSTNAMES.has(hostname)
+    ) {
       return {
         valid: false,
         normalizedUrl: parsedUrl.toString(),
         error: {
           code: 'PROHIBITED_DESTINATION',
-          message: `Access to local, loopback, or cloud metadata target '${hostname}' is prohibited.`,
+          message: `Access to local, loopback, or cloud metadata target '${rawHost}' is prohibited.`,
         },
       };
     }
@@ -141,7 +145,7 @@ export class DomainSecurityService {
       return {
         ...secResult,
         error: {
-          code: secResult.error?.code || 'UNAUTHORIZED_REDIRECT',
+          code: 'UNAUTHORIZED_REDIRECT',
           message: `Redirect from '${initialUrl}' to '${redirectUrl}' denied: ${secResult.error?.message}`,
         },
       };
@@ -164,9 +168,16 @@ export class DomainSecurityService {
   }
 
   private isPrivateOrLocalIp(hostname: string): boolean {
-    // IPv4 Private Ranges: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16
+    let target = hostname.toLowerCase().trim();
+
+    // Handle IPv4-mapped IPv6 (e.g. ::ffff:127.0.0.1)
+    if (target.startsWith('::ffff:')) {
+      target = target.substring(7);
+    }
+
+    // IPv4 Private Ranges: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 100.64.0.0/10
     const ipv4Regex = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
-    const match = hostname.match(ipv4Regex);
+    const match = target.match(ipv4Regex);
 
     if (match) {
       const p1 = parseInt(match[1]!, 10);
@@ -176,12 +187,19 @@ export class DomainSecurityService {
       if (p1 === 172 && p2 >= 16 && p2 <= 31) return true; // 172.16.0.0/12
       if (p1 === 192 && p2 === 168) return true; // 192.168.0.0/16
       if (p1 === 169 && p2 === 254) return true; // 169.254.0.0/16
+      if (p1 === 100 && p2 >= 64 && p2 <= 127) return true; // 100.64.0.0/10 (CGNAT)
       if (p1 === 127) return true; // 127.0.0.0/8
       if (p1 === 0) return true; // 0.0.0.0/8
     }
 
-    // IPv6 Loopback or Local
-    if (hostname === '::' || hostname === '::1' || hostname.startsWith('fe80:')) {
+    // IPv6 Loopback or Local (fe80:, fc00:, fd00:)
+    if (
+      target === '::' ||
+      target === '::1' ||
+      target.startsWith('fe80:') ||
+      target.startsWith('fc00:') ||
+      target.startsWith('fd00:')
+    ) {
       return true;
     }
 

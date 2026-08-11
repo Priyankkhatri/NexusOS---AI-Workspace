@@ -248,4 +248,35 @@ describe('Browser Runtime — Session Isolation, Navigation, & Security', () => 
     assert.equal(result.success, true);
     assert.ok(!fs.existsSync(session.profilePath));
   });
+
+  it('rejects file downloads that redirect to an unauthorized domain', async () => {
+    const session = runtime.sessionManager.createSession('t1', 'w1', tmpDir);
+    const dest = path.join(tmpDir, 'redirected_download.txt');
+
+    const { result } = await runtime.downloadFile(
+      {
+        sessionId: session.sessionId,
+        downloadUrl: 'https://app.example.com/download',
+        redirectUrl: 'https://evil-unauthorized.com/malware.exe',
+        destinationPath: dest,
+        allowedDomains: ['*.example.com'],
+      },
+      {
+        lease: validLease,
+        allowedRoots: [tmpDir],
+      },
+    );
+
+    assert.equal(result.success, false);
+    assert.equal(result.error?.code, 'UNAUTHORIZED_REDIRECT');
+  });
+
+  it('cleans up abandoned sessions older than maxAgeMs', () => {
+    const session = runtime.sessionManager.createSession('t_old', 'w_old', tmpDir);
+    assert.ok(fs.existsSync(session.profilePath));
+
+    const cleaned = runtime.sessionManager.cleanupAbandonedSessions(0); // 0ms maxAge forces cleanup
+    assert.equal(cleaned >= 1, true);
+    assert.ok(!fs.existsSync(session.profilePath));
+  });
 });
