@@ -17,4 +17,5 @@ export * from './runtimes/terminal/index.js';
 export * from './runtimes/browser/index.js';
 export * from './runtimes/plugin/index.js';
 export * from './vault/index.js';
+export * from './health/index.js';
 export * from './agent.js';
