@@ -10,7 +10,7 @@ import { LocalStateStore } from './state/local-state-store.js';
 import { AgentLogger } from './observability/agent-logger.js';
 import { SandboxIsolationBoundary } from './sandbox/isolation-boundary.js';
 
-import { TerminalExecutionPolicy } from './runtimes/terminal/policy.js';
+import { BrowserExecutionPolicy } from './runtimes/browser/policy.js';
 
 export class DesktopAgent {
   public readonly lifecycle: AgentLifecycleManager;
@@ -34,7 +34,7 @@ export class DesktopAgent {
     this.lifecycle = new AgentLifecycleManager();
     this.capabilityRegistry = new CapabilityRegistry();
     this.runtimeRegistry =
-      customRuntimeRegistry || new RuntimeRegistry(new TerminalExecutionPolicy());
+      customRuntimeRegistry || new RuntimeRegistry(new BrowserExecutionPolicy());
     this.isolationBoundary = new SandboxIsolationBoundary();
     this.logger = new AgentLogger(baseLogger);
   }
