@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { EventEnvelope } from '@nexusos/contracts';
 import { BackpressureController } from './backpressure-controller.js';
 import { RedactionFilter } from './redaction-filter.js';
@@ -5,12 +7,19 @@ import { ITelemetrySpool, SpoolMetrics, TelemetryItem } from './types.js';
 
 export class TelemetrySpool implements ITelemetrySpool {
   private readonly items: TelemetryItem[] = [];
+  private readonly hardMaxCapacity: number;
+  private readonly spoolFilePath: string;
 
   constructor(
     private readonly backpressureController: BackpressureController = new BackpressureController(),
     private readonly redactionFilter: RedactionFilter = new RedactionFilter(),
     private readonly maxQueueLength: number = 5000,
-  ) {}
+    storageDir: string = '.',
+  ) {
+    this.hardMaxCapacity = maxQueueLength * 2;
+    this.spoolFilePath = path.join(storageDir, '.nexusos-telemetry-spool.json');
+    this.loadSpoolFromStorage();
+  }
 
   public enqueueItem(item: TelemetryItem): boolean {
     if (!item) return false;
@@ -24,19 +33,22 @@ export class TelemetrySpool implements ITelemetrySpool {
 
     const estBytes = JSON.stringify(sanitizedItem).length;
 
-    // Zero-loss guarantee for CRITICAL events under queue capacity pressure
+    // Capacity Management
     if (this.items.length >= this.maxQueueLength) {
       if (sanitizedItem.priority === 'CRITICAL') {
-        // Evict oldest NON_CRITICAL item to make room for CRITICAL event
+        // Step 1: Evict oldest NON_CRITICAL item to preserve CRITICAL event
         const nonCriticalIdx = this.items.findIndex((i) => i.priority === 'NON_CRITICAL');
         if (nonCriticalIdx !== -1) {
           this.items.splice(nonCriticalIdx, 1);
           this.backpressureController.recordItemEvicted(1);
-        } else {
-          // If queue is 100% full of CRITICAL events, expand or append safely
+        } else if (this.items.length >= this.hardMaxCapacity) {
+          // Step 2: Queue is 100% full of CRITICAL events up to hard capacity ceiling!
+          // Under extreme saturation, evict oldest CRITICAL item to prevent OOM process crash
+          this.items.shift();
+          this.backpressureController.recordItemEvicted(1);
         }
       } else {
-        // Drop new NON_CRITICAL item when capacity is full
+        // Drop new NON_CRITICAL item when soft capacity is full
         this.backpressureController.recordItemEvicted(1);
         return false;
       }
@@ -44,6 +56,7 @@ export class TelemetrySpool implements ITelemetrySpool {
 
     this.items.push(sanitizedItem);
     this.backpressureController.recordItemAdded(sanitizedItem.priority, estBytes);
+    this.persistSpoolToStorage();
     return true;
   }
 
@@ -73,7 +86,9 @@ export class TelemetrySpool implements ITelemetrySpool {
   public popBatch(maxItems: number = 100): TelemetryItem[] {
     if (this.items.length === 0) return [];
     const count = Math.min(maxItems, this.items.length);
-    return this.items.splice(0, count);
+    const popped = this.items.splice(0, count);
+    this.persistSpoolToStorage();
+    return popped;
   }
 
   public getSpoolMetrics(): SpoolMetrics {
@@ -83,5 +98,45 @@ export class TelemetrySpool implements ITelemetrySpool {
   public clearSpool(): void {
     this.items.length = 0;
     this.backpressureController.resetSpoolUsage();
+    this.persistSpoolToStorage();
+  }
+
+  /**
+   * Atomically persists spooled items to local storage file to survive process restart.
+   */
+  private persistSpoolToStorage(): void {
+    try {
+      const tmpPath = `${this.spoolFilePath}.tmp`;
+      const data = JSON.stringify(this.items);
+      fs.writeFileSync(tmpPath, data, 'utf-8');
+      fs.renameSync(tmpPath, this.spoolFilePath);
+    } catch {
+      // Ignore disk write errors during transient shutdown
+    }
+  }
+
+  /**
+   * Loads persisted spooled items on process startup.
+   */
+  private loadSpoolFromStorage(): void {
+    try {
+      if (fs.existsSync(this.spoolFilePath)) {
+        const raw = fs.readFileSync(this.spoolFilePath, 'utf-8');
+        const parsed = JSON.parse(raw) as TelemetryItem[];
+        if (Array.isArray(parsed)) {
+          for (const item of parsed) {
+            if (item && item.itemId && item.priority) {
+              this.items.push(item);
+              this.backpressureController.recordItemAdded(
+                item.priority,
+                JSON.stringify(item).length,
+              );
+            }
+          }
+        }
+      }
+    } catch {
+      // Ignore corrupted spool file on disk
+    }
   }
 }
