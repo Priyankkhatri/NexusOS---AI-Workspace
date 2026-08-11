@@ -1,3 +1,4 @@
+import { deepFreeze } from './store.js';
 import {
   ConfigObserverCallback,
   ConfigurationSnapshot,
@@ -19,7 +20,8 @@ export class ConfigurationObserverRegistry implements IConfigurationObserverRegi
   public notifyObservers(snapshot: Readonly<ConfigurationSnapshot>): void {
     if (!snapshot) return;
 
-    const immutableCopy = Object.freeze({ ...snapshot });
+    // Deep freeze and deep copy so observers cannot mutate active snapshot
+    const immutableCopy = deepFreeze(JSON.parse(JSON.stringify(snapshot)));
 
     for (const [id, callback] of this.observers.entries()) {
       try {

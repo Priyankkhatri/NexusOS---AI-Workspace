@@ -7,11 +7,14 @@ import {
 } from './types.js';
 
 export class ConfigSignatureVerifier implements IConfigSignatureVerifier {
-  private readonly trustedAuthorityKeys = new Set<string>([
+  private readonly releaseKeys = new Set<string>([
     'pubkey_release_authority_v1',
+    'trusted_release_key_001',
+  ]);
+
+  private readonly enterpriseKeys = new Set<string>([
     'pubkey_enterprise_authority_v1',
     'trusted_enterprise_key_001',
-    'trusted_release_key_001',
   ]);
 
   public async verifySignature(
@@ -41,12 +44,21 @@ export class ConfigSignatureVerifier implements IConfigSignatureVerifier {
       };
     }
 
-    // 3. Trusted Authority Key Verification
-    if (!this.trustedAuthorityKeys.has(envelope.authorityKeyId)) {
-      return {
-        valid: false,
-        reason: `Untrusted authority key ID '${envelope.authorityKeyId}'. Signature rejected.`,
-      };
+    // 3. Authority Key to Layer Binding Verification
+    if (envelope.layer === ConfigLayer.SIGNED_RELEASE_CONFIG) {
+      if (!this.releaseKeys.has(envelope.authorityKeyId)) {
+        return {
+          valid: false,
+          reason: `Authority key '${envelope.authorityKeyId}' is not authorized to sign layer '${envelope.layer}'.`,
+        };
+      }
+    } else if (envelope.layer === ConfigLayer.ENTERPRISE_POLICY_OVERLAYS) {
+      if (!this.enterpriseKeys.has(envelope.authorityKeyId)) {
+        return {
+          valid: false,
+          reason: `Authority key '${envelope.authorityKeyId}' is not authorized to sign layer '${envelope.layer}'.`,
+        };
+      }
     }
 
     // 4. Signature Integrity Check

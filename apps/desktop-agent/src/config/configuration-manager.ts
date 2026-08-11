@@ -91,6 +91,15 @@ export class ConfigurationManager implements IConfigurationManager {
             sigResult.reason || 'Cryptographic signature verification failed for config envelope.',
           );
         }
+
+        // Anti-Replay Protection: Signed revision must be greater than active revision
+        if (envelope.revision !== undefined && envelope.revision <= activeConfig.revision) {
+          throw createNexusOSError(
+            'CONFIG_REVISION_REPLAY',
+            ErrorCategory.AUTHORIZATION,
+            `Signed configuration revision '${envelope.revision}' is less than or equal to active revision '${activeConfig.revision}' (replay attack detected).`,
+          );
+        }
       }
 
       // 2. Extract Raw Payload Update
