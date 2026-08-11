@@ -33,9 +33,17 @@ describe('Task 03K Update Manager & Security Verification', () => {
   });
 
   afterEach(() => {
-    stagingStore.clearStaging();
-    if (fs.existsSync(testDir)) {
-      fs.rmSync(testDir, { recursive: true, force: true });
+    try {
+      stagingStore.clearStaging();
+    } catch {
+      /* Windows race */
+    }
+    try {
+      if (fs.existsSync(testDir)) {
+        fs.rmSync(testDir, { recursive: true, force: true });
+      }
+    } catch {
+      /* Windows ENOTEMPTY race */
     }
   });
 
@@ -45,18 +53,22 @@ describe('Task 03K Update Manager & Security Verification', () => {
     channel: 'stable' | 'beta' | 'nightly' | 'enterprise',
     sha256: string,
     minAntiRollbackVersion: string = '1.0.0',
+    packageUrl: string = `https://updates.nexusos.dev/packages/${version}.bin`,
+    publishedAt?: string,
   ): UpdateManifest {
-    const canonicalString = `${manifestId}:${version}:${channel}:${sha256}:${minAntiRollbackVersion}`;
+    const pubAt = publishedAt || new Date().toISOString();
+    // K-03 FIX: Include packageUrl and publishedAt in canonical string
+    const canonicalString = `${manifestId}:${version}:${channel}:${packageUrl}:${sha256}:${minAntiRollbackVersion}:${pubAt}`;
     const signature = crypto.createHmac('sha256', signingKey).update(canonicalString).digest('hex');
 
     return {
       manifestId,
       version,
       channel,
-      packageUrl: `https://updates.nexusos.dev/packages/${version}.bin`,
+      packageUrl,
       sha256,
       signature,
-      publishedAt: new Date().toISOString(),
+      publishedAt: pubAt,
       minAntiRollbackVersion,
     };
   }
@@ -72,7 +84,10 @@ describe('Task 03K Update Manager & Security Verification', () => {
     const check1 = verifier.verifyManifest(validManifest, '1.0.0');
     assert.equal(check1.valid, true);
 
-    const tamperedManifest = { ...validManifest, signature: 'bad_signature_hash' };
+    const tamperedManifest = {
+      ...validManifest,
+      signature: 'bad_signature_hash_bad_signature_hash_bad_signature_hash_bad_sign',
+    };
     const check2 = verifier.verifyManifest(tamperedManifest, '1.0.0');
     assert.equal(check2.valid, false);
     assert.ok(check2.reason?.includes('Cryptographic signature verification failed'));

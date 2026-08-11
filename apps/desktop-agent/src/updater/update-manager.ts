@@ -17,11 +17,15 @@ export class UpdateManager implements IUpdateManager {
   private channel: UpdateChannel;
   private status: UpdateStatus;
   private currentManifest?: UpdateManifest;
+  // K-02 FIX: Track the verified manifest to prevent bypass of checkForUpdates
+  private verifiedManifestId?: string;
 
   constructor(
     initialVersion: string = '1.0.0',
     initialChannel: UpdateChannel = 'stable',
-    private readonly verifier: IUpdateManifestVerifier = new UpdateManifestVerifier(),
+    private readonly verifier: IUpdateManifestVerifier = new UpdateManifestVerifier(
+      'nexusos_release_signing_key_v1',
+    ),
     private readonly stagingStore: IUpdateStagingStore = new UpdateStagingStore(),
     private readonly notificationManager?: NotificationManager,
     private readonly logger: StructuredLogger = new StructuredLogger('UpdateManager'),
@@ -47,7 +51,8 @@ export class UpdateManager implements IUpdateManager {
   public async checkForUpdates(customManifest?: UpdateManifest): Promise<UpdateManifest | null> {
     this.status.state = 'CHECKING';
     this.status.lastCheckedAt = new Date().toISOString();
-    this.logger.info(`Checking for updates on channel '${this.channel}'`, {
+    // K-05/K-07: Sanitize log — do not log manifest signing material
+    this.logger.info('Checking for updates', {
       currentVersion: this.currentVersion,
       channel: this.channel,
     });
@@ -61,9 +66,10 @@ export class UpdateManager implements IUpdateManager {
     if (customManifest.channel !== this.channel) {
       this.status.state = 'FAILED';
       this.status.errorReason = `Update channel mismatch. Manifest channel '${customManifest.channel}' does not match active channel '${this.channel}'.`;
-      this.logger.warn(
-        `Channel mismatch: manifest is '${customManifest.channel}', active is '${this.channel}'`,
-      );
+      this.logger.warn('Channel mismatch detected', {
+        manifestChannel: customManifest.channel,
+        activeChannel: this.channel,
+      });
       return null;
     }
 
@@ -72,7 +78,7 @@ export class UpdateManager implements IUpdateManager {
     if (!verification.valid) {
       this.status.state = 'FAILED';
       this.status.errorReason = verification.reason;
-      this.logger.warn(`Update manifest verification failed`, {
+      this.logger.warn('Update manifest verification failed', {
         manifestId: customManifest.manifestId,
         reason: verification.reason,
       });
@@ -81,6 +87,7 @@ export class UpdateManager implements IUpdateManager {
         category: 'SECURITY_ALERT',
         priority: 'HIGH',
         title: 'Update Manifest Rejected',
+        // Sanitize: do not include manifest hash or signature in notification
         message: verification.reason || 'Manifest verification failed.',
       });
 
@@ -88,6 +95,8 @@ export class UpdateManager implements IUpdateManager {
     }
 
     this.currentManifest = customManifest;
+    // K-02 FIX: Record verified manifest ID
+    this.verifiedManifestId = customManifest.manifestId;
     this.status.state = 'AVAILABLE';
     this.status.targetVersion = customManifest.version;
 
@@ -112,8 +121,25 @@ export class UpdateManager implements IUpdateManager {
       return false;
     }
 
+    // K-02 FIX: Enforce that the manifest was previously verified via checkForUpdates
+    if (!this.verifiedManifestId || this.verifiedManifestId !== manifest.manifestId) {
+      this.status.state = 'FAILED';
+      this.status.errorReason = 'Manifest was not verified via checkForUpdates. Download rejected.';
+      this.logger.warn('Attempted to download unverified manifest', {
+        manifestId: manifest.manifestId,
+      });
+      return false;
+    }
+
+    // K-09 FIX: Require explicit package data — do not generate predictable default payload
+    if (!packageData) {
+      this.status.state = 'FAILED';
+      this.status.errorReason = 'No package data provided for integrity verification.';
+      return false;
+    }
+
     this.status.state = 'DOWNLOADING';
-    const rawData = packageData || Buffer.from(`nexusos_update_payload_v${manifest.version}`);
+    const rawData = packageData;
 
     this.status.state = 'VERIFYING';
     // Verify Package SHA-256 Integrity
@@ -121,7 +147,10 @@ export class UpdateManager implements IUpdateManager {
     if (!isIntegrityValid) {
       this.status.state = 'FAILED';
       this.status.errorReason = 'Package SHA-256 checksum verification failed.';
-      this.logger.error(`Update package checksum mismatch for version ${manifest.version}`);
+      // Sanitize: do not log hash values
+      this.logger.error('Update package checksum mismatch', {
+        version: manifest.version,
+      });
 
       this.notificationManager?.notify({
         category: 'SECURITY_ALERT',
@@ -137,7 +166,7 @@ export class UpdateManager implements IUpdateManager {
     await this.stagingStore.stagePackage(manifest, rawData);
     this.status.activePackageHash = manifest.sha256;
 
-    this.logger.info(`Update package staged successfully for version ${manifest.version}`);
+    this.logger.info('Update package staged successfully', { version: manifest.version });
     return true;
   }
 
@@ -187,8 +216,13 @@ export class UpdateManager implements IUpdateManager {
       this.status.state = 'ACTIVATED';
       this.status.currentVersion = this.currentVersion;
       this.status.targetVersion = undefined;
+      // Clear verified manifest after activation
+      this.verifiedManifestId = undefined;
 
-      this.logger.info(`Update activated successfully: ${oldVersion} -> ${this.currentVersion}`);
+      this.logger.info('Update activated successfully', {
+        oldVersion,
+        newVersion: this.currentVersion,
+      });
 
       this.telemetryManager?.trackTrace('update_activated', {
         oldVersion,
@@ -206,8 +240,13 @@ export class UpdateManager implements IUpdateManager {
       return true;
     } catch (err) {
       this.status.state = 'FAILED';
-      this.status.errorReason = `Update activation failure: ${(err as Error).message}`;
-      this.logger.error('Failed to apply staged update', { error: (err as Error).message });
+      // Sanitize error: do not expose raw error message which may contain paths/secrets
+      const safeErrorMsg =
+        err instanceof Error
+          ? err.message.replace(/[A-Z]:\\[^\s]*/gi, '[REDACTED_PATH]')
+          : 'Unknown activation error';
+      this.status.errorReason = `Update activation failure: ${safeErrorMsg}`;
+      this.logger.error('Failed to apply staged update', { error: safeErrorMsg });
 
       await this.rollback();
       return false;
@@ -224,8 +263,13 @@ export class UpdateManager implements IUpdateManager {
       this.status.state = 'ROLLED_BACK';
       this.status.currentVersion = this.currentVersion;
       this.status.errorReason = undefined;
+      // Clear verified manifest on rollback
+      this.verifiedManifestId = undefined;
 
-      this.logger.info(`Rollback executed successfully: ${oldVersion} -> ${this.currentVersion}`);
+      this.logger.info('Rollback executed successfully', {
+        oldVersion,
+        restoredVersion: this.currentVersion,
+      });
 
       this.notificationManager?.notify({
         category: 'RECOVERY_INTERVENTION',
