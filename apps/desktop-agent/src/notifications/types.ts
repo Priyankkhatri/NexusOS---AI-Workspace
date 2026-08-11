@@ -38,6 +38,7 @@ export interface NotificationMetrics {
   expiredCount: number;
   coalescedCount: number;
   criticalCount: number;
+  isQueueFull: boolean;
 }
 
 export interface INotificationQueue {
@@ -49,6 +50,7 @@ export interface INotificationQueue {
   popPending(maxCount?: number): NotificationItem[];
   purgeExpired(): number;
   markRead(id: string): boolean;
+  updateItem(id: string, updated: NotificationItem): boolean;
   getMetrics(): NotificationMetrics;
   clear(): void;
 }
@@ -59,6 +61,8 @@ export interface INotificationPolicyGate {
     item: NotificationItem,
     actionId: string,
     providedAuthToken?: string,
+    expectedTaskId?: string,
+    expectedCorrelationId?: string,
   ): { allowed: boolean; reason?: string };
 }
 
@@ -82,6 +86,8 @@ export interface INotificationManager {
     notificationId: string,
     actionId: string,
     providedAuthToken?: string,
+    expectedTaskId?: string,
+    expectedCorrelationId?: string,
   ): { success: boolean; reason?: string };
   getHealthMetrics(): NotificationMetrics;
 }

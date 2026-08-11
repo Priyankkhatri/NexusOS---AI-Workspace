@@ -32,6 +32,17 @@ export class NotificationManager implements INotificationManager {
 
   public setLockScreenActive(isActive: boolean): void {
     this.isLockScreenActive = isActive;
+
+    // When lock screen activates, retroactively redact all pending items
+    if (isActive) {
+      const pending = this.queue.peekAll();
+      for (const item of pending) {
+        if (!item.isPrivacyRedacted) {
+          const redacted = this.policyGate.sanitizeAndRedact(item, true);
+          this.queue.updateItem(item.id, redacted);
+        }
+      }
+    }
   }
 
   public notify(params: {
@@ -141,6 +152,8 @@ export class NotificationManager implements INotificationManager {
     notificationId: string,
     actionId: string,
     providedAuthToken?: string,
+    expectedTaskId?: string,
+    expectedCorrelationId?: string,
   ): { success: boolean; reason?: string } {
     const all = this.queue.peekAll();
     const item = all.find((i) => i.id === notificationId);
@@ -149,8 +162,14 @@ export class NotificationManager implements INotificationManager {
       return { success: false, reason: 'Notification not found.' };
     }
 
-    // Revalidate action authorization
-    const validation = this.policyGate.validateActionExecution(item, actionId, providedAuthToken);
+    // Revalidate action authorization with context binding
+    const validation = this.policyGate.validateActionExecution(
+      item,
+      actionId,
+      providedAuthToken,
+      expectedTaskId,
+      expectedCorrelationId,
+    );
     if (!validation.allowed) {
       this.logger.warn(`Notification action failed authorization`, {
         notificationId,
