@@ -1,5 +1,14 @@
 import { z } from 'zod';
 
+export * from './types.js';
+export * from './schemas.js';
+export * from './signature-verifier.js';
+export * from './validation-engine.js';
+export * from './store.js';
+export * from './rollback-handler.js';
+export * from './observer-registry.js';
+export * from './configuration-manager.js';
+
 export const DesktopAgentConfigSchema = z.object({
   deviceId: z.string().uuid().default('00000000-0000-0000-0000-000000000000'),
   agentVersion: z.string().default('0.1.0-sprint0'),
