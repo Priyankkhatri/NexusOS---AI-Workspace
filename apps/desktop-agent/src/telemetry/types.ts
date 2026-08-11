@@ -44,6 +44,7 @@ export interface SpoolMetrics {
   spoolCapacityBytes: number;
   spoolUsedBytes: number;
   isBackpressureActive: boolean;
+  isCriticalSpoolFull: boolean;
 }
 
 /**

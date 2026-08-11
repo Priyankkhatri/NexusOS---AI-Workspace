@@ -33,7 +33,7 @@ export class TelemetrySpool implements ITelemetrySpool {
 
     const estBytes = JSON.stringify(sanitizedItem).length;
 
-    // Capacity Management
+    // Capacity Management & Fail-Closed Protection
     if (this.items.length >= this.maxQueueLength) {
       if (sanitizedItem.priority === 'CRITICAL') {
         // Step 1: Evict oldest NON_CRITICAL item to preserve CRITICAL event
@@ -43,9 +43,10 @@ export class TelemetrySpool implements ITelemetrySpool {
           this.backpressureController.recordItemEvicted(1);
         } else if (this.items.length >= this.hardMaxCapacity) {
           // Step 2: Queue is 100% full of CRITICAL events up to hard capacity ceiling!
-          // Under extreme saturation, evict oldest CRITICAL item to prevent OOM process crash
-          this.items.shift();
-          this.backpressureController.recordItemEvicted(1);
+          // FAIL CLOSED: Never silently discard critical events!
+          // Signal critical spool saturation so ReadinessGate / ExecutionLease blocks new work.
+          this.backpressureController.setCriticalSpoolFull(true);
+          return false;
         }
       } else {
         // Drop new NON_CRITICAL item when soft capacity is full
@@ -87,6 +88,9 @@ export class TelemetrySpool implements ITelemetrySpool {
     if (this.items.length === 0) return [];
     const count = Math.min(maxItems, this.items.length);
     const popped = this.items.splice(0, count);
+    if (this.items.length < this.hardMaxCapacity) {
+      this.backpressureController.setCriticalSpoolFull(false);
+    }
     this.persistSpoolToStorage();
     return popped;
   }
@@ -111,7 +115,8 @@ export class TelemetrySpool implements ITelemetrySpool {
       fs.writeFileSync(tmpPath, data, 'utf-8');
       fs.renameSync(tmpPath, this.spoolFilePath);
     } catch {
-      // Ignore disk write errors during transient shutdown
+      // Disk write failure triggers critical spool full backpressure signal
+      this.backpressureController.setCriticalSpoolFull(true);
     }
   }
 

@@ -2,6 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { ReadinessGate } from '../src/health/readiness-gate.js';
 import {
   BackpressureController,
   RedactionFilter,
@@ -9,15 +10,17 @@ import {
   TelemetrySpool,
 } from '../src/telemetry/index.js';
 
-describe('Task 03I Telemetry Security Hardening Regression', () => {
+describe('Task 03I Telemetry Security Hardening & Zero-Loss Correctness', () => {
   const testStorageDir = path.join(process.cwd(), '.test-telemetry-spool-dir');
 
-  it('FINDING-I01: enforces hard capacity ceiling under 100% CRITICAL queue saturation without OOM', () => {
+  it('FINDING-I01: fails closed and blocks new execution leases when CRITICAL spool is saturated without dropping events', () => {
     const controller = new BackpressureController(1000, 500);
     const spool = new TelemetrySpool(controller, new RedactionFilter(), 5, testStorageDir); // soft max 5, hard max 10
+    const readinessGate = new ReadinessGate();
+    readinessGate.bindTelemetrySpool(spool);
 
-    // Enqueue 20 CRITICAL items
-    for (let i = 1; i <= 20; i++) {
+    // Enqueue 10 CRITICAL items to saturate hard capacity
+    for (let i = 1; i <= 10; i++) {
       spool.enqueueItem({
         itemId: `00000000-0000-4000-8000-00000000000${i % 9}`,
         timestamp: new Date().toISOString(),
@@ -28,10 +31,34 @@ describe('Task 03I Telemetry Security Hardening Regression', () => {
       });
     }
 
-    const batch = spool.popBatch(100);
-    // Queue should be capped at hardMaxCapacity (10), preventing infinite RAM OOM growth
-    assert.equal(batch.length, 10);
-    assert.equal(batch[batch.length - 1].name, 'critical_event_20');
+    // 11th CRITICAL item cannot be enqueued because hard spool capacity is full
+    const enqueued11 = spool.enqueueItem({
+      itemId: '00000000-0000-4000-8000-000000000099',
+      timestamp: new Date().toISOString(),
+      type: 'EVENT',
+      name: 'critical_event_11',
+      attributes: {},
+      priority: 'CRITICAL',
+    });
+
+    assert.equal(enqueued11, false);
+    assert.equal(spool.getSpoolMetrics().isCriticalSpoolFull, true);
+
+    // VERIFY FAIL-CLOSED READINESS GATE: Readiness check fails and assertReadyForLease throws!
+    const readiness = readinessGate.evaluateReadiness();
+    assert.equal(readiness.ready, false);
+    assert.equal(readiness.state, 'FAILED');
+    assert.ok(readiness.reasons.some((r) => r.includes("'telemetry_spool' failed health check")));
+
+    assert.throws(
+      () => readinessGate.assertReadyForLease(),
+      (err: unknown) => (err as { code?: string }).code === 'READINESS_CHECK_FAILED',
+    );
+
+    // Popping batch clears spool saturation and unblocks readiness gate!
+    spool.popBatch(10);
+    assert.equal(spool.getSpoolMetrics().isCriticalSpoolFull, false);
+    assert.equal(readinessGate.evaluateReadiness().ready, true);
 
     // Clean up
     spool.clearSpool();

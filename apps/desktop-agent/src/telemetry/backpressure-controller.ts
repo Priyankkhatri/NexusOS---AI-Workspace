@@ -6,6 +6,7 @@ export class BackpressureController implements IBackpressureController {
   private nonCriticalItemsCount = 0;
   private evictedItemsCount = 0;
   private spoolUsedBytes = 0;
+  private isCriticalFull = false;
 
   constructor(
     private readonly maxCapacityBytes: number = 50_000_000, // 50 MB Max Spool Limit
@@ -14,7 +15,11 @@ export class BackpressureController implements IBackpressureController {
   ) {}
 
   public isBackpressureActive(): boolean {
-    return this.spoolUsedBytes >= this.warningThresholdBytes;
+    return this.isCriticalFull || this.spoolUsedBytes >= this.warningThresholdBytes;
+  }
+
+  public setCriticalSpoolFull(isFull: boolean): void {
+    this.isCriticalFull = isFull;
   }
 
   public shouldSampleLog(level: LogLevel, priority: EventPriority): boolean {
@@ -59,6 +64,7 @@ export class BackpressureController implements IBackpressureController {
     this.criticalItemsCount = 0;
     this.nonCriticalItemsCount = 0;
     this.spoolUsedBytes = 0;
+    this.isCriticalFull = false;
   }
 
   public getMetrics(): SpoolMetrics {
@@ -70,6 +76,7 @@ export class BackpressureController implements IBackpressureController {
       spoolCapacityBytes: this.maxCapacityBytes,
       spoolUsedBytes: this.spoolUsedBytes,
       isBackpressureActive: this.isBackpressureActive(),
+      isCriticalSpoolFull: this.isCriticalFull,
     };
   }
 }

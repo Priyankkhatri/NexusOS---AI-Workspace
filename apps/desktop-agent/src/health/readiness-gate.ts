@@ -1,4 +1,5 @@
 import { ErrorCategory, createNexusOSError } from '@nexusos/contracts';
+import { ITelemetrySpool } from '../telemetry/types.js';
 import { HealthState, IReadinessGate, ReadinessCheckResult } from './types.js';
 
 export interface ReadinessCheckProvider {
@@ -36,6 +37,19 @@ export class ReadinessGate implements IReadinessGate {
       name: 'config_manager',
       critical: true,
       check: () => true,
+    });
+    this.registerProvider({
+      name: 'telemetry_spool',
+      critical: true,
+      check: () => true,
+    });
+  }
+
+  public bindTelemetrySpool(spool: ITelemetrySpool): void {
+    this.registerProvider({
+      name: 'telemetry_spool',
+      critical: true,
+      check: () => !spool.getSpoolMetrics().isCriticalSpoolFull,
     });
   }
 
