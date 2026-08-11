@@ -7,6 +7,7 @@ import { PluginCatalog } from './catalog.js';
 import { PluginPolicyGateway } from './policy-gateway.js';
 import { PluginQuarantineStore } from './quarantine-store.js';
 import {
+  DEFAULT_PLUGIN_RESOURCE_LIMITS,
   PluginInvocationRequest,
   PluginOperationName,
   PluginOperationRequestContext,
@@ -26,6 +27,8 @@ export class PluginRuntime {
     public readonly policyGateway: PluginPolicyGateway = new PluginPolicyGateway(),
     private readonly logger?: AgentLogger,
   ) {}
+
+  private activeHostsCount = 0;
 
   public getDescriptor(): ToolRuntimeDescriptor {
     return Object.freeze({
@@ -195,16 +198,33 @@ export class PluginRuntime {
           };
         }
 
-        // 4. Simulate Sandboxed Host Execution
-        const mockHostResult = {
-          invokedPluginId: pluginId,
-          capability: request.capability,
-          action: request.action,
-          executedInSandboxHost: true,
-          output: `Plugin host executed capability '${request.capability}:${request.action}' safely.`,
-        };
+        // 4. Resource Governance Check (maxConcurrentHosts)
+        const limits = { ...DEFAULT_PLUGIN_RESOURCE_LIMITS, ...context.limits };
+        if (this.activeHostsCount >= limits.maxConcurrentHosts) {
+          return {
+            data: null,
+            error: {
+              code: 'PLUGIN_HOST_LIMIT_EXCEEDED',
+              message: `Maximum concurrent plugin hosts limit (${limits.maxConcurrentHosts}) reached.`,
+            },
+          };
+        }
 
-        return { data: mockHostResult };
+        // 5. Simulate Sandboxed Host Execution
+        this.activeHostsCount++;
+        try {
+          const mockHostResult = {
+            invokedPluginId: pluginId,
+            capability: request.capability,
+            action: request.action,
+            executedInSandboxHost: true,
+            output: `Plugin host executed capability '${request.capability}:${request.action}' safely.`,
+          };
+
+          return { data: mockHostResult };
+        } finally {
+          this.activeHostsCount = Math.max(0, this.activeHostsCount - 1);
+        }
       },
     );
   }

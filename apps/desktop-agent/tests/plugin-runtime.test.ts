@@ -197,4 +197,27 @@ describe('Plugin Host Manager — Lifecycle, Invocation, & Security', () => {
     assert.equal(invRes.result.success, false);
     assert.equal(invRes.result.error?.code, 'MISSING_CAPABILITY_SCOPE');
   });
+
+  it('enforces maxConcurrentHosts resource limit', async () => {
+    await runtime.installPlugin(validPkg, { lease: validLease, allowedRoots: [] });
+    await runtime.activatePlugin('plug_github_v1', { lease: validLease, allowedRoots: [] });
+
+    // Set maxConcurrentHosts limit to 0 to simulate resource saturation
+    const invRes = await runtime.invokePlugin(
+      {
+        pluginId: 'plug_github_v1',
+        capability: 'github:pr:read',
+        action: 'listPRs',
+        payload: {},
+      },
+      {
+        lease: validLease,
+        allowedRoots: [],
+        limits: { maxConcurrentHosts: 0 },
+      },
+    );
+
+    assert.equal(invRes.result.success, false);
+    assert.equal(invRes.result.error?.code, 'PLUGIN_HOST_LIMIT_EXCEEDED');
+  });
 });

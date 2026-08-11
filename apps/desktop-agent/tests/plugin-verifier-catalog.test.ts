@@ -57,6 +57,32 @@ describe('Plugin Verifier, Catalog, & Quarantine Store', () => {
     assert.equal(entry?.state, 'SUSPENDED');
   });
 
+  it('overrides self-declared manifest trustLevel if signature authority is unverified', () => {
+    const forgedManifestPkg: PluginPackage = {
+      ...validPkg,
+      manifest: {
+        ...validPkg.manifest,
+        trustLevel: 'ENTERPRISE_INTERNAL', // Self-declared claim
+      },
+      signature: 'unverified_third_party_sig',
+    };
+
+    const res = verifier.verifyPlugin(forgedManifestPkg);
+    assert.equal(res.valid, true);
+    assert.equal(res.trustLevel, 'UNVERIFIED'); // Trust level derived from signature, NOT manifest claim
+  });
+
+  it('prevents direct invalid state transitions from QUARANTINED to ACTIVATED', () => {
+    const catalog = new PluginCatalog();
+    catalog.registerPackage(validPkg, 'QUARANTINED');
+
+    const transitionResult = catalog.setPluginState('plug_github_v1', 'ACTIVATED');
+    assert.equal(transitionResult, false);
+
+    const entry = catalog.getEntry('plug_github_v1');
+    assert.equal(entry?.state, 'QUARANTINED');
+  });
+
   it('quarantines suspicious plugins and queries quarantine state', () => {
     const qStore = new PluginQuarantineStore();
     assert.equal(qStore.isQuarantined('plug_malicious'), false);
