@@ -29,10 +29,7 @@ export class SecretRedactionRegistry implements ISecretRedactionRegistry {
     }
 
     // 2. Pattern redaction for bearer tokens, passwords, authorization headers, and cookies
-    redacted = redacted.replace(
-      /(Bearer\s+)[A-Za-z0-9._~+/]+=*/gi,
-      '$1[REDACTED_BEARER_TOKEN]',
-    );
+    redacted = redacted.replace(/(Bearer\s+)[A-Za-z0-9._~+/]+=*/gi, '$1[REDACTED_BEARER_TOKEN]');
     redacted = redacted.replace(
       /("password"|"secret"|"token"|"apiKey"|"api_key")\s*:\s*"[^"]+"/gi,
       '$1:"[REDACTED_SENSITIVE_KEY]"',
