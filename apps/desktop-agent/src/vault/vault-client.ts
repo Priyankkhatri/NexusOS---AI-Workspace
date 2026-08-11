@@ -20,7 +20,15 @@ import {
   VaultOperationResult,
 } from './types.js';
 
+/**
+ * Maximum number of concurrently active (non-revoked) secret leases.
+ * Prevents unbounded secret accumulation in memory.
+ */
+const MAX_ACTIVE_SECRET_LEASES = 64;
+
 export class SecretsVaultClient {
+  private readonly activeLeases = new Map<string, SecretLeasePayload>();
+
   constructor(
     _leaseBoundary: ExecutionLeaseBoundary,
     public readonly resolver: SecretLeaseResolver = new SecretLeaseResolver(_leaseBoundary),
@@ -44,7 +52,16 @@ export class SecretsVaultClient {
         throw createNexusOSError(
           'SECRET_REVOKED',
           ErrorCategory.AUTHORIZATION,
-          `Secret reference '${referenceString}' has been revoked and cannot be resolved.`,
+          'Secret reference has been revoked and cannot be resolved.',
+        );
+      }
+
+      // Resource governance: enforce maximum active secret leases
+      if (this.activeLeases.size >= MAX_ACTIVE_SECRET_LEASES) {
+        throw createNexusOSError(
+          'SECRET_LEASE_LIMIT_EXCEEDED',
+          ErrorCategory.RATE_LIMITED,
+          `Maximum active secret leases (${MAX_ACTIVE_SECRET_LEASES}) exceeded. Revoke unused leases before resolving new secrets.`,
         );
       }
 
@@ -52,6 +69,9 @@ export class SecretsVaultClient {
 
       // Register secret redaction fingerprint BEFORE secret is used
       this.redactionRegistry.registerSecret(payload.payloadBuffer, payload.fingerprintId);
+
+      // Track active lease for resource governance
+      this.activeLeases.set(referenceString, payload);
 
       const result: VaultOperationResult<SecretLeasePayload> = {
         success: true,
@@ -82,7 +102,9 @@ export class SecretsVaultClient {
       const errCategory =
         (err as { category?: ErrorCategory }).category || ErrorCategory.AUTHORIZATION;
       const errCode = (err as { code?: string }).code || 'SECRET_RESOLUTION_FAILED';
-      const errMessage = err instanceof Error ? err.message : String(err);
+      // createNexusOSError returns a plain object, not an Error instance.
+      // Extract .message from the object directly; fall back to String(err).
+      const errMessage = (err as { message?: string }).message || String(err);
 
       const result: VaultOperationResult<SecretLeasePayload> = {
         success: false,
@@ -183,7 +205,7 @@ export class SecretsVaultClient {
       const errCategory =
         (err as { category?: ErrorCategory }).category || ErrorCategory.AUTHORIZATION;
       const errCode = (err as { code?: string }).code || 'SECRET_INJECTION_FAILED';
-      const errMessage = err instanceof Error ? err.message : String(err);
+      const errMessage = (err as { message?: string }).message || String(err);
 
       const result: VaultOperationResult<InjectionResult> = {
         success: false,
@@ -231,6 +253,9 @@ export class SecretsVaultClient {
     const evidenceId = crypto.randomUUID();
 
     this.revocationHandler.revokeSecretLease(referenceId);
+
+    // Remove from active lease tracking
+    this.activeLeases.delete(referenceId);
 
     if (payload) {
       this.revocationHandler.zeroizePayloadBuffer(payload);

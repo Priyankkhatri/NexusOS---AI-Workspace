@@ -33,6 +33,27 @@ export interface VaultOperationRequestContext {
   subject?: AuthenticatedContext;
   allowedRoots: string[];
   isOffline?: boolean;
+  /**
+   * Indicates whether a valid, cryptographically protected local lease exists
+   * for offline secret access.
+   *
+   * The upstream component setting this flag MUST have verified:
+   *   1. Cryptographic integrity and authenticity (e.g. HMAC or signature)
+   *   2. Task/agent/device binding matches the current execution context
+   *   3. Lease expiration timestamp has not passed
+   *   4. Nonce is not replayed (anti-replay protection)
+   *   5. Lease was not tampered with (signature verification)
+   *   6. Lease is not stale (freshness check against last known control-plane state)
+   *   7. Cross-task reuse is prohibited (lease is bound to a single task execution)
+   *
+   * A bare boolean is used because this resolver does NOT re-validate the
+   * protected lease — it trusts the upstream boundary to have already verified
+   * these properties.  Fail-closed: absence or false value denies access.
+   *
+   * IMPORTANT: Merely possessing a local cache file MUST NOT enable offline
+   * secret access.  The upstream component must cryptographically verify the
+   * file's contents against all the criteria listed above.
+   */
   protectedLocalLeaseValid?: boolean;
 }
 

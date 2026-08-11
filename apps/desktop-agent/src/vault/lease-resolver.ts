@@ -3,7 +3,37 @@ import { ErrorCategory, createNexusOSError } from '@nexusos/contracts';
 import { ExecutionLeaseBoundary } from '../permissions/lease-boundary.js';
 import { ISecretLeaseResolver, SecretLeasePayload, VaultOperationRequestContext } from './types.js';
 
+/**
+ * SecretLeaseResolver
+ *
+ * Resolves opaque secret references to short-lived, lease-bound, in-memory
+ * payloads.  The resolved payload uses a mutable Node Buffer for the secret
+ * value so it can be zeroized on revocation.
+ *
+ * ## Mock Vault Provider Boundary
+ *
+ * The internal `mockVaultStore` is a development/test-only substitute for a
+ * real Secrets Vault backend (e.g. HashiCorp Vault, AWS Secrets Manager, or
+ * the NexusOS Secrets Service).  It MUST NOT be used in production.
+ *
+ * A production implementation would replace the `mockVaultStore.get()` lookup
+ * with an authenticated, TLS-protected call to the vault backend, receiving
+ * an encrypted payload bound to the requesting agent and lease.
+ *
+ * ## V8 / Node.js Memory Limitations
+ *
+ * `Buffer.from(string)` creates a mutable copy in V8 external memory that CAN
+ * be overwritten with `buffer.fill(0)`.  However, the source `entry.secretValue`
+ * string is immutable in V8's intern pool and cannot be erased.  This is an
+ * inherent platform limitation.  A production vault backend would deliver the
+ * secret as a Buffer directly, avoiding the intermediate string representation.
+ */
 export class SecretLeaseResolver implements ISecretLeaseResolver {
+  /**
+   * MOCK ONLY — Development/test vault store.
+   * Production implementations MUST replace this with a vault backend client.
+   * @internal
+   */
   private readonly mockVaultStore = new Map<string, { secretName: string; secretValue: string }>();
 
   constructor(private readonly leaseBoundary: ExecutionLeaseBoundary) {
@@ -31,11 +61,23 @@ export class SecretLeaseResolver implements ISecretLeaseResolver {
       throw createNexusOSError(
         'SECRET_REFERENCE_INVALID',
         ErrorCategory.VALIDATION,
-        `Secret reference '${referenceString}' is malformed or invalid format.`,
+        'Secret reference is malformed or uses an invalid format.',
       );
     }
 
     // 2. Offline Governance Check
+    //
+    // The `protectedLocalLeaseValid` flag is set by an upstream component that
+    // is responsible for verifying:
+    //   - cryptographic integrity and authenticity of the cached lease
+    //   - task/agent/device binding matches the current execution context
+    //   - lease expiration has not passed
+    //   - nonce is not replayed (anti-replay protection)
+    //   - lease was not tampered with (signature verification)
+    //
+    // This resolver does NOT re-verify those properties; it trusts the upstream
+    // boundary to have already done so before setting the flag.  A false value
+    // or absence of the flag causes fail-closed denial.
     if (context.isOffline && !context.protectedLocalLeaseValid) {
       throw createNexusOSError(
         'OFFLINE_SECRET_UNAVAILABLE',
@@ -60,17 +102,17 @@ export class SecretLeaseResolver implements ISecretLeaseResolver {
       throw createNexusOSError(
         'UNAUTHORIZED_SECRET_ACCESS',
         ErrorCategory.AUTHORIZATION,
-        `Lease does not grant capability scope for secret reference '${referenceString}'.`,
+        'Lease does not grant capability scope for the requested secret reference.',
       );
     }
 
-    // 5. Vault Backend Lookup
+    // 5. Vault Backend Lookup (MOCK — see class-level documentation)
     const entry = this.mockVaultStore.get(referenceString);
     if (!entry) {
       throw createNexusOSError(
         'SECRET_REFERENCE_INVALID',
         ErrorCategory.VALIDATION,
-        `Secret reference '${referenceString}' not found in vault registry.`,
+        'Secret reference not found in vault registry.',
       );
     }
 
