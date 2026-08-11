@@ -4,6 +4,11 @@ import { IRecoveryManifestStore, RecoveryManifest, StepCheckpoint } from './type
 
 export class RecoveryManifestStore implements IRecoveryManifestStore {
   private storedManifest: RecoveryManifest | null = null;
+  private readonly hmacSecretKey: string;
+
+  constructor(hmacSecretKey: string = 'nexusos_internal_manifest_signing_key_v1') {
+    this.hmacSecretKey = hmacSecretKey;
+  }
 
   public createManifest(
     agentId: string,
@@ -14,7 +19,10 @@ export class RecoveryManifestStore implements IRecoveryManifestStore {
     const crashedAt = new Date().toISOString();
 
     const canonicalString = `${manifestId}:${agentId}:${crashedAt}:${JSON.stringify(checkpoints)}`;
-    const manifestHash = crypto.createHash('sha256').update(canonicalString).digest('hex');
+    const manifestHash = crypto
+      .createHmac('sha256', this.hmacSecretKey)
+      .update(canonicalString)
+      .digest('hex');
 
     return {
       manifestId,
@@ -35,7 +43,7 @@ export class RecoveryManifestStore implements IRecoveryManifestStore {
       throw new Error('[RecoveryManifestError] Recovery manifest failed schema validation.');
     }
 
-    // Verify integrity before saving
+    // Verify cryptographic HMAC integrity before saving
     if (!this.verifyManifestIntegrity(manifest)) {
       throw new Error(
         '[RecoveryManifestError] Recovery manifest failed cryptographic hash verification.',
@@ -54,7 +62,7 @@ export class RecoveryManifestStore implements IRecoveryManifestStore {
       return null;
     }
 
-    // Verify integrity
+    // Verify cryptographic HMAC integrity
     if (!this.verifyManifestIntegrity(this.storedManifest)) {
       return null;
     }
@@ -66,7 +74,10 @@ export class RecoveryManifestStore implements IRecoveryManifestStore {
     if (!manifest || !manifest.manifestHash) return false;
 
     const canonicalString = `${manifest.manifestId}:${manifest.agentId}:${manifest.crashedAt}:${JSON.stringify(manifest.activeStepCheckpoints)}`;
-    const expectedHash = crypto.createHash('sha256').update(canonicalString).digest('hex');
+    const expectedHash = crypto
+      .createHmac('sha256', this.hmacSecretKey)
+      .update(canonicalString)
+      .digest('hex');
 
     // Constant time string comparison to prevent timing attacks
     return (

@@ -96,15 +96,20 @@ export class CrashRecoveryManager implements ICrashRecoveryManager {
     // 3. Reconcile Orphaned Process Trees
     const reconResult = await this.reconciliationEngine.reconcileOrphanedProcesses(manifest);
 
-    // 4. Audit Step Checkpoints — Block Non-Idempotent / Ambiguous Work
+    // 4. Audit Step Checkpoints — Block Non-Idempotent, Ambiguous, or Expired Work
     let resumedStepsCount = 0;
     let blockedStepsCount = 0;
 
     for (const cp of manifest.activeStepCheckpoints || []) {
-      // RULE: Ambiguous or non-idempotent work MUST NOT be replayed automatically!
-      if (cp.isAmbiguous || !cp.isIdempotent) {
+      const isExpired =
+        cp.leaseExpiresAt !== undefined &&
+        !isNaN(new Date(cp.leaseExpiresAt).getTime()) &&
+        new Date(cp.leaseExpiresAt).getTime() <= Date.now();
+
+      // RULE: Ambiguous, non-idempotent, or lease-expired work MUST NOT be replayed automatically!
+      if (cp.isAmbiguous || !cp.isIdempotent || isExpired) {
         blockedStepsCount++;
-      } else if (cp.isIdempotent && !cp.isAmbiguous && cp.status === 'PAUSED') {
+      } else if (cp.isIdempotent && !cp.isAmbiguous && cp.status === 'PAUSED' && !isExpired) {
         resumedStepsCount++;
       } else {
         blockedStepsCount++;

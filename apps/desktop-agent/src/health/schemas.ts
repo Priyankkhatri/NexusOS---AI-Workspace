@@ -31,6 +31,7 @@ export const StepCheckpointSchema = z.object({
   isAmbiguous: z.boolean(),
   status: z.enum(['COMPLETED', 'PAUSED', 'FAILED', 'IN_PROGRESS']),
   ownershipToken: z.string().min(1),
+  leaseExpiresAt: z.string().optional(),
 });
 
 export const RecoveryManifestSchema = z.object({

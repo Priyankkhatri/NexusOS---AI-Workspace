@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import os from 'node:os';
 import { ReadinessGate } from './readiness-gate.js';
 import {
@@ -17,6 +18,7 @@ export class HealthMonitor implements IHealthMonitor {
     private readonly agentId: string = '00000000-0000-4000-8000-000000000000',
     private readonly agentVersion: string = '0.1.0-sprint0',
     private readonly readinessGate: ReadinessGate = new ReadinessGate(),
+    private readonly storageDir: string = '.',
   ) {}
 
   public checkLiveness(): boolean {
@@ -71,7 +73,6 @@ export class HealthMonitor implements IHealthMonitor {
   private sampleResourceUsage(): ResourceUsage {
     const memUsage = process.memoryUsage();
     const totalMem = os.totalmem();
-    const freeMem = os.freemem();
 
     // Calculate process CPU usage percentage since last sample
     const now = Date.now();
@@ -91,11 +92,27 @@ export class HealthMonitor implements IHealthMonitor {
       Math.max(0, Number(((totalCpuMs / (timeDeltaMs * cpuCount)) * 100).toFixed(2))),
     );
 
+    const diskHeadroomBytes = this.sampleDiskHeadroom();
+
     return {
       cpuUsagePercent,
       memoryUsedBytes: memUsage.heapUsed,
       memoryTotalBytes: totalMem,
-      diskHeadroomBytes: freeMem, // Lightweight estimate
+      diskHeadroomBytes,
     };
+  }
+
+  private sampleDiskHeadroom(): number {
+    try {
+      if (typeof fs.statfsSync === 'function') {
+        const stats = fs.statfsSync(this.storageDir);
+        const freeBlocks = BigInt(stats.bavail || stats.bfree || 0);
+        const blockSize = BigInt(stats.bsize || 4096);
+        return Number(freeBlocks * blockSize);
+      }
+    } catch {
+      // Fallback if statfsSync is unsupported on specific target path
+    }
+    return os.freemem();
   }
 }

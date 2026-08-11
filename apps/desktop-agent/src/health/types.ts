@@ -38,6 +38,7 @@ export interface StepCheckpoint {
   isAmbiguous: boolean;
   status: 'COMPLETED' | 'PAUSED' | 'FAILED' | 'IN_PROGRESS';
   ownershipToken: string;
+  leaseExpiresAt?: string;
 }
 
 export interface RecoveryManifest {
