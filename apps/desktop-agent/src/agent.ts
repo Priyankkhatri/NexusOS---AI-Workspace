@@ -11,12 +11,14 @@ import { AgentLogger } from './observability/agent-logger.js';
 import { SandboxIsolationBoundary } from './sandbox/isolation-boundary.js';
 
 import { PluginExecutionPolicy } from './runtimes/plugin/policy.js';
+import { IPCManager } from './ipc/ipc-manager.js';
 
 export class DesktopAgent {
   public readonly lifecycle: AgentLifecycleManager;
   public readonly capabilityRegistry: CapabilityRegistry;
   public readonly runtimeRegistry: RuntimeRegistry;
   public readonly isolationBoundary: SandboxIsolationBoundary;
+  public readonly ipcManager?: IPCManager;
   private readonly logger: AgentLogger;
 
   private identity?: AgentIdentity;
@@ -30,12 +32,14 @@ export class DesktopAgent {
     private readonly stateStore: LocalStateStore,
     baseLogger: Logger,
     customRuntimeRegistry?: RuntimeRegistry,
+    customIpcManager?: IPCManager,
   ) {
     this.lifecycle = new AgentLifecycleManager();
     this.capabilityRegistry = new CapabilityRegistry();
     this.runtimeRegistry =
       customRuntimeRegistry || new RuntimeRegistry(new PluginExecutionPolicy());
     this.isolationBoundary = new SandboxIsolationBoundary();
+    this.ipcManager = customIpcManager;
     this.logger = new AgentLogger(baseLogger);
   }
 
@@ -77,6 +81,11 @@ export class DesktopAgent {
 
       // 5. Start Heartbeat Timer
       this.startHeartbeat();
+
+      // 6. Start IPC Manager if configured
+      if (this.ipcManager) {
+        await this.ipcManager.start();
+      }
     } catch (err) {
       this.lifecycle.transitionTo(
         AgentLifecycleState.FAILED,
@@ -98,6 +107,9 @@ export class DesktopAgent {
     this.stopHeartbeat();
 
     try {
+      if (this.ipcManager) {
+        await this.ipcManager.stop();
+      }
       await this.controlPlaneClient.disconnect();
       await this.saveStateSnapshot(false);
       this.lifecycle.transitionTo(AgentLifecycleState.STOPPED, 'Shutdown completed');
