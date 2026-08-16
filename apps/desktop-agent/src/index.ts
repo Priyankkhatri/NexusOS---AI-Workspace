@@ -9,7 +9,7 @@ export * from './communication/control-plane-client.js';
 export * from './registry/capability-registry.js';
 export * from './registry/runtime-registry.js';
 export * from './permissions/lease-boundary.js';
-export * from './state/local-state-store.js';
+export * from './state/index.js';
 export * from './observability/agent-logger.js';
 export * from './sandbox/isolation-boundary.js';
 export * from './runtimes/filesystem/index.js';
