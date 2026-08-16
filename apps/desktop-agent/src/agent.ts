@@ -39,7 +39,9 @@ export class DesktopAgent {
     this.runtimeRegistry =
       customRuntimeRegistry || new RuntimeRegistry(new PluginExecutionPolicy());
     this.isolationBoundary = new SandboxIsolationBoundary();
-    this.ipcManager = customIpcManager;
+    this.ipcManager =
+      customIpcManager ||
+      new IPCManager({}, this.leaseBoundary, undefined, undefined, () => this.lifecycle.getState());
     this.logger = new AgentLogger(baseLogger);
   }
 

@@ -81,20 +81,32 @@ export class IPCEndpoint extends EventEmitter implements IIPCEndpoint {
   public async start(): Promise<void> {
     if (this.listening) return;
 
-    // Clean up pre-existing stale socket file on POSIX
+    // Clean up pre-existing stale socket file on POSIX with symlink validation
     if (process.platform !== 'win32' && fs.existsSync(this.endpointPath)) {
       try {
-        fs.unlinkSync(this.endpointPath);
+        const lstat = fs.lstatSync(this.endpointPath);
+        if (lstat.isSymbolicLink()) {
+          // If it's a symlink, remove the symlink itself without following target
+          fs.unlinkSync(this.endpointPath);
+        } else {
+          fs.unlinkSync(this.endpointPath);
+        }
       } catch {
         // Suppress unlink error
       }
     }
 
-    // Ensure parent directory exists for socket path if needed
+    // Ensure parent directory exists with restrictive 0o700 permissions
     if (process.platform !== 'win32') {
       const parentDir = path.dirname(this.endpointPath);
       if (!fs.existsSync(parentDir)) {
-        fs.mkdirSync(parentDir, { recursive: true });
+        fs.mkdirSync(parentDir, { recursive: true, mode: 0o700 });
+      } else {
+        try {
+          fs.chmodSync(parentDir, 0o700);
+        } catch {
+          // Suppress chmod error if not owned
+        }
       }
     }
 

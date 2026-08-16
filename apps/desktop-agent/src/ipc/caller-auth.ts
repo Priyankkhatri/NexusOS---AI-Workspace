@@ -62,9 +62,9 @@ export class IPCCallerAuth implements IIPCCallerAuth {
     // Default local OS caller identity (local pipe/socket connection)
     return {
       authenticated: true,
-      pid: pid ?? process.pid,
-      uid: uid ?? (process.getuid ? process.getuid() : 1000),
-      processOwner: 'local_authenticated_user',
+      pid,
+      uid,
+      processOwner: pid ? `local_pid_${pid}` : 'local_authenticated_user',
       scopes: ['ipc:read', 'ipc:write'],
     };
   }
@@ -81,7 +81,7 @@ export class IPCCallerAuth implements IIPCCallerAuth {
       };
     }
 
-    // Unprivileged / informational methods
+    // Unprivileged / informational built-in methods
     if (method === 'ping' || method === 'agent.status') {
       return { allowed: true };
     }
@@ -104,18 +104,25 @@ export class IPCCallerAuth implements IIPCCallerAuth {
           };
         }
       }
+      return { allowed: true };
     }
 
-    // Privileged system actions require specific scope
-    if (method === 'update.activate' || method === 'agent.shutdown') {
-      if (!caller.scopes || !caller.scopes.includes('ipc:execute')) {
-        return {
-          allowed: false,
-          reason: `Caller lacks required scope 'ipc:execute' for method '${method}'.`,
-        };
+    // Privileged system & capability methods require 'ipc:execute' scope or valid lease
+    if (rawLease && this.leaseBoundary) {
+      const leaseResult = await this.leaseBoundary.validateLease(rawLease);
+      if (leaseResult.valid) {
+        return { allowed: true };
       }
     }
 
-    return { allowed: true };
+    if (caller.scopes && caller.scopes.includes('ipc:execute')) {
+      return { allowed: true };
+    }
+
+    // Fail-closed default posture for unrecognized or custom methods
+    return {
+      allowed: false,
+      reason: `Caller lacks required scope 'ipc:execute' or valid execution lease for IPC method '${method}'.`,
+    };
   }
 }

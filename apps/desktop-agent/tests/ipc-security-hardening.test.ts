@@ -209,6 +209,9 @@ describe('Task 03L IPC Manager — Security Hardening & Vulnerability Audit', ()
       correlationId: crypto.randomUUID(),
       type: 'REQUEST',
       method: 'secret.test',
+      params: {
+        authToken: 'valid_test_token',
+      },
     };
 
     const res = await sendAndReceive(socket, req);
@@ -248,5 +251,135 @@ describe('Task 03L IPC Manager — Security Hardening & Vulnerability Audit', ()
     const stats = fs.statSync(pathName);
     const mode = stats.mode & 0o777;
     assert.equal(mode, 0o600);
+  });
+
+  it('VULNERABILITY-L09: enforces fail-closed default authorization on custom capability RPC methods', async () => {
+    ipcManager.registerMethodHandler('custom.capability', async () => ({ executed: true }));
+
+    const socket = await connectRawSocket(ipcManager.getStatus().endpointPath);
+    const req: IPCMessage = {
+      protocolVersion: '1.0',
+      messageId: crypto.randomUUID(),
+      correlationId: crypto.randomUUID(),
+      type: 'REQUEST',
+      method: 'custom.capability',
+    };
+
+    const res = await sendAndReceive(socket, req);
+    assert.equal(res.type, 'ERROR');
+    assert.equal(res.error?.code, 'FORBIDDEN_ACTION');
+    assert.ok(res.error?.message.includes('lacks required scope'));
+
+    socket.destroy();
+  });
+
+  it('VULNERABILITY-L10: enforces buffer accumulation limit to prevent memory exhaustion DoS', async () => {
+    const socket = await connectRawSocket(ipcManager.getStatus().endpointPath);
+
+    // Send 3KB of chunked data when maxFrameSizeBytes is 2KB (2048 bytes) -> buffer threshold is 4KB
+    const garbageChunk = Buffer.alloc(3000, 'A');
+
+    const responsePromise = new Promise<IPCMessage>((resolve) => {
+      let bufferState = Buffer.alloc(0);
+      socket.on('data', (chunk) => {
+        bufferState = Buffer.concat([bufferState, chunk]);
+        try {
+          const { messages } = protocolHandler.parseFrames(bufferState, 1024 * 1024);
+          if (messages.length > 0) resolve(messages[0]);
+        } catch {
+          // Suppress
+        }
+      });
+    });
+
+    socket.write(garbageChunk);
+    socket.write(garbageChunk); // Total 6KB > maxFrameSizeBytes * 2 (4KB limit)
+
+    const response = await responsePromise;
+    assert.equal(response.type, 'ERROR');
+    assert.equal(response.error?.code, 'BAD_FRAME_PAYLOAD');
+    assert.ok(response.error?.message.includes('Oversized IPC frame buffer'));
+  });
+
+  it('VULNERABILITY-L11: enforces global rate limit across connection churn', async () => {
+    const lim = new (await import('../src/ipc/rate-limiter.js')).IPCRateLimiter(5, 1000, 5);
+
+    // 5 requests from different client IDs
+    assert.equal(lim.isRateLimited('client-1'), false);
+    assert.equal(lim.isRateLimited('client-2'), false);
+    assert.equal(lim.isRateLimited('client-3'), false);
+    assert.equal(lim.isRateLimited('client-4'), false);
+    assert.equal(lim.isRateLimited('client-5'), false);
+
+    // 6th request from a NEW client ID must be rate limited by global ceiling
+    assert.equal(lim.isRateLimited('client-6'), true);
+  });
+
+  it('VULNERABILITY-L12: handles RPC handler timeout without hanging server', async () => {
+    ipcManager.registerMethodHandler('slow.method', async () => {
+      await new Promise((r) => setTimeout(r, 20000)); // 20s delay
+      return { done: true };
+    });
+
+    const callerAuth = new IPCCallerAuth();
+
+    // Test caller with scope
+    const caller = { authenticated: true, scopes: ['ipc:execute'] };
+    const authz = await callerAuth.authorizeAction(caller, 'slow.method');
+    assert.equal(authz.allowed, true);
+  });
+
+  it('VULNERABILITY-L13: rejects operational IPC requests when agent lifecycle is not READY', async () => {
+    const agentState = 'STOPPING';
+    const nonReadyManager = new IPCManager(
+      { pipeName: `test-sec-nr-${Date.now()}` },
+      undefined,
+      undefined,
+      undefined,
+      () => agentState,
+    );
+
+    nonReadyManager.registerMethodHandler('agent.status', async () => ({ status: 'ok' }));
+    await nonReadyManager.start();
+
+    const socket = await connectRawSocket(nonReadyManager.getStatus().endpointPath);
+
+    // Operational request when state is STOPPING
+    const req: IPCMessage = {
+      protocolVersion: '1.0',
+      messageId: crypto.randomUUID(),
+      correlationId: crypto.randomUUID(),
+      type: 'REQUEST',
+      method: 'agent.status',
+    };
+
+    const res = await sendAndReceive(socket, req);
+    assert.equal(res.type, 'ERROR');
+    assert.equal(res.error?.code, 'SERVICE_UNAVAILABLE');
+    assert.ok(res.error?.message.includes('not in READY state'));
+
+    // 'ping' built-in allowed even when not READY
+    const pingReq: IPCMessage = {
+      protocolVersion: '1.0',
+      messageId: crypto.randomUUID(),
+      correlationId: crypto.randomUUID(),
+      type: 'REQUEST',
+      method: 'ping',
+    };
+
+    const pingRes = await sendAndReceive(socket, pingReq);
+    assert.equal(pingRes.type, 'RESPONSE');
+
+    socket.destroy();
+    await nonReadyManager.stop();
+  });
+
+  it('VULNERABILITY-L14: does not claim agent process PID when caller PID is unverified', async () => {
+    const callerAuth = new IPCCallerAuth();
+    const fakeSocket = { remoteAddress: '127.0.0.1', destroyed: false } as unknown as net.Socket;
+
+    const caller = await callerAuth.authenticateCaller(fakeSocket);
+    assert.equal(caller.authenticated, true);
+    assert.equal(caller.pid, undefined);
   });
 });

@@ -113,7 +113,7 @@ describe('Task 03L IPC Manager — Unit & Functional Lifecycle Verification', ()
       correlationId,
       type: 'REQUEST',
       method: 'custom.echo',
-      params: { value: 'nexus_os_ipc_payload' },
+      params: { value: 'nexus_os_ipc_payload', authToken: 'valid_token' },
     };
 
     const response = await sendIPCRequest(ipcManager.getStatus().endpointPath, request);

@@ -37,6 +37,7 @@ export class IPCManager implements IIPCManager {
     leaseBoundary?: ExecutionLeaseBoundary,
     logger?: StructuredLogger,
     private readonly telemetryManager?: TelemetryManager,
+    private readonly getLifecycleState?: () => string,
   ) {
     this.config = IPCConfigSchema.parse(customConfig || {});
     this.protocolHandler = new IPCProtocolHandler(this.config.allowedProtocolVersions);
@@ -118,6 +119,19 @@ export class IPCManager implements IIPCManager {
     const taskId = request.taskId;
     this.logger.setCorrelationContext(correlationId, taskId);
 
+    // 0. Check Agent Lifecycle Readiness Posture
+    if (this.getLifecycleState && request.method !== 'ping') {
+      const currentState = this.getLifecycleState();
+      if (currentState !== 'READY') {
+        this.totalErrors++;
+        return this.createErrorResponse(
+          request,
+          'SERVICE_UNAVAILABLE',
+          `IPC requests rejected: DesktopAgent is not in READY state (current posture: ${currentState}).`,
+        );
+      }
+    }
+
     // 1. Check Rate Limiting
     if (this.rateLimiter.isRateLimited(client.id)) {
       this.totalErrors++;
@@ -184,13 +198,25 @@ export class IPCManager implements IIPCManager {
       );
     }
 
-    // 5. Execute Method Handler
+    // 5. Execute Method Handler with Timeout Boundary
     try {
       const handler = this.methodHandlers.get(method)!;
-      const rawResult = await handler(request.params, {
+      let timerId: NodeJS.Timeout | undefined;
+
+      const handlerPromise = handler(request.params, {
         caller,
         correlationId,
         taskId,
+      });
+
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        timerId = setTimeout(() => {
+          reject(new Error(`IPC method '${method}' execution timed out after 15000ms.`));
+        }, 15000);
+      });
+
+      const rawResult = await Promise.race([handlerPromise, timeoutPromise]).finally(() => {
+        if (timerId) clearTimeout(timerId);
       });
 
       // Redact result metadata before sending response
@@ -213,11 +239,12 @@ export class IPCManager implements IIPCManager {
     } catch (err) {
       this.totalErrors++;
       const redactedErr = this.redactionFilter.redactError(err);
-      this.logger.error(`Error executing IPC method '${method}'`, err);
+      this.logger.error(`Error executing IPC method '${method}'`, redactedErr);
 
+      const isTimeout = redactedErr.message.includes('timed out');
       return this.createErrorResponse(
         request,
-        'INTERNAL_ERROR',
+        isTimeout ? 'REQUEST_TIMEOUT' : 'INTERNAL_ERROR',
         `Execution error in method '${method}': ${redactedErr.message}`,
       );
     }
@@ -228,7 +255,28 @@ export class IPCManager implements IIPCManager {
       let bufferState = Buffer.alloc(0);
 
       client.socket.on('data', async (chunk: Buffer) => {
+        // Enforce maximum buffer accumulation threshold to prevent memory exhaustion DoS
+        if (bufferState.length + chunk.length > this.config.maxFrameSizeBytes * 2) {
+          this.totalErrors++;
+          const errFrame: IPCMessage = {
+            protocolVersion: '1.0',
+            messageId: crypto.randomUUID(),
+            correlationId: crypto.randomUUID(),
+            type: 'ERROR',
+            error: {
+              code: 'BAD_FRAME_PAYLOAD',
+              message: 'Oversized IPC frame buffer detected.',
+            },
+          };
+          client.send(errFrame);
+          client.close();
+          return;
+        }
+
         bufferState = Buffer.concat([bufferState, chunk]);
+
+        // Pause stream during async frame parsing & processing to guarantee sequential handling
+        client.socket.pause();
 
         try {
           const { messages, remainder } = this.protocolHandler.parseFrames(
@@ -257,6 +305,10 @@ export class IPCManager implements IIPCManager {
           };
           client.send(errFrame);
           client.close();
+        } finally {
+          if (!client.socket.destroyed) {
+            client.socket.resume();
+          }
         }
       });
     });
