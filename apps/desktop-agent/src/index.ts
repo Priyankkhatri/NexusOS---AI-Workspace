@@ -22,4 +22,5 @@ export * from './telemetry/index.js';
 export * from './notifications/index.js';
 export * from './updater/index.js';
 export * from './ipc/index.js';
+export * from './memory/index.js';
 export * from './agent.js';

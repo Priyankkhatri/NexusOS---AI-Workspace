@@ -12,6 +12,7 @@ import { SandboxIsolationBoundary } from './sandbox/isolation-boundary.js';
 
 import { PluginExecutionPolicy } from './runtimes/plugin/policy.js';
 import { IPCManager } from './ipc/ipc-manager.js';
+import { MemoryCacheManager } from './memory/memory-cache-manager.js';
 
 export class DesktopAgent {
   public readonly lifecycle: AgentLifecycleManager;
@@ -19,6 +20,7 @@ export class DesktopAgent {
   public readonly runtimeRegistry: RuntimeRegistry;
   public readonly isolationBoundary: SandboxIsolationBoundary;
   public readonly ipcManager?: IPCManager;
+  public readonly memoryCacheManager: MemoryCacheManager;
   private readonly logger: AgentLogger;
 
   private identity?: AgentIdentity;
@@ -42,6 +44,9 @@ export class DesktopAgent {
     this.ipcManager =
       customIpcManager ||
       new IPCManager({}, this.leaseBoundary, undefined, undefined, () => this.lifecycle.getState());
+    this.memoryCacheManager = new MemoryCacheManager({}, undefined, undefined, () =>
+      this.lifecycle.getState(),
+    );
     this.logger = new AgentLogger(baseLogger);
   }
 
@@ -88,6 +93,7 @@ export class DesktopAgent {
       if (this.ipcManager) {
         await this.ipcManager.start();
       }
+      await this.memoryCacheManager.start();
     } catch (err) {
       this.lifecycle.transitionTo(
         AgentLifecycleState.FAILED,
@@ -112,6 +118,7 @@ export class DesktopAgent {
       if (this.ipcManager) {
         await this.ipcManager.stop();
       }
+      await this.memoryCacheManager.stop();
       await this.controlPlaneClient.disconnect();
       await this.saveStateSnapshot(false);
       this.lifecycle.transitionTo(AgentLifecycleState.STOPPED, 'Shutdown completed');
