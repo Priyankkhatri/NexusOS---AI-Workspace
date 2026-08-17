@@ -119,9 +119,7 @@ export class AgentOrchestrator implements IAgentOrchestrator {
     this.pruneOldProcessedMessages(now);
 
     const messageKey =
-      request.message_id ||
-      request.idempotency_key ||
-      `${request.task_id}:${request.step_id}`;
+      request.message_id || request.idempotency_key || `${request.task_id}:${request.step_id}`;
 
     if (this.processedMessageIds.has(messageKey)) {
       const expiresAt = this.processedMessageIds.get(messageKey)!;
@@ -139,10 +137,7 @@ export class AgentOrchestrator implements IAgentOrchestrator {
     this.processedMessageIds.set(messageKey, now + 900000); // 15 min TTL
 
     // 3. VULNERABILITY-Q01 & Q03: Lease Validation & Tenant/Device Binding
-    const leaseDecision = await this.leaseBoundary.validateLease(
-      request.leaseHeader,
-      undefined,
-    );
+    const leaseDecision = await this.leaseBoundary.validateLease(request.leaseHeader, undefined);
 
     if (!leaseDecision.valid) {
       return {
@@ -321,8 +316,7 @@ export class AgentOrchestrator implements IAgentOrchestrator {
       return await this.withTaskStateLock(async () => {
         const currentStatus = this.taskStateMap.get(request.task_id);
         const isCanceled =
-          currentStatus === 'CANCELED' ||
-          (abortController.signal.aborted && !isTimedOut);
+          currentStatus === 'CANCELED' || (abortController.signal.aborted && !isTimedOut);
 
         let finalStatus: TaskStatus;
         let result: TaskExecutionResult;

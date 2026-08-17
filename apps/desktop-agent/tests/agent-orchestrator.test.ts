@@ -107,8 +107,22 @@ describe('Task 03Q Agent Orchestrator — Functional & Integration Verification'
       leaseBoundary,
       mockTransport,
     );
-    const memoryCache = new MemoryCacheManager({}, undefined, undefined, () => AgentLifecycleState.READY);
-    const deviceRuntime = new DeviceRuntime(leaseBoundary, {}, undefined, undefined, undefined, undefined, undefined, () => AgentLifecycleState.READY);
+    const memoryCache = new MemoryCacheManager(
+      {},
+      undefined,
+      undefined,
+      () => AgentLifecycleState.READY,
+    );
+    const deviceRuntime = new DeviceRuntime(
+      leaseBoundary,
+      {},
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      () => AgentLifecycleState.READY,
+    );
 
     const orchestrator = new AgentOrchestrator(
       { agentVersion: '0.1.0-sprint0' } as never,

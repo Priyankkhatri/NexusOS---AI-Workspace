@@ -195,7 +195,9 @@ describe('Task 03Q Agent Orchestrator — Security Hardening & Vulnerability Aud
   });
 
   it('VULNERABILITY-Q04: rejects task execution when agent lifecycle state is STOPPING, STOPPED, or FAILED', async () => {
-    const { orchestrator: stoppingOrchestrator } = createTestOrchestrator(AgentLifecycleState.STOPPING);
+    const { orchestrator: stoppingOrchestrator } = createTestOrchestrator(
+      AgentLifecycleState.STOPPING,
+    );
     const { orchestrator: failedOrchestrator } = createTestOrchestrator(AgentLifecycleState.FAILED);
     const leaseHeader = createValidLeaseHeader();
 
