@@ -18,6 +18,7 @@ import { AgentOrchestrator } from './orchestrator/agent-orchestrator.js';
 import { RuntimeRouter } from './orchestrator/runtime-router.js';
 import { TaskExecutionRequest } from './orchestrator/types.js';
 import { TaskScheduler } from './scheduler/task-scheduler.js';
+import { WorkflowEngine } from './workflow/workflow-engine.js';
 
 export class DesktopAgent {
   public readonly lifecycle: AgentLifecycleManager;
@@ -29,6 +30,7 @@ export class DesktopAgent {
   public readonly deviceRuntime: DeviceRuntime;
   public readonly orchestrator: AgentOrchestrator;
   public readonly taskScheduler: TaskScheduler;
+  public readonly workflowEngine: WorkflowEngine;
   private readonly logger: AgentLogger;
 
   private identity?: AgentIdentity;
@@ -108,6 +110,19 @@ export class DesktopAgent {
         () => this.lifecycle.getState(),
       );
 
+    this.workflowEngine = new WorkflowEngine(
+      this.config,
+      this.identityProvider,
+      this.leaseBoundary,
+      this.orchestrator,
+      this.taskScheduler,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      () => this.lifecycle.getState(),
+    );
+
     this.logger = new AgentLogger(baseLogger);
 
     if (this.ipcManager) {
@@ -128,6 +143,21 @@ export class DesktopAgent {
       this.ipcManager.registerMethodHandler('task.status', async (params) => {
         const { taskId, tenantId } = params as { taskId: string; tenantId?: string };
         return this.taskScheduler.getScheduledTaskStatus(taskId, tenantId);
+      });
+      this.ipcManager.registerMethodHandler('workflow.execute', async (params) => {
+        return this.workflowEngine.executeWorkflow(params as any);
+      });
+      this.ipcManager.registerMethodHandler('workflow.cancel', async (params) => {
+        const { workflowId, tenantId, reason } = params as {
+          workflowId: string;
+          tenantId?: string;
+          reason?: string;
+        };
+        return this.workflowEngine.cancelWorkflow(workflowId, tenantId, reason);
+      });
+      this.ipcManager.registerMethodHandler('workflow.status', async (params) => {
+        const { workflowId, tenantId } = params as { workflowId: string; tenantId?: string };
+        return this.workflowEngine.getWorkflowStatus(workflowId, tenantId);
       });
     }
 
@@ -206,6 +236,7 @@ export class DesktopAgent {
 
     this.stopHeartbeat();
     this.taskScheduler.shutdown();
+    this.workflowEngine.shutdown();
 
     try {
       if (this.ipcManager) {
