@@ -4,6 +4,7 @@ export enum RuntimeCategory {
   BROWSER = 'BROWSER',
   PLUGIN = 'PLUGIN',
   CLIPBOARD = 'CLIPBOARD',
+  DEVICE = 'DEVICE',
   CAMERA = 'CAMERA',
   MICROPHONE = 'MICROPHONE',
   LOCAL_AI = 'LOCAL_AI',

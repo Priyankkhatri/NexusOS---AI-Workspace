@@ -17,7 +17,9 @@ export class PluginExecutionPolicy implements RuntimeExecutionPolicy {
       descriptor.category === RuntimeCategory.PLUGIN ||
       descriptor.category === RuntimeCategory.BROWSER ||
       descriptor.category === RuntimeCategory.TERMINAL ||
-      descriptor.category === RuntimeCategory.FILESYSTEM
+      descriptor.category === RuntimeCategory.FILESYSTEM ||
+      descriptor.category === RuntimeCategory.CLIPBOARD ||
+      descriptor.category === RuntimeCategory.DEVICE
     );
   }
 }

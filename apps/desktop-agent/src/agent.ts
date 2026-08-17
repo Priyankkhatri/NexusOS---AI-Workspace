@@ -13,6 +13,7 @@ import { SandboxIsolationBoundary } from './sandbox/isolation-boundary.js';
 import { PluginExecutionPolicy } from './runtimes/plugin/policy.js';
 import { IPCManager } from './ipc/ipc-manager.js';
 import { MemoryCacheManager } from './memory/memory-cache-manager.js';
+import { DeviceRuntime } from './runtimes/device/runtime.js';
 
 export class DesktopAgent {
   public readonly lifecycle: AgentLifecycleManager;
@@ -21,6 +22,7 @@ export class DesktopAgent {
   public readonly isolationBoundary: SandboxIsolationBoundary;
   public readonly ipcManager?: IPCManager;
   public readonly memoryCacheManager: MemoryCacheManager;
+  public readonly deviceRuntime: DeviceRuntime;
   private readonly logger: AgentLogger;
 
   private identity?: AgentIdentity;
@@ -35,6 +37,7 @@ export class DesktopAgent {
     baseLogger: Logger,
     customRuntimeRegistry?: RuntimeRegistry,
     customIpcManager?: IPCManager,
+    customDeviceRuntime?: DeviceRuntime,
   ) {
     this.lifecycle = new AgentLifecycleManager();
     this.capabilityRegistry = new CapabilityRegistry();
@@ -47,6 +50,18 @@ export class DesktopAgent {
     this.memoryCacheManager = new MemoryCacheManager({}, undefined, undefined, () =>
       this.lifecycle.getState(),
     );
+    this.deviceRuntime =
+      customDeviceRuntime ||
+      new DeviceRuntime(
+        this.leaseBoundary,
+        {},
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        () => this.lifecycle.getState(),
+      );
     this.logger = new AgentLogger(baseLogger);
   }
 
