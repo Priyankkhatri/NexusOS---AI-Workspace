@@ -9,17 +9,18 @@ import { NotificationManager } from '../notifications/notification-manager.js';
 import { AgentLifecycleState } from '../lifecycle/index.js';
 import { AgentOrchestrator } from '../orchestrator/agent-orchestrator.js';
 import { TaskExecutionRequest, TaskExecutionResult, TaskStatus } from '../orchestrator/types.js';
+import { TaskAdmissionController } from './admission-controller.js';
+import { TaskPriorityPolicy } from './priority-policy.js';
+import { TaskRetryPolicy } from './retry-policy.js';
 import { ExecutionQueue } from './execution-queue.js';
-import {
-  IExecutionQueue,
-  ITaskScheduler,
-  QueueMetrics,
-  QueuePriorityLane,
-  ScheduledTaskItem,
-} from './types.js';
+import { IExecutionQueue, ITaskScheduler, QueueMetrics, ScheduledTaskItem } from './types.js';
 
 export class TaskScheduler implements ITaskScheduler {
   private readonly queue: IExecutionQueue;
+  private readonly admissionController: TaskAdmissionController;
+  private readonly priorityPolicy: TaskPriorityPolicy;
+  private readonly retryPolicy: TaskRetryPolicy;
+
   private isProcessing = false;
   private maintenanceTimer?: NodeJS.Timeout;
 
@@ -36,6 +37,14 @@ export class TaskScheduler implements ITaskScheduler {
     customQueue?: IExecutionQueue,
   ) {
     this.queue = customQueue || new ExecutionQueue(100, 20, 30000);
+    this.admissionController = new TaskAdmissionController(
+      this.identityProvider,
+      this.leaseBoundary,
+      this.getAgentLifecycleState,
+    );
+    this.priorityPolicy = new TaskPriorityPolicy(30000);
+    this.retryPolicy = new TaskRetryPolicy(3, 1000, 30000, 2.0);
+
     void this.config;
     void this.redactionFilter;
     void this.notificationManager;
@@ -128,55 +137,20 @@ export class TaskScheduler implements ITaskScheduler {
   public async scheduleTask(request: TaskExecutionRequest): Promise<TaskExecutionResult> {
     const startTime = Date.now();
 
-    // 1. RISK-R09: Lifecycle Admission Check
-    if (this.getAgentLifecycleState) {
-      const state = this.getAgentLifecycleState();
-      if (
-        state === AgentLifecycleState.STOPPING ||
-        state === AgentLifecycleState.STOPPED ||
-        state === AgentLifecycleState.FAILED
-      ) {
-        return {
-          success: false,
-          taskId: request.task_id,
-          stepId: request.step_id,
-          errorCode: 'LIFECYCLE_DENIED',
-          errorMessage: 'Agent lifecycle state is unsafe for task admission.',
-          executionTimeMs: Date.now() - startTime,
-        };
-      }
-    }
-
-    // 2. RISK-R01 & R02: Lease Validation & Context Binding
-    const leaseDecision = await this.leaseBoundary.validateLease(request.leaseHeader, undefined);
-
-    if (!leaseDecision.valid) {
+    // 1. Evaluate Admission (Lifecycle, Lease, Context Binding)
+    const admission = await this.admissionController.evaluateAdmission(request);
+    if (!admission.admitted) {
       return {
         success: false,
         taskId: request.task_id,
         stepId: request.step_id,
-        errorCode: 'LEASE_DENIED',
-        errorMessage: leaseDecision.reason || 'Execution lease validation failed.',
+        errorCode: admission.errorCode || 'ADMISSION_DENIED',
+        errorMessage: admission.errorMessage || 'Task admission denied.',
         executionTimeMs: Date.now() - startTime,
       };
     }
 
-    const identity = await this.identityProvider.getIdentity();
-    if (
-      request.leaseHeader.agent_id !== identity.deviceId ||
-      request.leaseHeader.tenant_id !== identity.pairedTenantId
-    ) {
-      return {
-        success: false,
-        taskId: request.task_id,
-        stepId: request.step_id,
-        errorCode: 'TENANT_DEVICE_MISMATCH',
-        errorMessage: 'Lease target device or tenant does not match agent identity.',
-        executionTimeMs: Date.now() - startTime,
-      };
-    }
-
-    // 3. RISK-R05: Replay & Active Duplicate Task Check
+    // 2. Replay & Active Duplicate Task Check
     const existingStatus = this.getScheduledTaskStatus(
       request.task_id,
       request.leaseHeader.tenant_id,
@@ -192,18 +166,8 @@ export class TaskScheduler implements ITaskScheduler {
       };
     }
 
-    // 4. RISK-R03: Derive Priority (Untrusted callers cannot escalate to CRITICAL)
-    let priorityLane: QueuePriorityLane = 'NORMAL';
-    if (
-      request.payload?.isCritical === true &&
-      request.leaseHeader.scopes?.includes('agent:foundation')
-    ) {
-      priorityLane = 'CRITICAL';
-    } else if (request.payload?.isInteractive === true) {
-      priorityLane = 'INTERACTIVE';
-    } else if (request.payload?.isBackground === true) {
-      priorityLane = 'BACKGROUND';
-    }
+    // 3. Derive Priority
+    const priorityLane = this.priorityPolicy.derivePriorityLane(request);
 
     const now = Date.now();
     const expiresAt = request.leaseHeader.expires_at
@@ -219,7 +183,7 @@ export class TaskScheduler implements ITaskScheduler {
       retryCount: 0,
     };
 
-    // 5. RISK-R04 & R08: Admission Control (Queue Saturation & Per-Tenant Quotas)
+    // 4. Admission Control (Queue Saturation & Per-Tenant Quotas)
     const enqueued = this.queue.enqueue(item);
     if (!enqueued) {
       return {
@@ -232,7 +196,7 @@ export class TaskScheduler implements ITaskScheduler {
       };
     }
 
-    // 6. Durable State Checkpoint
+    // 5. Durable State Checkpoint
     if (this.stateManager) {
       const index = (await this.stateManager.get<string[]>('task_queue_index')) || [];
       if (!index.includes(request.task_id)) {
@@ -249,8 +213,9 @@ export class TaskScheduler implements ITaskScheduler {
       });
     }
 
-    // 7. Telemetry Event Emission
+    // 6. Telemetry Event Emission
     if (this.telemetrySpool?.enqueueEventEnvelope) {
+      const identity = await this.identityProvider.getIdentity();
       this.telemetrySpool.enqueueEventEnvelope({
         schema_id: 'schema:nexusos:task:queued:v1',
         version: '1.0.0',
@@ -266,7 +231,7 @@ export class TaskScheduler implements ITaskScheduler {
       });
     }
 
-    // 8. Trigger Queue Processing
+    // 7. Trigger Queue Processing
     return await this.processDispatch(item, startTime);
   }
 
@@ -361,7 +326,7 @@ export class TaskScheduler implements ITaskScheduler {
         }
 
         const now = Date.now();
-        // RISK-R07: Queue Expiration Race Handling
+        // Queue Expiration Race Handling
         if (now > item.expiresAt) {
           if (this.stateManager) {
             await this.stateManager.set(`task_checkpoint:${item.request.task_id}`, {
@@ -391,7 +356,7 @@ export class TaskScheduler implements ITaskScheduler {
         const result = await this.executeTaskInOrchestrator(item, now);
 
         // Retry handling for transient retryable errors
-        if (!result.success && this.isRetryableError(result.errorCode) && item.retryCount < 3) {
+        if (this.retryPolicy.shouldRetry(item.retryCount, result.errorCode)) {
           await this.scheduleRetry(item, result.errorMessage);
         }
       }
@@ -422,21 +387,9 @@ export class TaskScheduler implements ITaskScheduler {
     return result;
   }
 
-  private isRetryableError(errorCode?: string): boolean {
-    return (
-      errorCode === 'NETWORK_TIMEOUT' ||
-      errorCode === 'RATE_LIMITED' ||
-      errorCode === 'PROVIDER_CAPACITY' ||
-      errorCode === 'TRANSIENT_ERROR'
-    );
-  }
-
   private async scheduleRetry(item: ScheduledTaskItem, errorMessage?: string): Promise<void> {
     item.retryCount++;
-    const backoffDelay = Math.min(
-      30000,
-      1000 * Math.pow(2, item.retryCount - 1) * (0.8 + Math.random() * 0.4),
-    );
+    const backoffDelay = this.retryPolicy.calculateNextBackoffDelay(item.retryCount);
     item.nextRetryAt = Date.now() + backoffDelay;
     item.priorityLane = 'RETRY';
 

@@ -1,3 +1,4 @@
+import { TaskPriorityPolicy } from './priority-policy.js';
 import { IExecutionQueue, QueuePriorityLane, ScheduledTaskItem } from './types.js';
 
 export class ExecutionQueue implements IExecutionQueue {
@@ -8,12 +9,15 @@ export class ExecutionQueue implements IExecutionQueue {
     RETRY: [],
     BACKGROUND: [],
   };
+  private readonly priorityPolicy: TaskPriorityPolicy;
 
   constructor(
     private readonly maxCapacity: number = 100,
     private readonly maxPerTenantQuota: number = 20,
-    private readonly agingThresholdMs: number = 30000,
-  ) {}
+    agingThresholdMs: number = 30000,
+  ) {
+    this.priorityPolicy = new TaskPriorityPolicy(agingThresholdMs);
+  }
 
   public enqueue(item: ScheduledTaskItem): boolean {
     const totalSize = this.getSize();
@@ -164,7 +168,7 @@ export class ExecutionQueue implements IExecutionQueue {
     const remainingNormal: ScheduledTaskItem[] = [];
 
     for (const item of normalItems) {
-      if (now - item.queuedAt >= this.agingThresholdMs) {
+      if (this.priorityPolicy.shouldPromoteForAging(item, now)) {
         item.priorityLane = 'INTERACTIVE';
         this.lanes.INTERACTIVE.push(item);
       } else {
