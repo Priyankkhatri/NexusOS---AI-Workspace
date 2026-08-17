@@ -21,6 +21,10 @@ import { TaskScheduler } from './scheduler/task-scheduler.js';
 import { WorkflowEngine } from './workflow/workflow-engine.js';
 import { WorkflowDAG } from './workflow/types.js';
 import { ModelRuntimeManager } from './runtimes/local-ai/model-runtime-manager.js';
+import { ClipboardRuntimeManager } from './runtimes/clipboard/clipboard-runtime.js';
+import { IDEIntegrationAdapter } from './adapters/ide/ide-adapter.js';
+import { RedactionFilter } from './telemetry/redaction-filter.js';
+import { SecretRedactionRegistry } from './vault/redaction-registry.js';
 
 export class DesktopAgent {
   public readonly lifecycle: AgentLifecycleManager;
@@ -34,6 +38,8 @@ export class DesktopAgent {
   public readonly taskScheduler: TaskScheduler;
   public readonly workflowEngine: WorkflowEngine;
   public readonly modelRuntimeManager: ModelRuntimeManager;
+  public readonly clipboardRuntime: ClipboardRuntimeManager;
+  public readonly ideAdapter: IDEIntegrationAdapter;
   private readonly logger: AgentLogger;
 
   private identity?: AgentIdentity;
@@ -51,6 +57,8 @@ export class DesktopAgent {
     customDeviceRuntime?: DeviceRuntime,
     customOrchestrator?: AgentOrchestrator,
     customScheduler?: TaskScheduler,
+    customClipboardRuntime?: ClipboardRuntimeManager,
+    customIDEAdapter?: IDEIntegrationAdapter,
   ) {
     this.lifecycle = new AgentLifecycleManager();
     this.capabilityRegistry = new CapabilityRegistry();
@@ -127,6 +135,10 @@ export class DesktopAgent {
     );
 
     this.modelRuntimeManager = new ModelRuntimeManager(this.leaseBoundary, '.nexus-local-ai');
+    const redactionFilter = new RedactionFilter(new SecretRedactionRegistry());
+    this.clipboardRuntime =
+      customClipboardRuntime || new ClipboardRuntimeManager(this.leaseBoundary, redactionFilter);
+    this.ideAdapter = customIDEAdapter || new IDEIntegrationAdapter(this.leaseBoundary);
 
     this.logger = new AgentLogger(baseLogger);
 
@@ -177,6 +189,34 @@ export class DesktopAgent {
           chunks.push(chunk);
         }
         return { chunks };
+      });
+      this.ipcManager.registerMethodHandler('clipboard.read', async (params) => {
+        return this.clipboardRuntime.readClipboard(
+          params as unknown as import('./runtimes/clipboard/types.js').ClipboardReadRequest,
+        );
+      });
+      this.ipcManager.registerMethodHandler('clipboard.write', async (params) => {
+        return this.clipboardRuntime.writeClipboard(
+          params as unknown as import('./runtimes/clipboard/types.js').ClipboardWriteRequest,
+        );
+      });
+      this.ipcManager.registerMethodHandler('clipboard.clear', async () => {
+        await this.clipboardRuntime.clearClipboard();
+        return { success: true };
+      });
+      this.ipcManager.registerMethodHandler('ide.getContext', async (params) => {
+        return this.ideAdapter.getContext(
+          params as unknown as import('./adapters/ide/types.js').IDEContextRequest,
+        );
+      });
+      this.ipcManager.registerMethodHandler('ide.applyDiff', async (params) => {
+        return this.ideAdapter.applyDiff(
+          params as unknown as import('./adapters/ide/types.js').IDEDiffRequest,
+        );
+      });
+      this.ipcManager.registerMethodHandler('ide.getDiagnostics', async (params) => {
+        const { filePath } = (params || {}) as { filePath?: string };
+        return this.ideAdapter.getDiagnostics(filePath);
       });
       this.ipcManager.registerMethodHandler('localAi.unloadModel', async (params) => {
         const { modelId } = params as { modelId: string };
@@ -262,6 +302,8 @@ export class DesktopAgent {
     this.stopHeartbeat();
     this.taskScheduler.shutdown();
     this.workflowEngine.shutdown();
+    this.clipboardRuntime.shutdown();
+    this.ideAdapter.reset();
     await this.modelRuntimeManager.shutdown();
 
     try {
