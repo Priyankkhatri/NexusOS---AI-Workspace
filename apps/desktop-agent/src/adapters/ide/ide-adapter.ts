@@ -135,7 +135,10 @@ export class IDEIntegrationAdapter {
    */
   public resolveSafePath(targetFilePath: string, workspaceRoot: string): string {
     if (!targetFilePath || !workspaceRoot) {
-      throw new IDEAdapterError('Target file path and workspace root must be specified', 'INVALID_INPUT');
+      throw new IDEAdapterError(
+        'Target file path and workspace root must be specified',
+        'INVALID_INPUT',
+      );
     }
 
     if (targetFilePath.includes('\0') || workspaceRoot.includes('\0')) {

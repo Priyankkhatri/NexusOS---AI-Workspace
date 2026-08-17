@@ -15,10 +15,7 @@ import {
   type ClipboardWriteRequest,
   type IClipboardProvider,
 } from '../src/runtimes/clipboard/types.js';
-import {
-  type IDEContextSnapshot,
-  type IDEDiffRequest,
-} from '../src/adapters/ide/types.js';
+import { type IDEContextSnapshot, type IDEDiffRequest } from '../src/adapters/ide/types.js';
 
 class MockClipboardProvider implements IClipboardProvider {
   public content = '';
@@ -36,11 +33,19 @@ class MockClipboardProvider implements IClipboardProvider {
   }
 }
 
-class AlwaysAllowPolicyEvaluator {
-  async evaluate(request: any): Promise<any> {
+import {
+  type PolicyDecisionRequest,
+  type PolicyDecisionResult,
+  type PolicyEvaluator,
+  type PolicySnapshot,
+  PolicyEffect,
+} from '@nexusos/policy';
+
+class AlwaysAllowPolicyEvaluator implements PolicyEvaluator {
+  async evaluate(request: PolicyDecisionRequest): Promise<PolicyDecisionResult> {
     return {
       decisionId: crypto.randomUUID(),
-      effect: 'ALLOW',
+      effect: PolicyEffect.ALLOW,
       allowed: true,
       policyVersion: '1.0.0',
       policyHash: 'test-hash',
@@ -51,7 +56,7 @@ class AlwaysAllowPolicyEvaluator {
     };
   }
 
-  getSnapshot(): any {
+  getSnapshot(): PolicySnapshot {
     return {
       policyVersion: '1.0.0',
       policyHash: 'test-hash',
@@ -86,7 +91,7 @@ describe('Task 03U — Clipboard & IDE IPC Integration Tests', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-clipboard-ipc-test-'));
     leaseBoundary = new ExecutionLeaseBoundary(new AlwaysAllowPolicyEvaluator() as any);
     const registry = new SecretRedactionRegistry();
-    registry.registerSecret('secret-ipc-999');
+    registry.registerSecret('secret-ipc-999', 'fp-secret-ipc-999');
     const redactionFilter = new RedactionFilter(registry);
     provider = new MockClipboardProvider();
     clipboardRuntime = new ClipboardRuntimeManager(leaseBoundary, redactionFilter, provider);

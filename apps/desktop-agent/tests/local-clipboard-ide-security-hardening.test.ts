@@ -10,6 +10,13 @@ import { IDEIntegrationAdapter } from '../src/adapters/ide/ide-adapter.js';
 import { RedactionFilter } from '../src/telemetry/redaction-filter.js';
 import { SecretRedactionRegistry } from '../src/vault/redaction-registry.js';
 import {
+  type PolicyDecisionRequest,
+  type PolicyDecisionResult,
+  type PolicyEvaluator,
+  type PolicySnapshot,
+  PolicyEffect,
+} from '@nexusos/policy';
+import {
   type ClipboardReadRequest,
   type ClipboardWriteRequest,
   type IClipboardProvider,
@@ -39,11 +46,11 @@ class MockClipboardProvider implements IClipboardProvider {
   }
 }
 
-class AlwaysAllowPolicyEvaluator {
-  async evaluate(request: any): Promise<any> {
+class AlwaysAllowPolicyEvaluator implements PolicyEvaluator {
+  async evaluate(request: PolicyDecisionRequest): Promise<PolicyDecisionResult> {
     return {
       decisionId: crypto.randomUUID(),
-      effect: 'ALLOW',
+      effect: PolicyEffect.ALLOW,
       allowed: true,
       policyVersion: '1.0.0',
       policyHash: 'test-hash',
@@ -54,7 +61,7 @@ class AlwaysAllowPolicyEvaluator {
     };
   }
 
-  getSnapshot(): any {
+  getSnapshot(): PolicySnapshot {
     return {
       policyVersion: '1.0.0',
       policyHash: 'test-hash',
@@ -88,7 +95,7 @@ describe('Task 03U — Security Hardening Regression Suite (SH-01 through SH-15)
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-clipboard-sec-test-'));
-    leaseBoundary = new ExecutionLeaseBoundary(new AlwaysAllowPolicyEvaluator() as any);
+    leaseBoundary = new ExecutionLeaseBoundary(new AlwaysAllowPolicyEvaluator());
     redactionRegistry = new SecretRedactionRegistry();
     redactionRegistry.registerSecret('top-secret-token-88', 'secret-fp-88');
     redactionFilter = new RedactionFilter(redactionRegistry);
@@ -158,6 +165,7 @@ describe('Task 03U — Security Hardening Regression Suite (SH-01 through SH-15)
     };
 
     const res = await clipboardManager.readClipboard(req);
+    assert.ok(res.item);
     assert.ok(res.item.text?.includes('[REDACTED'));
     assert.equal(res.item.text?.includes('top-secret-token-88'), false);
   });
@@ -329,7 +337,10 @@ describe('Task 03U — Security Hardening Regression Suite (SH-01 through SH-15)
     assert.equal(res.success, true);
     assert.ok(res.backupPath);
     assert.equal(fs.existsSync(res.backupPath), true);
-    assert.equal(fs.readFileSync(res.backupPath, 'utf-8'), 'export const OldComponent = () => null;');
+    assert.equal(
+      fs.readFileSync(res.backupPath, 'utf-8'),
+      'export const OldComponent = () => null;',
+    );
   });
 
   it('SH-14: IDE context snapshot sanitizes secret tokens before returning to caller', () => {

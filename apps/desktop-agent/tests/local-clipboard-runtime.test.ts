@@ -6,6 +6,13 @@ import { RedactionFilter } from '../src/telemetry/redaction-filter.js';
 import { SecretRedactionRegistry } from '../src/vault/redaction-registry.js';
 import { ClipboardRuntimeManager } from '../src/runtimes/clipboard/clipboard-runtime.js';
 import {
+  type PolicyDecisionRequest,
+  type PolicyDecisionResult,
+  type PolicyEvaluator,
+  type PolicySnapshot,
+  PolicyEffect,
+} from '@nexusos/policy';
+import {
   type ClipboardReadRequest,
   type ClipboardWriteRequest,
   type IClipboardProvider,
@@ -28,11 +35,11 @@ class MockClipboardProvider implements IClipboardProvider {
   }
 }
 
-class AlwaysAllowPolicyEvaluator {
-  async evaluate(request: any): Promise<any> {
+class AlwaysAllowPolicyEvaluator implements PolicyEvaluator {
+  async evaluate(request: PolicyDecisionRequest): Promise<PolicyDecisionResult> {
     return {
       decisionId: crypto.randomUUID(),
-      effect: 'ALLOW',
+      effect: PolicyEffect.ALLOW,
       allowed: true,
       policyVersion: '1.0.0',
       policyHash: 'test-hash',
@@ -43,7 +50,7 @@ class AlwaysAllowPolicyEvaluator {
     };
   }
 
-  getSnapshot(): any {
+  getSnapshot(): PolicySnapshot {
     return {
       policyVersion: '1.0.0',
       policyHash: 'test-hash',
@@ -73,7 +80,7 @@ describe('Task 03U — ClipboardRuntimeManager Unit Tests', () => {
   };
 
   beforeEach(() => {
-    leaseBoundary = new ExecutionLeaseBoundary(new AlwaysAllowPolicyEvaluator() as any);
+    leaseBoundary = new ExecutionLeaseBoundary(new AlwaysAllowPolicyEvaluator());
     const registry = new SecretRedactionRegistry();
     redactionFilter = new RedactionFilter(registry);
     provider = new MockClipboardProvider();
@@ -118,7 +125,10 @@ describe('Task 03U — ClipboardRuntimeManager Unit Tests', () => {
   it('CB-02: readClipboard rejects invalid or expired execution lease', async () => {
     provider.content = 'Some content';
     const req = makeReadReq();
-    req.leaseHeader = { ...validLeaseHeader, expires_at: new Date(Date.now() - 10000).toISOString() };
+    req.leaseHeader = {
+      ...validLeaseHeader,
+      expires_at: new Date(Date.now() - 10000).toISOString(),
+    };
 
     await assert.rejects(
       async () => {

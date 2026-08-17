@@ -13,6 +13,7 @@ import {
   ClipboardRuntimeError,
   DefaultSystemClipboardProvider,
   MAX_CLIPBOARD_TEXT_BYTES,
+  MAX_CLIPBOARD_IMAGE_BYTES,
   DEFAULT_CLIPBOARD_TTL_SECONDS,
 } from './types.js';
 
@@ -106,13 +107,13 @@ export class ClipboardRuntimeManager {
     if (parsed.buffer && parsed.buffer.length > MAX_CLIPBOARD_IMAGE_BYTES) {
       throw new ClipboardRuntimeError(
         `Image buffer size ${parsed.buffer.length} bytes exceeds maximum limit of ${MAX_CLIPBOARD_IMAGE_BYTES} bytes.`,
-        'OVERSIZED_PAYLOAD',
+        'SIZE_EXCEEDED',
       );
     }
 
     try {
       const rawText = parsed.text || parsed.buffer?.toString('utf-8') || '';
-      
+
       // Sanitize secrets before writing to system clipboard
       const sanitizedText = this.redactionFilter.redactString(rawText);
       const contentHash = crypto.createHash('sha256').update(sanitizedText).digest('hex');
@@ -134,7 +135,7 @@ export class ClipboardRuntimeManager {
         this.autoClearTimer = setTimeout(() => {
           void this.performAutoClear(contentHash);
         }, ttlSeconds * 1000);
-        
+
         // Unref timer so it doesn't block process exit in Node tests
         if (this.autoClearTimer.unref) {
           this.autoClearTimer.unref();

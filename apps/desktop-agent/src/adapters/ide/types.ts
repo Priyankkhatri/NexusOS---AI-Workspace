@@ -66,7 +66,12 @@ export interface IDEDiagnosticItem {
 export class IDEAdapterError extends Error {
   constructor(
     message: string,
-    public readonly code: 'NOT_FOUND' | 'UNAUTHORIZED' | 'PATH_TRAVERSAL' | 'APPLY_FAILED' | 'INVALID_INPUT',
+    public readonly code:
+      | 'NOT_FOUND'
+      | 'UNAUTHORIZED'
+      | 'PATH_TRAVERSAL'
+      | 'APPLY_FAILED'
+      | 'INVALID_INPUT',
     public readonly causeError?: unknown,
   ) {
     super(message);

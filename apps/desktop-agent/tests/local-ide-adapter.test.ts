@@ -7,16 +7,23 @@ import path from 'node:path';
 import { ExecutionLeaseBoundary } from '../src/permissions/lease-boundary.js';
 import { IDEIntegrationAdapter } from '../src/adapters/ide/ide-adapter.js';
 import {
+  type PolicyDecisionRequest,
+  type PolicyDecisionResult,
+  type PolicyEvaluator,
+  type PolicySnapshot,
+  PolicyEffect,
+} from '@nexusos/policy';
+import {
   type IDEContextSnapshot,
   type IDEDiffRequest,
   IDEAdapterError,
 } from '../src/adapters/ide/types.js';
 
-class AlwaysAllowPolicyEvaluator {
-  async evaluate(request: any): Promise<any> {
+class AlwaysAllowPolicyEvaluator implements PolicyEvaluator {
+  async evaluate(request: PolicyDecisionRequest): Promise<PolicyDecisionResult> {
     return {
       decisionId: crypto.randomUUID(),
-      effect: 'ALLOW',
+      effect: PolicyEffect.ALLOW,
       allowed: true,
       policyVersion: '1.0.0',
       policyHash: 'test-hash',
@@ -27,7 +34,7 @@ class AlwaysAllowPolicyEvaluator {
     };
   }
 
-  getSnapshot(): any {
+  getSnapshot(): PolicySnapshot {
     return {
       policyVersion: '1.0.0',
       policyHash: 'test-hash',
@@ -57,7 +64,7 @@ describe('Task 03U — IDEIntegrationAdapter Unit Tests', () => {
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-ide-test-'));
-    leaseBoundary = new ExecutionLeaseBoundary(new AlwaysAllowPolicyEvaluator() as any);
+    leaseBoundary = new ExecutionLeaseBoundary(new AlwaysAllowPolicyEvaluator());
     adapter = new IDEIntegrationAdapter(leaseBoundary);
   });
 

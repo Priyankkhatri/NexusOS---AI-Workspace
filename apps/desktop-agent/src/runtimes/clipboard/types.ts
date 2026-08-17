@@ -26,28 +26,41 @@ export const ClipboardReadRequestSchema = z.object({
   deviceId: z.string().uuid(),
   callerId: z.string().min(1),
   leaseHeader: ExecutionLeaseHeaderSchema,
-  maxBytes: z.number().int().positive().max(MAX_CLIPBOARD_TEXT_BYTES).optional().default(MAX_CLIPBOARD_TEXT_BYTES),
+  maxBytes: z
+    .number()
+    .int()
+    .positive()
+    .max(MAX_CLIPBOARD_TEXT_BYTES)
+    .optional()
+    .default(MAX_CLIPBOARD_TEXT_BYTES),
 });
 
-export type ClipboardReadRequest = z.infer<typeof ClipboardReadRequestSchema>;
+export type ClipboardReadRequest = z.input<typeof ClipboardReadRequestSchema>;
 
-export const ClipboardWriteRequestSchema = z.object({
-  requestId: z.string().uuid(),
-  tenantId: z.string().uuid(),
-  deviceId: z.string().uuid(),
-  callerId: z.string().min(1),
-  leaseHeader: ExecutionLeaseHeaderSchema,
-  contentType: z.enum(['text', 'image', 'html', 'custom']).default('text'),
-  text: z.string().max(MAX_CLIPBOARD_TEXT_BYTES).optional(),
-  buffer: z.instanceof(Buffer).optional(),
-  ttlSeconds: z.number().int().positive().max(86400).optional().default(DEFAULT_CLIPBOARD_TTL_SECONDS),
-  isSensitive: z.boolean().optional().default(true),
-}).refine(
-  (data) => data.text !== undefined || data.buffer !== undefined,
-  { message: 'Either text or buffer must be provided for clipboard write' }
-);
+export const ClipboardWriteRequestSchema = z
+  .object({
+    requestId: z.string().uuid(),
+    tenantId: z.string().uuid(),
+    deviceId: z.string().uuid(),
+    callerId: z.string().min(1),
+    leaseHeader: ExecutionLeaseHeaderSchema,
+    contentType: z.enum(['text', 'image', 'html', 'custom']).default('text'),
+    text: z.string().max(MAX_CLIPBOARD_TEXT_BYTES).optional(),
+    buffer: z.instanceof(Buffer).optional(),
+    ttlSeconds: z
+      .number()
+      .int()
+      .positive()
+      .max(86400)
+      .optional()
+      .default(DEFAULT_CLIPBOARD_TTL_SECONDS),
+    isSensitive: z.boolean().optional().default(true),
+  })
+  .refine((data) => data.text !== undefined || data.buffer !== undefined, {
+    message: 'Either text or buffer must be provided for clipboard write',
+  });
 
-export type ClipboardWriteRequest = z.infer<typeof ClipboardWriteRequestSchema>;
+export type ClipboardWriteRequest = z.input<typeof ClipboardWriteRequestSchema>;
 
 export interface ClipboardReadResult {
   item?: ClipboardItem;
@@ -87,7 +100,13 @@ export class DefaultSystemClipboardProvider implements IClipboardProvider {
 export class ClipboardRuntimeError extends Error {
   constructor(
     message: string,
-    public readonly code: 'READ_DENIED' | 'WRITE_DENIED' | 'INVALID_INPUT' | 'SIZE_EXCEEDED' | 'AUTO_CLEAR_FAILED' | 'PROVIDER_ERROR',
+    public readonly code:
+      | 'READ_DENIED'
+      | 'WRITE_DENIED'
+      | 'INVALID_INPUT'
+      | 'SIZE_EXCEEDED'
+      | 'AUTO_CLEAR_FAILED'
+      | 'PROVIDER_ERROR',
     public readonly causeError?: unknown,
   ) {
     super(message);
