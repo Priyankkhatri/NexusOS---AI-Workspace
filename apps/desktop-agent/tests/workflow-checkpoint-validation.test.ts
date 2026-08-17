@@ -137,7 +137,7 @@ function createWorkflowEngine(stateManager?: StateManager) {
   );
 }
 
-function validCheckpoint(workflowId: string): unknown {
+function validCheckpoint(workflowId: string): Record<string, unknown> {
   return {
     workflowId,
     taskId: crypto.randomUUID(),
