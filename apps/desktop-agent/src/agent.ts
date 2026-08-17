@@ -19,6 +19,7 @@ import { RuntimeRouter } from './orchestrator/runtime-router.js';
 import { TaskExecutionRequest } from './orchestrator/types.js';
 import { TaskScheduler } from './scheduler/task-scheduler.js';
 import { WorkflowEngine } from './workflow/workflow-engine.js';
+import { WorkflowDAG } from './workflow/types.js';
 
 export class DesktopAgent {
   public readonly lifecycle: AgentLifecycleManager;
@@ -145,7 +146,7 @@ export class DesktopAgent {
         return this.taskScheduler.getScheduledTaskStatus(taskId, tenantId);
       });
       this.ipcManager.registerMethodHandler('workflow.execute', async (params) => {
-        return this.workflowEngine.executeWorkflow(params as any);
+        return this.workflowEngine.executeWorkflow(params as unknown as WorkflowDAG);
       });
       this.ipcManager.registerMethodHandler('workflow.cancel', async (params) => {
         const { workflowId, tenantId, reason } = params as {

@@ -300,7 +300,12 @@ export class WorkflowEngine implements IWorkflowEngine {
           continue;
         }
 
-        if (now > state.expiresAt || state.status === 'Completed' || state.status === 'Failed' || state.status === 'CANCELED') {
+        if (
+          now > state.expiresAt ||
+          state.status === 'Completed' ||
+          state.status === 'Failed' ||
+          state.status === 'CANCELED'
+        ) {
           await this.stateManager.delete(key);
           continue;
         }
@@ -350,7 +355,8 @@ export class WorkflowEngine implements IWorkflowEngine {
           taskId: dag.taskId,
           stepId: dag.workflowId,
           errorCode: 'LEASE_DENIED',
-          errorMessage: leaseDecision.reason || 'Lease validation failed at node dispatch boundary.',
+          errorMessage:
+            leaseDecision.reason || 'Lease validation failed at node dispatch boundary.',
           executionTimeMs: Date.now() - startTime,
         };
       }
