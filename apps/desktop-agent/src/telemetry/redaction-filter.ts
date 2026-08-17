@@ -16,7 +16,7 @@ export class RedactionFilter implements IRedactionFilter {
       let sanitized = this.redactionRegistry.redactText(text);
 
       // 2. Extra regex patterns for Bearer tokens, private keys, passwords, API keys
-      sanitized = sanitized.replace(/Bearer\s+[A-Za-z0-9._~+/]+=*/gi, 'Bearer [REDACTED_TOKEN]');
+      sanitized = sanitized.replace(/Bearer\s+[A-Za-z0-9._~+\/-]+=*/gi, 'Bearer [REDACTED_TOKEN]');
       sanitized = sanitized.replace(
         new RegExp(
           '-----BEGIN' +
@@ -29,7 +29,7 @@ export class RedactionFilter implements IRedactionFilter {
         '[REDACTED_PRIVATE_KEY]',
       );
       sanitized = sanitized.replace(
-        /(password|passwd|pwd|secret|api_key|token)["']?\s*[:=]\s*["']?([^"'\s]+)/gi,
+        /(password|passwd|pwd|secret|api_key|token)["']?\s*[:=]\s*["']?(?!(?:Bearer|\[REDACTED))([^"'\s]+)/gi,
         '$1: [REDACTED]',
       );
 
