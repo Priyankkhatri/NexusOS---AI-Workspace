@@ -159,6 +159,25 @@ export class ClipboardRuntimeManager {
   }
 
   /**
+   * Returns true if an auto-clear timer is currently scheduled.
+   */
+  public isAutoClearScheduled(): boolean {
+    return this.autoClearTimer !== null;
+  }
+
+  /**
+   * Explicitly cancels the active auto-clear timer without wiping the clipboard.
+   */
+  public cancelAutoClear(): boolean {
+    if (this.autoClearTimer) {
+      clearTimeout(this.autoClearTimer);
+      this.autoClearTimer = null;
+      return true;
+    }
+    return false;
+  }
+
+  /**
    * TOCTOU-safe auto-clearing check: wipes clipboard ONLY if the content hash matches lastWrittenHash.
    */
   public async performAutoClear(expectedHash: string): Promise<boolean> {
@@ -169,6 +188,10 @@ export class ClipboardRuntimeManager {
       if (currentHash === expectedHash) {
         await this.provider.clear();
         this.lastWrittenHash = null;
+        if (this.autoClearTimer) {
+          clearTimeout(this.autoClearTimer);
+          this.autoClearTimer = null;
+        }
         return true;
       }
       return false; // User altered clipboard; preserve user content
