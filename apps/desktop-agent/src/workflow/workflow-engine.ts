@@ -510,6 +510,12 @@ export class WorkflowEngine implements IWorkflowEngine {
     state: WorkflowExecutionState,
     stepContext: WorkflowStepContext,
   ): Promise<void> {
+    // Compensation idempotency guard: prevent duplicate compensation on re-entry
+    if (state.compensationTriggered) {
+      return;
+    }
+    state.compensationTriggered = true;
+
     const completedNodeIds = [...state.completedNodes].reverse(); // Reverse order compensation
 
     for (const nodeId of completedNodeIds) {

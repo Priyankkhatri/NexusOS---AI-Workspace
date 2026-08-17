@@ -64,6 +64,8 @@ export interface WorkflowExecutionState {
   createdAt: number;
   updatedAt: number;
   expiresAt: number;
+  /** Idempotency flag: set to true when compensation has been triggered to prevent duplicate execution */
+  compensationTriggered?: boolean;
 }
 
 export interface WorkflowMetrics {

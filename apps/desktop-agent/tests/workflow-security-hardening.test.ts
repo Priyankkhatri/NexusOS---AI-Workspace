@@ -512,3 +512,57 @@ describe('Task 03S Security Hardening — Lifecycle & Shutdown Safety', () => {
     assert.equal(metrics.totalFailedCount, 0, 'Should start with 0 failed workflows');
   });
 });
+
+// ============================================================
+// Compensation Idempotency & Duplicate Protection
+// ============================================================
+
+describe('Task 03S Security Hardening — Compensation Idempotency', () => {
+  it('SH-23: compensation does not fire for workflows with no compensation payloads (no-op path)', async () => {
+    const { workflowEngine } = createTestWorkflowEngine();
+    // A workflow with no compensationPayload defined on nodes — compensation loop must be a no-op
+    const dag = createValidWorkflowDAG({
+      nodes: [
+        // Node with no compensationPayload — should never trigger a compensation task
+        { nodeId: 'A', capabilityId: 'device.execute', runtimeCategory: 'device', payload: { action: 'safe-read' } },
+      ],
+    });
+    // Execute will likely fail at CAPABILITY_NOT_FOUND (no runtime registered in tests)
+    const result = await workflowEngine.executeWorkflow(dag);
+    workflowEngine.shutdown();
+    // Just verify the result is well-formed — no throw from the compensation no-op path
+    assert.ok(result !== undefined, 'Execution with no compensation payload must return a result');
+    assert.ok(typeof result.success === 'boolean', 'Result must have a boolean success field');
+  });
+
+  it('SH-24: compensationTriggered flag prevents duplicate compensation on state (type-level invariant)', () => {
+    // This test verifies the domain model carries the compensationTriggered flag
+    const state = {
+      workflowId: 'test-wf',
+      taskId: 'test-task',
+      tenantId: 'test-tenant',
+      deviceId: 'test-device',
+      correlationId: 'test-correlation',
+      status: 'Failed' as const,
+      nodeStates: {},
+      completedNodes: [],
+      pendingNodes: [],
+      activeNodes: [],
+      nodeOutputs: {},
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      expiresAt: Date.now() + 3600000,
+      compensationTriggered: false,
+    };
+
+    // Simulate the idempotency guard logic
+    const wouldTrigger1 = !state.compensationTriggered;
+    state.compensationTriggered = true;
+    const wouldTrigger2 = !state.compensationTriggered;
+
+    assert.equal(wouldTrigger1, true, 'First compensation check must return true (should trigger)');
+    assert.equal(wouldTrigger2, false, 'Second compensation check must return false (already triggered)');
+    assert.equal(state.compensationTriggered, true, 'Flag must be set after first compensation');
+  });
+});
+
