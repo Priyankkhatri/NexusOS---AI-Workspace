@@ -1,4 +1,5 @@
 import { ExecutionLeaseBoundary } from '../../permissions/lease-boundary.js';
+import { RedactionFilter } from '../../telemetry/redaction-filter.js';
 import { HardwareDetector } from './hardware-detector.js';
 import { ModelCacheManager } from './model-cache-manager.js';
 import { ProviderAdapterFactory } from './provider-adapters.js';
@@ -35,6 +36,7 @@ export class ModelRuntimeManager {
   private readonly resourceGovernor: ResourceGovernor;
   private readonly modelCacheManager: ModelCacheManager;
   private readonly adapterFactory: ProviderAdapterFactory;
+  private readonly redactionFilter: RedactionFilter;
   private isShutdown = false;
 
   private readonly loadedModelStates = new Map<string, ModelLifecycleState>();
@@ -47,11 +49,13 @@ export class ModelRuntimeManager {
     customResourceGovernor?: ResourceGovernor,
     customCacheManager?: ModelCacheManager,
     customAdapterFactory?: ProviderAdapterFactory,
+    customRedactionFilter?: RedactionFilter,
   ) {
     this.hardwareDetector = customHardwareDetector ?? new HardwareDetector();
     this.resourceGovernor = customResourceGovernor ?? new ResourceGovernor();
     this.modelCacheManager = customCacheManager ?? new ModelCacheManager(baseDir);
     this.adapterFactory = customAdapterFactory ?? new ProviderAdapterFactory();
+    this.redactionFilter = customRedactionFilter ?? new RedactionFilter();
   }
 
   public async initialize(): Promise<void> {
@@ -168,25 +172,33 @@ export class ModelRuntimeManager {
           return;
         }
 
+        const rawText = chunk.text || '';
+        const sanitizedText = this.redactionFilter.redactString(rawText);
+        const wasRedacted = sanitizedText !== rawText || chunk.redacted;
+
         totalTokens += chunk.tokenCount;
-        totalBytes += Buffer.byteLength(chunk.text, 'utf8');
+        totalBytes += Buffer.byteLength(sanitizedText, 'utf8');
 
         // Enforce hard maximum token and byte limits
         if (totalTokens >= MAX_OUTPUT_TOKENS || totalBytes >= MAX_OUTPUT_BYTES) {
           yield {
             requestId: validatedRequest.requestId,
             chunkIndex: chunk.chunkIndex,
-            text: chunk.text,
+            text: sanitizedText,
             tokenCount: chunk.tokenCount,
             isFinal: true,
             finishReason: 'length',
-            redacted: chunk.redacted,
+            redacted: wasRedacted,
           };
           this.activeInferenceStates.set(validatedRequest.requestId, 'Completed');
           return;
         }
 
-        yield chunk;
+        yield {
+          ...chunk,
+          text: sanitizedText,
+          redacted: wasRedacted,
+        };
 
         if (chunk.isFinal) {
           this.activeInferenceStates.set(validatedRequest.requestId, 'Completed');
