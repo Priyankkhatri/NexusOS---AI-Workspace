@@ -26,11 +26,17 @@ import {
 } from './types.js';
 import { RuntimeRouter } from './runtime-router.js';
 
+interface TaskRecord {
+  status: TaskStatus;
+  tenantId: string;
+}
+
 export class AgentOrchestrator implements IAgentOrchestrator {
   private activeCount = 0;
   private readonly maxConcurrency = 5;
+  private readonly maxReplayCacheSize = 10000;
   private readonly processedMessageIds = new Map<string, number>();
-  private readonly taskStateMap = new Map<string, TaskStatus>();
+  private readonly taskStateMap = new Map<string, TaskRecord>();
   private readonly activeCancellations = new Map<string, AbortController>();
   private stateMutexPromise: Promise<void> = Promise.resolve();
 
@@ -61,15 +67,41 @@ export class AgentOrchestrator implements IAgentOrchestrator {
     return this.activeCount;
   }
 
-  public getTaskStatus(taskId: string): TaskStatus | null {
-    return this.taskStateMap.get(taskId) || null;
+  public getTaskStatus(taskId: string, tenantId?: string): TaskStatus | null {
+    const record = this.taskStateMap.get(taskId);
+    if (!record) {
+      return null;
+    }
+    if (tenantId && record.tenantId !== tenantId) {
+      return null; // VULNERABILITY-Q08: Fail closed on cross-tenant status probing
+    }
+    return record.status;
   }
 
-  public async cancelTask(taskId: string, _reason?: string): Promise<boolean> {
+  public async cancelTask(
+    taskId: string,
+    tenantIdOrReason?: string,
+    _reason?: string,
+  ): Promise<boolean> {
+    // Handle overload: cancelTask(taskId, tenantId, reason) vs cancelTask(taskId, reason)
+    let targetTenantId: string | undefined;
+    if (tenantIdOrReason && tenantIdOrReason.includes('-')) {
+      targetTenantId = tenantIdOrReason;
+    }
+
     return this.withTaskStateLock(async () => {
-      const currentStatus = this.taskStateMap.get(taskId);
+      const record = this.taskStateMap.get(taskId);
+      if (!record) {
+        return false;
+      }
+
+      // VULNERABILITY-Q07: Reject cross-tenant task cancellation
+      if (targetTenantId && record.tenantId !== targetTenantId) {
+        return false;
+      }
+
+      const currentStatus = record.status;
       if (
-        !currentStatus ||
         currentStatus === 'COMPLETED' ||
         currentStatus === 'FAILED' ||
         currentStatus === 'CANCELED'
@@ -77,7 +109,7 @@ export class AgentOrchestrator implements IAgentOrchestrator {
         return false;
       }
 
-      this.taskStateMap.set(taskId, 'CANCELED');
+      this.taskStateMap.set(taskId, { status: 'CANCELED', tenantId: record.tenantId });
       const controller = this.activeCancellations.get(taskId);
       if (controller) {
         controller.abort();
@@ -98,7 +130,7 @@ export class AgentOrchestrator implements IAgentOrchestrator {
   public async executeTask(request: TaskExecutionRequest): Promise<TaskExecutionResult> {
     const startTime = Date.now();
 
-    // 1. VULNERABILITY-Q04: Lifecycle Readiness Gate Check
+    // 1. VULNERABILITY-Q04: Lifecycle Readiness Gate Check (Entry)
     if (this.getAgentLifecycleState) {
       const state = this.getAgentLifecycleState();
       if (
@@ -117,7 +149,23 @@ export class AgentOrchestrator implements IAgentOrchestrator {
       }
     }
 
-    // 2. VULNERABILITY-Q02: Replay Attack Protection (15 min TTL)
+    // 2. VULNERABILITY-Q10: Reject Duplicate Active Task Execution (Collision Protection)
+    const existingRecord = this.taskStateMap.get(request.task_id);
+    if (
+      existingRecord &&
+      (existingRecord.status === 'RUNNING' || existingRecord.status === 'QUEUED')
+    ) {
+      return {
+        success: false,
+        taskId: request.task_id,
+        stepId: request.step_id,
+        errorCode: 'DUPLICATE_TASK_ID',
+        errorMessage: `Task ID '${request.task_id}' is already executing.`,
+        executionTimeMs: Date.now() - startTime,
+      };
+    }
+
+    // 3. VULNERABILITY-Q02 & Q09: Bounded Replay Attack Protection (15 min TTL, Bounded Map)
     const now = Date.now();
     this.pruneOldProcessedMessages(now);
 
@@ -139,7 +187,7 @@ export class AgentOrchestrator implements IAgentOrchestrator {
     }
     this.processedMessageIds.set(messageKey, now + 900000); // 15 min TTL
 
-    // 3. VULNERABILITY-Q01 & Q03: Lease Validation & Tenant/Device Binding
+    // 4. VULNERABILITY-Q01 & Q03: Lease Validation & Tenant/Device Binding
     const leaseDecision = await this.leaseBoundary.validateLease(request.leaseHeader, undefined);
 
     if (!leaseDecision.valid) {
@@ -168,7 +216,7 @@ export class AgentOrchestrator implements IAgentOrchestrator {
       };
     }
 
-    // 4. Runtime & Capability Match Resolution
+    // 5. Runtime & Capability Match Resolution
     if (!this.runtimeRouter.hasCapability(request.capabilityId)) {
       return {
         success: false,
@@ -196,7 +244,7 @@ export class AgentOrchestrator implements IAgentOrchestrator {
       };
     }
 
-    // 5. Timeout Validation (Default 30s, Max 300s)
+    // 6. Timeout Validation (Default 30s, Max 300s)
     const timeoutMs = request.timeoutMs ?? 30000;
     if (timeoutMs <= 0 || timeoutMs > 300000) {
       return {
@@ -209,7 +257,26 @@ export class AgentOrchestrator implements IAgentOrchestrator {
       };
     }
 
-    // 6. Synchronous Concurrency Reservation (Prevents O11 Race)
+    // 7. VULNERABILITY-Q13: TOCTOU Lifecycle Gate Re-check Before Concurrency Reservation
+    if (this.getAgentLifecycleState) {
+      const state = this.getAgentLifecycleState();
+      if (
+        state === AgentLifecycleState.STOPPING ||
+        state === AgentLifecycleState.STOPPED ||
+        state === AgentLifecycleState.FAILED
+      ) {
+        return {
+          success: false,
+          taskId: request.task_id,
+          stepId: request.step_id,
+          errorCode: 'LIFECYCLE_DENIED',
+          errorMessage: 'Agent entered shutdown state during execution setup.',
+          executionTimeMs: Date.now() - startTime,
+        };
+      }
+    }
+
+    // 8. Synchronous Concurrency Reservation (Prevents O11 Race)
     if (this.activeCount >= this.maxConcurrency) {
       return {
         success: false,
@@ -225,9 +292,12 @@ export class AgentOrchestrator implements IAgentOrchestrator {
     this.activeCount++;
 
     try {
-      // 7. Checkpoint RUNNING state
+      // Checkpoint RUNNING state
       await this.withTaskStateLock(async () => {
-        this.taskStateMap.set(request.task_id, 'RUNNING');
+        this.taskStateMap.set(request.task_id, {
+          status: 'RUNNING',
+          tenantId: request.leaseHeader.tenant_id,
+        });
       });
 
       if (this.stateManager) {
@@ -255,7 +325,7 @@ export class AgentOrchestrator implements IAgentOrchestrator {
         });
       }
 
-      // 8. Execute Tool Runtime with Cooperative Cancellation & Timeout
+      // 9. VULNERABILITY-Q11: Execute Tool Runtime with Propagated Abort Signal & Timeout
       const abortController = new AbortController();
       this.activeCancellations.set(request.task_id, abortController);
 
@@ -272,26 +342,31 @@ export class AgentOrchestrator implements IAgentOrchestrator {
       let executionOutput: unknown;
       let executionError: Error | undefined;
 
+      const runtimePayload = {
+        ...request.payload,
+        signal: abortController.signal,
+      };
+
       try {
         const category = request.runtimeCategory.toLowerCase();
         if (category === 'filesystem' && this.filesystemRuntime) {
           executionOutput = await (
             this.filesystemRuntime as unknown as { execute: (p: unknown) => Promise<unknown> }
-          ).execute(request.payload);
+          ).execute(runtimePayload);
         } else if (category === 'terminal' && this.terminalRuntime) {
           executionOutput = await (
             this.terminalRuntime as unknown as { execute: (p: unknown) => Promise<unknown> }
-          ).execute(request.payload);
+          ).execute(runtimePayload);
         } else if (category === 'browser' && this.browserRuntime) {
           executionOutput = await (
             this.browserRuntime as unknown as { execute: (p: unknown) => Promise<unknown> }
-          ).execute(request.payload);
+          ).execute(runtimePayload);
         } else if (category === 'plugin' && this.pluginRuntime) {
           executionOutput = await (
             this.pluginRuntime as unknown as { execute: (p: unknown) => Promise<unknown> }
-          ).execute(request.payload);
+          ).execute(runtimePayload);
         } else if (category === 'device' && this.deviceRuntime) {
-          executionOutput = await this.deviceRuntime.execute(request.payload as never);
+          executionOutput = await this.deviceRuntime.execute(runtimePayload as never);
         } else if (category === 'memory' && this.memoryCache) {
           executionOutput = await this.memoryCache.get(
             (request.payload.key as string) || 'default_key',
@@ -316,12 +391,14 @@ export class AgentOrchestrator implements IAgentOrchestrator {
         this.activeCancellations.delete(request.task_id);
       }
 
-      // 9. VULNERABILITY-Q05: Output Redaction
+      // 10. VULNERABILITY-Q12: String and Object Output Redaction
       let redactedOutput: unknown = executionOutput;
       let redactedErrorMessage: string | undefined = executionError?.message;
 
       if (this.redactionFilter) {
-        if (executionOutput && typeof executionOutput === 'object') {
+        if (typeof executionOutput === 'string') {
+          redactedOutput = this.redactionFilter.redactString(executionOutput);
+        } else if (executionOutput && typeof executionOutput === 'object') {
           redactedOutput = this.redactionFilter.redactObject(executionOutput);
         }
         if (redactedErrorMessage) {
@@ -329,9 +406,10 @@ export class AgentOrchestrator implements IAgentOrchestrator {
         }
       }
 
-      // 10. VULNERABILITY-Q06: Deterministic Cancellation / Completion Resolution
+      // 11. Deterministic Cancellation / Completion Resolution
       return await this.withTaskStateLock(async () => {
-        const currentStatus = this.taskStateMap.get(request.task_id);
+        const currentRecord = this.taskStateMap.get(request.task_id);
+        const currentStatus = currentRecord?.status;
         const isCanceled =
           currentStatus === 'CANCELED' || (abortController.signal.aborted && !isTimedOut);
 
@@ -385,7 +463,10 @@ export class AgentOrchestrator implements IAgentOrchestrator {
           };
         }
 
-        this.taskStateMap.set(request.task_id, finalStatus);
+        this.taskStateMap.set(request.task_id, {
+          status: finalStatus,
+          tenantId: request.leaseHeader.tenant_id,
+        });
 
         if (this.stateManager) {
           await this.stateManager.set(`task_checkpoint:${request.task_id}`, {
@@ -445,11 +526,18 @@ export class AgentOrchestrator implements IAgentOrchestrator {
   }
 
   private pruneOldProcessedMessages(now: number): void {
-    if (this.processedMessageIds.size > 1000) {
-      for (const [key, expiresAt] of this.processedMessageIds.entries()) {
-        if (now > expiresAt) {
-          this.processedMessageIds.delete(key);
-        }
+    // 1. Delete expired entries
+    for (const [key, expiresAt] of this.processedMessageIds.entries()) {
+      if (now > expiresAt) {
+        this.processedMessageIds.delete(key);
+      }
+    }
+    // 2. VULNERABILITY-Q09: Hard cap size ceiling (FIFO eviction if over 10000 entries)
+    if (this.processedMessageIds.size >= this.maxReplayCacheSize) {
+      const keys = Array.from(this.processedMessageIds.keys());
+      const toEvict = keys.slice(0, 2000);
+      for (const k of toEvict) {
+        this.processedMessageIds.delete(k);
       }
     }
   }

@@ -275,6 +275,211 @@ describe('Task 03Q Agent Orchestrator — Security Hardening & Vulnerability Aud
     }
   });
 
+  it('VULNERABILITY-Q07: rejects cross-tenant task cancellation requests', async () => {
+    const { orchestrator } = createTestOrchestrator();
+    const taskId = 'task-q07-tenantA';
+    const leaseHeader = createValidLeaseHeader({ tenant_id: sampleIdentity.pairedTenantId });
+
+    (orchestrator as unknown as Record<string, unknown>)['deviceRuntime'] = {
+      execute: () => new Promise((resolve) => setTimeout(resolve, 200)),
+    };
+
+    const execPromise = orchestrator.executeTask({
+      task_id: taskId,
+      step_id: 'step-1',
+      correlation_id: 'corr-q07',
+      leaseHeader,
+      capabilityId: 'device.execute',
+      runtimeCategory: 'device',
+      payload: {},
+    });
+
+    await new Promise((r) => setTimeout(r, 10)); // Ensure task reaches RUNNING state
+
+    // Foreign tenant attempts to cancel tenant A's task
+    const foreignTenantId = '33333333-3333-4333-8333-333333333333';
+    const cancelRes = await orchestrator.cancelTask(taskId, foreignTenantId, 'Malicious cancel');
+
+    assert.equal(cancelRes, false, 'Cross-tenant task cancellation MUST be rejected');
+
+    const result = await execPromise;
+    assert.equal(result.success, true);
+    assert.equal(orchestrator.getTaskStatus(taskId, sampleIdentity.pairedTenantId), 'COMPLETED');
+  });
+
+  it('VULNERABILITY-Q08: rejects cross-tenant task status probing requests', async () => {
+    const { orchestrator } = createTestOrchestrator();
+    const taskId = 'task-q08-secret';
+    const leaseHeader = createValidLeaseHeader({ tenant_id: sampleIdentity.pairedTenantId });
+
+    await orchestrator.executeTask({
+      task_id: taskId,
+      step_id: 'step-1',
+      correlation_id: 'corr-q08',
+      leaseHeader,
+      capabilityId: 'device.execute',
+      runtimeCategory: 'device',
+      payload: {},
+    });
+
+    // Valid tenant status query
+    const validStatus = orchestrator.getTaskStatus(taskId, sampleIdentity.pairedTenantId);
+    assert.equal(validStatus, 'COMPLETED');
+
+    // Foreign tenant status query
+    const foreignTenantId = '44444444-4444-4444-8444-444444444444';
+    const probedStatus = orchestrator.getTaskStatus(taskId, foreignTenantId);
+    assert.equal(probedStatus, null, 'Cross-tenant task status query MUST return null');
+  });
+
+  it('VULNERABILITY-Q09: enforces bounded replay cache size ceiling under high volume request flooding', async () => {
+    const { orchestrator } = createTestOrchestrator();
+    const leaseHeader = createValidLeaseHeader();
+
+    // Populate replay cache with 10,500 unique message IDs
+    const now = Date.now();
+    const cacheMap = (orchestrator as unknown as Record<string, Map<string, number>>)[
+      'processedMessageIds'
+    ];
+
+    for (let i = 0; i < 10500; i++) {
+      cacheMap.set(`msg-${i}`, now + 900000);
+    }
+
+    // Trigger prune
+    await orchestrator.executeTask({
+      task_id: 'task-q09-flood',
+      step_id: 'step-1',
+      correlation_id: 'corr-q09',
+      leaseHeader,
+      capabilityId: 'device.execute',
+      runtimeCategory: 'device',
+      payload: {},
+    });
+
+    assert.ok(
+      cacheMap.size <= 10000,
+      `Replay cache size (${cacheMap.size}) MUST be bounded to maximum 10,000 items`,
+    );
+  });
+
+  it('VULNERABILITY-Q10: rejects duplicate active task execution with DUPLICATE_TASK_ID error', async () => {
+    const { orchestrator } = createTestOrchestrator();
+    const taskId = 'task-q10-dup';
+    const leaseHeader = createValidLeaseHeader();
+
+    (orchestrator as unknown as Record<string, unknown>)['deviceRuntime'] = {
+      execute: () => new Promise((resolve) => setTimeout(resolve, 200)),
+    };
+
+    const task1Promise = orchestrator.executeTask({
+      task_id: taskId,
+      step_id: 'step-1',
+      correlation_id: 'corr-1',
+      leaseHeader,
+      capabilityId: 'device.execute',
+      runtimeCategory: 'device',
+      payload: {},
+    });
+
+    await new Promise((r) => setTimeout(r, 10)); // Ensure task 1 is RUNNING
+
+    // Duplicate execution request with same task_id
+    const task2Res = await orchestrator.executeTask({
+      task_id: taskId,
+      step_id: 'step-2',
+      correlation_id: 'corr-2',
+      leaseHeader,
+      capabilityId: 'device.execute',
+      runtimeCategory: 'device',
+      payload: {},
+    });
+
+    assert.equal(task2Res.success, false);
+    assert.equal(task2Res.errorCode, 'DUPLICATE_TASK_ID');
+
+    const task1Res = await task1Promise;
+    assert.equal(task1Res.success, true);
+  });
+
+  it('VULNERABILITY-Q11: passes abort signal to runtime payload for cooperative cancellation', async () => {
+    const { orchestrator } = createTestOrchestrator();
+    const taskId = 'task-q11-abort';
+    const leaseHeader = createValidLeaseHeader();
+
+    let capturedSignal: AbortSignal | undefined;
+
+    (orchestrator as unknown as Record<string, unknown>)['deviceRuntime'] = {
+      execute: (payload: { signal?: AbortSignal }) => {
+        capturedSignal = payload?.signal;
+        return Promise.resolve({ executed: true });
+      },
+    };
+
+    const result = await orchestrator.executeTask({
+      task_id: taskId,
+      step_id: 'step-1',
+      correlation_id: 'corr-q11',
+      leaseHeader,
+      capabilityId: 'device.execute',
+      runtimeCategory: 'device',
+      payload: {},
+    });
+
+    assert.equal(result.success, true);
+    assert.ok(capturedSignal, 'AbortSignal MUST be passed in payload to runtime');
+  });
+
+  it('VULNERABILITY-Q12: redacts primitive string runtime outputs containing sensitive token secrets', async () => {
+    const redactionFilter = new RedactionFilter();
+    const { orchestrator } = createTestOrchestrator(AgentLifecycleState.READY, redactionFilter);
+    const leaseHeader = createValidLeaseHeader();
+
+    // Mock device runtime returning a primitive string output containing a secret
+    (orchestrator as unknown as Record<string, unknown>)['deviceRuntime'] = {
+      execute: () => Promise.resolve('Output contains sensitive key api_key=sk-proj-12345678'),
+    };
+
+    const result = await orchestrator.executeTask({
+      task_id: 'task-q12-string-secret',
+      step_id: 'step-1',
+      correlation_id: 'corr-q12',
+      leaseHeader,
+      capabilityId: 'device.execute',
+      runtimeCategory: 'device',
+      payload: {},
+    });
+
+    assert.equal(result.success, true);
+    assert.equal(typeof result.output, 'string');
+    assert.equal((result.output as string).includes('sk-proj-12345678'), false);
+  });
+
+  it('VULNERABILITY-Q13: prevents TOCTOU gap if agent lifecycle state enters STOPPING during setup', async () => {
+    let currentState = AgentLifecycleState.READY;
+    const { orchestrator } = createTestOrchestrator(currentState);
+    // Replace getter to simulate transition to STOPPING during validateLease
+    (orchestrator as unknown as Record<string, unknown>)['getAgentLifecycleState'] = () => {
+      const state = currentState;
+      currentState = AgentLifecycleState.STOPPING;
+      return state;
+    };
+
+    const leaseHeader = createValidLeaseHeader();
+    const result = await orchestrator.executeTask({
+      task_id: 'task-q13-toctou',
+      step_id: 'step-1',
+      correlation_id: 'corr-q13',
+      leaseHeader,
+      capabilityId: 'device.execute',
+      runtimeCategory: 'device',
+      payload: {},
+    });
+
+    assert.equal(result.success, false);
+    assert.equal(result.errorCode, 'LIFECYCLE_DENIED');
+  });
+
   it('rejects execution when runtime category does not match declared capability ID', async () => {
     const { orchestrator } = createTestOrchestrator();
     const leaseHeader = createValidLeaseHeader();

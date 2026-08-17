@@ -33,7 +33,7 @@ export interface IRuntimeRouter {
 
 export interface IAgentOrchestrator {
   executeTask(request: TaskExecutionRequest): Promise<TaskExecutionResult>;
-  cancelTask(taskId: string, reason?: string): Promise<boolean>;
-  getTaskStatus(taskId: string): TaskStatus | null;
+  cancelTask(taskId: string, tenantId?: string, reason?: string): Promise<boolean>;
+  getTaskStatus(taskId: string, tenantId?: string): TaskStatus | null;
   getActiveCount(): number;
 }
