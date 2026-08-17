@@ -1,5 +1,5 @@
 import { ExecutionLeaseHeader } from '@nexusos/contracts';
-import { TaskExecutionRequest, TaskExecutionResult, TaskStatus } from '../orchestrator/types.js';
+import { TaskExecutionResult, TaskStatus } from '../orchestrator/types.js';
 
 export type WorkflowNodeStatus =
   | 'Received'
