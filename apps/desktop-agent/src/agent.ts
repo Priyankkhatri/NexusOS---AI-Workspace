@@ -62,6 +62,48 @@ export class DesktopAgent {
   ) {
     this.lifecycle = new AgentLifecycleManager();
     this.capabilityRegistry = new CapabilityRegistry();
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'clipboard.read',
+      category: 'runtime',
+      description: 'Read system clipboard content under lease policy authorization',
+      isDangerous: true,
+      requiredScope: 'clipboard:read',
+    });
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'clipboard.write',
+      category: 'runtime',
+      description: 'Write sanitized text to system clipboard with TTL auto-clear',
+      isDangerous: true,
+      requiredScope: 'clipboard:write',
+    });
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'clipboard.clear',
+      category: 'runtime',
+      description: 'Clear system clipboard content',
+      isDangerous: false,
+      requiredScope: 'clipboard:write',
+    });
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'ide.getContext',
+      category: 'runtime',
+      description: 'Retrieve IDE context snapshot and active editor selection',
+      isDangerous: false,
+      requiredScope: 'ide:read',
+    });
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'ide.applyDiff',
+      category: 'runtime',
+      description: 'Apply workspace-constrained diff patch to target file',
+      isDangerous: true,
+      requiredScope: 'ide:write',
+    });
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'ide.getDiagnostics',
+      category: 'runtime',
+      description: 'Retrieve IDE error and warning diagnostics items',
+      isDangerous: false,
+      requiredScope: 'ide:read',
+    });
     this.runtimeRegistry =
       customRuntimeRegistry || new RuntimeRegistry(new PluginExecutionPolicy());
     this.isolationBoundary = new SandboxIsolationBoundary();
