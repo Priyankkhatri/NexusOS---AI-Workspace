@@ -103,6 +103,13 @@ export class ClipboardRuntimeManager {
       );
     }
 
+    if (parsed.buffer && parsed.buffer.length > MAX_CLIPBOARD_IMAGE_BYTES) {
+      throw new ClipboardRuntimeError(
+        `Image buffer size ${parsed.buffer.length} bytes exceeds maximum limit of ${MAX_CLIPBOARD_IMAGE_BYTES} bytes.`,
+        'OVERSIZED_PAYLOAD',
+      );
+    }
+
     try {
       const rawText = parsed.text || parsed.buffer?.toString('utf-8') || '';
       
