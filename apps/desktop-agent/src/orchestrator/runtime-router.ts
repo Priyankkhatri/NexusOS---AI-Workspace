@@ -14,7 +14,7 @@ export class RuntimeRouter implements IRuntimeRouter {
 
   constructor(
     private readonly capabilityRegistry: CapabilityRegistry,
-    private readonly runtimeRegistry: RuntimeRegistry,
+    private readonly _runtimeRegistry?: RuntimeRegistry,
   ) {}
 
   public hasCapability(capabilityId: string): boolean {

@@ -35,7 +35,7 @@ export class AgentOrchestrator implements IAgentOrchestrator {
   private stateMutexPromise: Promise<void> = Promise.resolve();
 
   constructor(
-    private readonly config: DesktopAgentConfig,
+    private readonly _config: DesktopAgentConfig,
     private readonly identityProvider: AgentIdentityProvider,
     private readonly controlPlaneClient: ControlPlaneClient,
     private readonly leaseBoundary: ExecutionLeaseBoundary,
@@ -45,7 +45,7 @@ export class AgentOrchestrator implements IAgentOrchestrator {
     private readonly telemetrySpool?: TelemetrySpool,
     private readonly redactionFilter?: RedactionFilter,
     private readonly notificationManager?: NotificationManager,
-    private readonly secretsVault?: SecretsVaultClient,
+    private readonly _secretsVault?: SecretsVaultClient,
     private readonly getAgentLifecycleState?: () => AgentLifecycleState,
     private readonly filesystemRuntime?: FilesystemRuntime,
     private readonly terminalRuntime?: TerminalRuntime,
@@ -272,7 +272,21 @@ export class AgentOrchestrator implements IAgentOrchestrator {
       try {
         const category = request.runtimeCategory.toLowerCase();
         if (category === 'filesystem' && this.filesystemRuntime) {
-          executionOutput = await (this.filesystemRuntime as never);
+          executionOutput = await (
+            this.filesystemRuntime as unknown as { execute: (p: unknown) => Promise<unknown> }
+          ).execute(request.payload);
+        } else if (category === 'terminal' && this.terminalRuntime) {
+          executionOutput = await (
+            this.terminalRuntime as unknown as { execute: (p: unknown) => Promise<unknown> }
+          ).execute(request.payload);
+        } else if (category === 'browser' && this.browserRuntime) {
+          executionOutput = await (
+            this.browserRuntime as unknown as { execute: (p: unknown) => Promise<unknown> }
+          ).execute(request.payload);
+        } else if (category === 'plugin' && this.pluginRuntime) {
+          executionOutput = await (
+            this.pluginRuntime as unknown as { execute: (p: unknown) => Promise<unknown> }
+          ).execute(request.payload);
         } else if (category === 'device' && this.deviceRuntime) {
           executionOutput = await this.deviceRuntime.execute(request.payload as never);
         } else if (category === 'memory' && this.memoryCache) {

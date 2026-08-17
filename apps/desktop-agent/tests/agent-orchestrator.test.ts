@@ -105,6 +105,13 @@ describe('Task 03Q Agent Orchestrator — Functional & Integration Verification'
       mockConfig,
       identityProvider,
       leaseBoundary,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
       mockTransport,
     );
     const memoryCache = new MemoryCacheManager(
@@ -208,7 +215,7 @@ describe('Task 03Q Agent Orchestrator — Functional & Integration Verification'
       timeoutMs: 5000,
     };
 
-    (orchestrator as never)['deviceRuntime'] = {
+    (orchestrator as unknown as Record<string, unknown>)['deviceRuntime'] = {
       execute: () => new Promise((resolve) => setTimeout(resolve, 200)),
     };
 
@@ -239,7 +246,7 @@ describe('Task 03Q Agent Orchestrator — Functional & Integration Verification'
     };
 
     // Replace device runtime with a slow implementation
-    (orchestrator as never)['deviceRuntime'] = {
+    (orchestrator as unknown as Record<string, unknown>)['deviceRuntime'] = {
       execute: () => new Promise((resolve) => setTimeout(resolve, 500)),
     };
 
@@ -254,7 +261,7 @@ describe('Task 03Q Agent Orchestrator — Functional & Integration Verification'
     const leaseHeader = createValidLeaseHeader();
 
     // Fill up 5 concurrent execution slots
-    (orchestrator as never)['activeCount'] = 5;
+    (orchestrator as unknown as Record<string, unknown>)['activeCount'] = 5;
 
     const request: TaskExecutionRequest = {
       task_id: 'task-concurrency-exceeded',

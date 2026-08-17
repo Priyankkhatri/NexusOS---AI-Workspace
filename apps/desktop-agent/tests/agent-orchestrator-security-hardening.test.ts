@@ -107,6 +107,13 @@ describe('Task 03Q Agent Orchestrator — Security Hardening & Vulnerability Aud
       mockConfig,
       identityProvider,
       leaseBoundary,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
       mockTransport,
     );
 
