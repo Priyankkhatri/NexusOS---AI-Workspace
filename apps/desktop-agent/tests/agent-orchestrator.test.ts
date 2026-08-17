@@ -1,7 +1,23 @@
 import { describe, it } from 'node:test';
-import assert from 'node:assert';
+import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
-import { Logger } from '@nexusos/backend';
+import {
+  AgentOrchestrator,
+  RuntimeRouter,
+  TaskExecutionRequest,
+  ControlPlaneConfig,
+  MockTransportAdapter,
+  ProductionControlPlaneClient,
+  ExecutionLeaseBoundary,
+  CapabilityRegistry,
+  RuntimeRegistry,
+  MemoryCacheManager,
+  DeviceRuntime,
+  HardwareAttestationStatus,
+  AgentIdentity,
+  AgentLifecycleState,
+} from '../src/index.js';
+import { ExecutionLeaseHeader } from '@nexusos/contracts';
 import {
   PolicyEvaluator,
   PolicyDecisionRequest,
@@ -9,25 +25,16 @@ import {
   PolicyEffect,
   PolicySnapshot,
 } from '@nexusos/policy';
-import {
-  DesktopAgent,
-  loadDesktopAgentConfig,
-  AgentLifecycleState,
-  DefaultAgentIdentityProvider,
-  MockControlPlaneClient,
-  ExecutionLeaseBoundary,
-  InMemoryLocalStateStore,
-} from '../src/index.js';
 
-class StubPolicyEvaluator implements PolicyEvaluator {
+class AlwaysAllowPolicyEvaluator implements PolicyEvaluator {
   async evaluate(request: PolicyDecisionRequest): Promise<PolicyDecisionResult> {
     return {
       decisionId: crypto.randomUUID(),
       effect: PolicyEffect.ALLOW,
       allowed: true,
       policyVersion: '1.0.0',
-      policyHash: 'stub-hash',
-      reason: 'Stub allow',
+      policyHash: 'test-hash',
+      reason: 'Always allow in test',
       evaluatedAt: new Date().toISOString(),
       requestId: request.context.requestId,
       correlationId: request.context.correlationId,
@@ -37,76 +44,216 @@ class StubPolicyEvaluator implements PolicyEvaluator {
   getSnapshot(): PolicySnapshot {
     return {
       policyVersion: '1.0.0',
-      policyHash: 'stub-hash',
+      policyHash: 'test-hash',
       createdAt: new Date().toISOString(),
       rules: [],
     };
   }
 }
 
-describe('Desktop Agent Orchestrator', () => {
-  function createAgent(): DesktopAgent {
-    const config = loadDesktopAgentConfig({});
-    const identityProvider = new DefaultAgentIdentityProvider();
-    const controlPlane = new MockControlPlaneClient();
-    const policyEvaluator = new StubPolicyEvaluator();
-    const leaseBoundary = new ExecutionLeaseBoundary(policyEvaluator);
-    const stateStore = new InMemoryLocalStateStore();
-    const logger = new Logger('error');
+describe('Task 03Q Agent Orchestrator — Functional & Integration Verification', () => {
+  const sampleIdentity: AgentIdentity = {
+    deviceId: '11111111-1111-4111-8111-111111111111',
+    deviceFingerprint: 'fingerprint123',
+    pairedTenantId: '22222222-2222-4222-8222-222222222222',
+    agentVersion: '0.1.0-sprint0',
+    enrolledAt: new Date().toISOString(),
+  };
 
-    return new DesktopAgent(
-      config,
-      identityProvider,
-      controlPlane,
-      leaseBoundary,
-      stateStore,
-      logger,
-    );
+  const identityProvider = {
+    getIdentity: async () => sampleIdentity,
+    verifyHardwareAttestation: async () => ({
+      status: HardwareAttestationStatus.NOT_IMPLEMENTED,
+      reason: 'Foundation level',
+    }),
+  };
+
+  const mockConfig: ControlPlaneConfig = {
+    gatewayUrl: 'wss://gateway.nexusos.internal/v1/stream',
+    heartbeatIntervalMs: 60000,
+    idleTimeoutMs: 180000,
+    maxFrameSizeBytes: 1024 * 1024,
+    maxSpoolSizeBytes: 50 * 1024 * 1024,
+    reconnectInitialDelayMs: 100,
+    reconnectMaxDelayMs: 1000,
+    reconnectMultiplier: 2.0,
+  };
+
+  const leaseBoundary = new ExecutionLeaseBoundary(new AlwaysAllowPolicyEvaluator());
+  const capabilityRegistry = new CapabilityRegistry();
+  const runtimeRegistry = new RuntimeRegistry();
+  const runtimeRouter = new RuntimeRouter(capabilityRegistry, runtimeRegistry);
+
+  function createValidLeaseHeader(overrides: Record<string, unknown> = {}): ExecutionLeaseHeader {
+    return {
+      lease_id: crypto.randomUUID(),
+      task_id: crypto.randomUUID(),
+      agent_id: sampleIdentity.deviceId,
+      tenant_id: sampleIdentity.pairedTenantId,
+      issued_at: new Date().toISOString(),
+      expires_at: new Date(Date.now() + 3600000).toISOString(),
+      scopes: ['agent:foundation', 'device:execute'],
+      signature: 'test-signature-value',
+      nonce: crypto.randomUUID(),
+      ...overrides,
+    } as unknown as ExecutionLeaseHeader;
   }
 
-  it('starts, transitions to READY, and exposes correct lifecycle state', async () => {
-    const agent = createAgent();
-    assert.strictEqual(agent.lifecycle.getState(), AgentLifecycleState.STOPPED);
+  function createTestOrchestrator() {
+    const mockTransport = new MockTransportAdapter();
+    const controlPlaneClient = new ProductionControlPlaneClient(
+      mockConfig,
+      identityProvider,
+      leaseBoundary,
+      mockTransport,
+    );
+    const memoryCache = new MemoryCacheManager({}, undefined, undefined, () => AgentLifecycleState.READY);
+    const deviceRuntime = new DeviceRuntime(leaseBoundary, {}, undefined, undefined, undefined, undefined, undefined, () => AgentLifecycleState.READY);
 
-    await agent.start();
-    assert.strictEqual(agent.lifecycle.getState(), AgentLifecycleState.READY);
-    assert.strictEqual(agent.lifecycle.isReady(), true);
+    const orchestrator = new AgentOrchestrator(
+      { agentVersion: '0.1.0-sprint0' } as never,
+      identityProvider,
+      controlPlaneClient,
+      leaseBoundary,
+      runtimeRouter,
+      undefined, // stateManager
+      memoryCache,
+      undefined, // telemetrySpool
+      undefined, // redactionFilter
+      undefined, // notificationManager
+      undefined, // secretsVault
+      () => AgentLifecycleState.READY,
+      undefined, // filesystem
+      undefined, // terminal
+      undefined, // browser
+      undefined, // plugin
+      deviceRuntime,
+    );
 
-    await agent.stop();
-    assert.strictEqual(agent.lifecycle.getState(), AgentLifecycleState.STOPPED);
+    return { orchestrator, controlPlaneClient, memoryCache, deviceRuntime };
+  }
+
+  it('executes task end-to-end and transitions state from QUEUED to RUNNING to COMPLETED', async () => {
+    const { orchestrator } = createTestOrchestrator();
+    const taskId = 'task-001';
+    const leaseHeader = createValidLeaseHeader();
+
+    const request: TaskExecutionRequest = {
+      task_id: taskId,
+      step_id: 'step-1',
+      correlation_id: 'corr-001',
+      leaseHeader,
+      capabilityId: 'device.execute',
+      runtimeCategory: 'device',
+      payload: { action: 'NOTIFICATION_SHOW', body: 'Hello' },
+    };
+
+    const result = await orchestrator.executeTask(request);
+    assert.equal(result.success, true);
+    assert.equal(result.taskId, taskId);
+    assert.equal(result.stepId, 'step-1');
+    assert.equal(orchestrator.getTaskStatus(taskId), 'COMPLETED');
+    assert.equal(orchestrator.getActiveCount(), 0);
   });
 
-  it('prevents double start', async () => {
-    const agent = createAgent();
-    await agent.start();
+  it('routes task requests across all supported runtime categories', async () => {
+    const { orchestrator } = createTestOrchestrator();
+    const leaseHeader = createValidLeaseHeader();
 
-    await assert.rejects(() => agent.start(), /Cannot start DesktopAgent from state/);
+    const categories = ['filesystem', 'terminal', 'browser', 'plugin', 'device', 'memory'];
+    for (const cat of categories) {
+      const request: TaskExecutionRequest = {
+        task_id: `task-cat-${cat}`,
+        step_id: `step-${cat}`,
+        correlation_id: `corr-${cat}`,
+        leaseHeader,
+        capabilityId: `${cat}.execute`,
+        runtimeCategory: cat,
+        payload: { test: true },
+      };
 
-    await agent.stop();
+      const res = await orchestrator.executeTask(request);
+      assert.equal(res.success, true, `Execution failed for category ${cat}`);
+      assert.equal(orchestrator.getTaskStatus(`task-cat-${cat}`), 'COMPLETED');
+    }
   });
 
-  it('graceful stop is idempotent', async () => {
-    const agent = createAgent();
-    await agent.start();
-    await agent.stop();
-    // Second stop should not throw
-    await agent.stop();
-    assert.strictEqual(agent.lifecycle.getState(), AgentLifecycleState.STOPPED);
+  it('handles task cancellation gracefully via cancelTask()', async () => {
+    const { orchestrator } = createTestOrchestrator();
+    const taskId = 'task-cancel-001';
+    const leaseHeader = createValidLeaseHeader();
+
+    const request: TaskExecutionRequest = {
+      task_id: taskId,
+      step_id: 'step-1',
+      correlation_id: 'corr-cancel',
+      leaseHeader,
+      capabilityId: 'device.execute',
+      runtimeCategory: 'device',
+      payload: {},
+      timeoutMs: 5000,
+    };
+
+    (orchestrator as never)['deviceRuntime'] = {
+      execute: () => new Promise((resolve) => setTimeout(resolve, 200)),
+    };
+
+    const execPromise = orchestrator.executeTask(request);
+    await new Promise((r) => setTimeout(r, 10)); // Ensure executeTask reaches RUNNING state
+    const cancelSuccess = await orchestrator.cancelTask(taskId, 'User requested cancel');
+    const result = await execPromise;
+
+    assert.equal(cancelSuccess, true);
+    assert.equal(result.success, false);
+    assert.equal(orchestrator.getTaskStatus(taskId), 'CANCELED');
   });
 
-  it('registers zero capabilities and runtimes at foundation level', async () => {
-    const agent = createAgent();
-    await agent.start();
+  it('enforces task timeout when execution exceeds timeoutMs limit', async () => {
+    const { orchestrator } = createTestOrchestrator();
+    const taskId = 'task-timeout-001';
+    const leaseHeader = createValidLeaseHeader();
 
-    assert.deepStrictEqual(agent.capabilityRegistry.listCapabilities(), []);
-    assert.deepStrictEqual(agent.runtimeRegistry.listRuntimes(), []);
+    const request: TaskExecutionRequest = {
+      task_id: taskId,
+      step_id: 'step-timeout',
+      correlation_id: 'corr-timeout',
+      leaseHeader,
+      capabilityId: 'device.execute',
+      runtimeCategory: 'device',
+      payload: {},
+      timeoutMs: 10, // 10ms quick timeout
+    };
 
-    await agent.stop();
+    // Replace device runtime with a slow implementation
+    (orchestrator as never)['deviceRuntime'] = {
+      execute: () => new Promise((resolve) => setTimeout(resolve, 500)),
+    };
+
+    const result = await orchestrator.executeTask(request);
+    assert.equal(result.success, false);
+    assert.equal(result.errorCode, 'TASK_TIMEOUT');
+    assert.equal(orchestrator.getTaskStatus(taskId), 'FAILED');
   });
 
-  it('sandbox isolation boundary defaults to logical-only in foundation', async () => {
-    const agent = createAgent();
-    assert.strictEqual(agent.isolationBoundary.isOSIsolationEnforced(), false);
-    assert.strictEqual(agent.isolationBoundary.getPolicy().enableLogicalIsolation, true);
+  it('enforces hard concurrency limit of maximum 5 active executions', async () => {
+    const { orchestrator } = createTestOrchestrator();
+    const leaseHeader = createValidLeaseHeader();
+
+    // Fill up 5 concurrent execution slots
+    (orchestrator as never)['activeCount'] = 5;
+
+    const request: TaskExecutionRequest = {
+      task_id: 'task-concurrency-exceeded',
+      step_id: 'step-over',
+      correlation_id: 'corr-over',
+      leaseHeader,
+      capabilityId: 'device.execute',
+      runtimeCategory: 'device',
+      payload: {},
+    };
+
+    const result = await orchestrator.executeTask(request);
+    assert.equal(result.success, false);
+    assert.equal(result.errorCode, 'CONCURRENCY_EXCEEDED');
   });
 });

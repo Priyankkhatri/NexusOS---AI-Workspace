@@ -281,7 +281,7 @@ export class ProductionControlPlaneClient implements ControlPlaneClient {
       await this.stateManager.set(`event_spool:${envelope.event_id}`, sanitizedEnvelope);
     }
 
-    if (this.telemetrySpool) {
+    if (this.telemetrySpool?.enqueueEventEnvelope) {
       this.telemetrySpool.enqueueEventEnvelope(sanitizedEnvelope);
     }
 

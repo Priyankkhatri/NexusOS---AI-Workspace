@@ -14,6 +14,9 @@ import { PluginExecutionPolicy } from './runtimes/plugin/policy.js';
 import { IPCManager } from './ipc/ipc-manager.js';
 import { MemoryCacheManager } from './memory/memory-cache-manager.js';
 import { DeviceRuntime, DeviceOperationRequest } from './runtimes/device/index.js';
+import { AgentOrchestrator } from './orchestrator/agent-orchestrator.js';
+import { RuntimeRouter } from './orchestrator/runtime-router.js';
+import { TaskExecutionRequest } from './orchestrator/types.js';
 
 export class DesktopAgent {
   public readonly lifecycle: AgentLifecycleManager;
@@ -23,6 +26,7 @@ export class DesktopAgent {
   public readonly ipcManager?: IPCManager;
   public readonly memoryCacheManager: MemoryCacheManager;
   public readonly deviceRuntime: DeviceRuntime;
+  public readonly orchestrator: AgentOrchestrator;
   private readonly logger: AgentLogger;
 
   private identity?: AgentIdentity;
@@ -38,6 +42,7 @@ export class DesktopAgent {
     customRuntimeRegistry?: RuntimeRegistry,
     customIpcManager?: IPCManager,
     customDeviceRuntime?: DeviceRuntime,
+    customOrchestrator?: AgentOrchestrator,
   ) {
     this.lifecycle = new AgentLifecycleManager();
     this.capabilityRegistry = new CapabilityRegistry();
@@ -62,11 +67,54 @@ export class DesktopAgent {
         undefined,
         () => this.lifecycle.getState(),
       );
+
+    const runtimeRouter = new RuntimeRouter(this.capabilityRegistry, this.runtimeRegistry);
+    this.orchestrator =
+      customOrchestrator ||
+      new AgentOrchestrator(
+        this.config,
+        this.identityProvider,
+        this.controlPlaneClient,
+        this.leaseBoundary,
+        runtimeRouter,
+        undefined,
+        this.memoryCacheManager,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        () => this.lifecycle.getState(),
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        this.deviceRuntime,
+      );
+
     this.logger = new AgentLogger(baseLogger);
 
     if (this.ipcManager) {
       this.ipcManager.registerMethodHandler('device.execute', async (params) => {
         return this.deviceRuntime.execute(params as unknown as DeviceOperationRequest);
+      });
+      this.ipcManager.registerMethodHandler('task.execute', async (params) => {
+        return this.orchestrator.executeTask(params as unknown as TaskExecutionRequest);
+      });
+      this.ipcManager.registerMethodHandler('task.cancel', async (params) => {
+        const { taskId, reason } = params as { taskId: string; reason?: string };
+        return this.orchestrator.cancelTask(taskId, reason);
+      });
+      this.ipcManager.registerMethodHandler('task.status', async (params) => {
+        const { taskId } = params as { taskId: string };
+        return this.orchestrator.getTaskStatus(taskId);
+      });
+    }
+
+    if (typeof this.controlPlaneClient.registerCommandHandler === 'function') {
+      this.controlPlaneClient.registerCommandHandler(async (envelope) => {
+        if (envelope.payload && typeof envelope.payload === 'object') {
+          await this.orchestrator.executeTask(envelope.payload as unknown as TaskExecutionRequest);
+        }
       });
     }
   }

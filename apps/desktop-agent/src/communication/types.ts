@@ -1,4 +1,4 @@
-import { EventEnvelope } from '@nexusos/contracts';
+import { EventEnvelope, ACPMessageEnvelope } from '@nexusos/contracts';
 import { AgentIdentity } from '../identity/agent-identity.js';
 
 export enum ConnectionState {
@@ -80,5 +80,6 @@ export interface ControlPlaneClient {
   sendHeartbeat(payload: HeartbeatPayload): Promise<boolean>;
   relayEvent(envelope: EventEnvelope): Promise<EventRelayResult>;
   getConnectionState(): ConnectionState;
+  registerCommandHandler?(handler: (envelope: ACPMessageEnvelope) => Promise<void>): void;
   disconnect(): Promise<void>;
 }
