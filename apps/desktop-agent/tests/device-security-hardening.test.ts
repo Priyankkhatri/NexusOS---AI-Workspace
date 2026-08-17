@@ -249,4 +249,128 @@ describe('Task 03O Device Runtime — Security Hardening & Vulnerability Audit',
     assert.equal(res.success, false);
     assert.equal(res.error?.category, 'VALIDATION');
   });
+
+  it('VULNERABILITY-O09: rejects device operations where request taskId does not match lease task_id', async () => {
+    const ctx = createRequestContext(['capability:clipboard:read']);
+    // Forge request taskId to mismatch lease.task_id
+    ctx.taskId = crypto.randomUUID();
+
+    const res = await deviceRuntime.execute({
+      operationName: DeviceOperationName.CLIPBOARD_READ,
+      context: ctx,
+    });
+
+    assert.equal(res.success, false);
+    assert.equal(res.error?.code, 'TASK_CONTEXT_MISMATCH');
+    assert.equal(res.error?.category, 'AUTHORIZATION');
+  });
+
+  it('VULNERABILITY-O10: denies clipboard:write when lease only grants capability:clipboard:read', async () => {
+    // Lease grants ONLY capability:clipboard:read
+    const ctx = createRequestContext(['capability:clipboard:read']);
+
+    const res = await deviceRuntime.execute({
+      operationName: DeviceOperationName.CLIPBOARD_WRITE,
+      text: 'Unauthorized Write Attempt',
+      context: ctx,
+    });
+
+    assert.equal(res.success, false);
+    assert.equal(res.error?.code, 'MISSING_REQUIRED_SCOPE');
+    assert.equal(res.error?.category, 'AUTHORIZATION');
+  });
+
+  it('VULNERABILITY-O11: rejects device requests when maxConcurrentOperations limit is reached', async () => {
+    const ctx1 = createRequestContext(['capability:clipboard:read']);
+    const ctx2 = createRequestContext(['capability:clipboard:read']);
+
+    // Mock adapter delay to simulate active execution concurrency
+    let resolveRead: (v: string) => void;
+    const delayedAdapter = {
+      readText: () =>
+        new Promise<string>((res) => {
+          resolveRead = res;
+        }),
+      writeText: async () => {},
+      clear: async () => {},
+    };
+
+    const concurrentRuntime = new DeviceRuntime(
+      leaseBoundary,
+      { maxConcurrentOperations: 1 },
+      delayedAdapter,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      () => AgentLifecycleState.READY,
+    );
+
+    const promise1 = concurrentRuntime.execute({
+      operationName: DeviceOperationName.CLIPBOARD_READ,
+      context: ctx1,
+    });
+
+    const res2 = await concurrentRuntime.execute({
+      operationName: DeviceOperationName.CLIPBOARD_READ,
+      context: ctx2,
+    });
+
+    assert.equal(res2.success, false);
+    assert.equal(res2.error?.code, 'RATE_LIMITED');
+    assert.equal(res2.error?.category, 'RATE_LIMITED');
+
+    // Complete first request
+    resolveRead!('done');
+    await promise1;
+  });
+
+  it('VULNERABILITY-O12: rejects execution if lifecycle transitions to STOPPING during operation processing', async () => {
+    let state = AgentLifecycleState.READY;
+    const ctx = createRequestContext(['capability:clipboard:read']);
+
+    const delayedAdapter = {
+      readText: async () => {
+        // Transition lifecycle to STOPPING mid-execution
+        state = AgentLifecycleState.STOPPING;
+        return 'delayed_text';
+      },
+      writeText: async () => {},
+      clear: async () => {},
+    };
+
+    const midStopRuntime = new DeviceRuntime(
+      leaseBoundary,
+      {},
+      delayedAdapter,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      () => state,
+    );
+
+    const res = await midStopRuntime.execute({
+      operationName: DeviceOperationName.CLIPBOARD_READ,
+      context: ctx,
+    });
+
+    assert.equal(res.success, false);
+    assert.equal(res.error?.code, 'LIFECYCLE_STATE_REJECTED');
+  });
+
+  it('VULNERABILITY-O13: validates tenant context mismatch fail-closed', async () => {
+    const ctx = createRequestContext(['capability:clipboard:read']);
+    // Forge request tenantId to mismatch lease.tenant_id
+    ctx.tenantId = crypto.randomUUID();
+
+    const res = await deviceRuntime.execute({
+      operationName: DeviceOperationName.CLIPBOARD_READ,
+      context: ctx,
+    });
+
+    assert.equal(res.success, false);
+    assert.equal(res.error?.code, 'TENANT_CONTEXT_MISMATCH');
+    assert.equal(res.error?.category, 'AUTHORIZATION');
+  });
 });

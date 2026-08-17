@@ -32,6 +32,7 @@ export class DeviceRuntime {
   private readonly capabilitiesAdapter: IDeviceCapabilitiesAdapter;
   private readonly notificationAdapter: IDeviceNotificationAdapter;
   private readonly redactionFilter: RedactionFilter;
+  private activeOperationsCount = 0;
 
   constructor(
     private readonly leaseBoundary: ExecutionLeaseBoundary,
@@ -68,33 +69,47 @@ export class DeviceRuntime {
     });
   }
 
+  public getActiveOperationsCount(): number {
+    return this.activeOperationsCount;
+  }
+
   public async execute(rawRequest: DeviceOperationRequest): Promise<DeviceOperationResult> {
     const executedAt = new Date().toISOString();
 
     // 1. Check Agent Lifecycle Posture
-    if (this.getAgentLifecycleState) {
-      const currentState = this.getAgentLifecycleState();
-      if (
-        currentState === AgentLifecycleState.STOPPING ||
-        currentState === AgentLifecycleState.STOPPED ||
-        currentState === AgentLifecycleState.FAILED
-      ) {
-        const err = createNexusOSError(
-          'LIFECYCLE_STATE_REJECTED',
-          ErrorCategory.VALIDATION,
-          `Device operation rejected: Agent is in non-executable state '${currentState}'.`,
-          { details: { currentState } },
-        );
-        return {
-          success: false,
-          operationName: rawRequest?.operationName || 'unknown',
-          error: err,
-          executedAt,
-        };
-      }
+    if (this.isLifecycleUnsafe()) {
+      const currentState = this.getAgentLifecycleState?.() ?? 'UNKNOWN';
+      const err = createNexusOSError(
+        'LIFECYCLE_STATE_REJECTED',
+        ErrorCategory.VALIDATION,
+        `Device operation rejected: Agent is in non-executable state '${currentState}'.`,
+        { details: { currentState } },
+      );
+      return {
+        success: false,
+        operationName: rawRequest?.operationName || 'unknown',
+        error: err,
+        executedAt,
+      };
     }
 
-    // 2. Validate Request Schema
+    // 2. Check Concurrency Limits
+    if (this.activeOperationsCount >= this.config.maxConcurrentOperations) {
+      const err = createNexusOSError(
+        'RATE_LIMITED',
+        ErrorCategory.RATE_LIMITED,
+        `Device operation denied: Concurrent operation limit of ${this.config.maxConcurrentOperations} exceeded.`,
+        { details: { maxConcurrentOperations: this.config.maxConcurrentOperations } },
+      );
+      return {
+        success: false,
+        operationName: rawRequest?.operationName || 'unknown',
+        error: err,
+        executedAt,
+      };
+    }
+
+    // 3. Validate Request Schema
     const parseResult = DeviceOperationRequestSchema.safeParse(rawRequest);
     if (!parseResult.success) {
       const err = createNexusOSError(
@@ -114,7 +129,7 @@ export class DeviceRuntime {
     const request = parseResult.data;
     const { context, operationName } = request;
 
-    // 3. Validate Execution Lease & Capability Scope
+    // 4. Validate Execution Lease & Policy
     const leaseDecision = await this.leaseBoundary.validateLease(context.leaseHeader, undefined);
 
     if (!leaseDecision.valid) {
@@ -136,14 +151,44 @@ export class DeviceRuntime {
       };
     }
 
+    const lease = leaseDecision.lease;
+
+    // 5. Enforce Task and Tenant Context Binding
+    if (lease?.task_id && context.taskId !== lease.task_id) {
+      const err = createNexusOSError(
+        'TASK_CONTEXT_MISMATCH',
+        ErrorCategory.AUTHORIZATION,
+        `Device operation denied: Request taskId '${context.taskId}' does not match lease task_id '${lease.task_id}'.`,
+        { details: { requestTaskId: context.taskId, leaseTaskId: lease.task_id } },
+      );
+      return {
+        success: false,
+        operationName,
+        error: err,
+        executedAt,
+      };
+    }
+
+    if (lease?.tenant_id && context.tenantId !== lease.tenant_id) {
+      const err = createNexusOSError(
+        'TENANT_CONTEXT_MISMATCH',
+        ErrorCategory.AUTHORIZATION,
+        `Device operation denied: Request tenantId '${context.tenantId}' does not match lease tenant_id '${lease.tenant_id}'.`,
+        { details: { requestTenantId: context.tenantId, leaseTenantId: lease.tenant_id } },
+      );
+      return {
+        success: false,
+        operationName,
+        error: err,
+        executedAt,
+      };
+    }
+
+    // 6. Enforce Capability Scope Attenuation
     const requiredCapability = this.mapOperationToCapability(operationName);
-    const leaseScopes = leaseDecision.lease?.scopes || [];
+    const leaseScopes = lease?.scopes || [];
     const hasScope = leaseScopes.some(
-      (s) =>
-        s === requiredCapability ||
-        s === 'capability:device' ||
-        s === 'capability:clipboard' ||
-        s === '*',
+      (s) => s === requiredCapability || s === 'capability:device' || s === '*',
     );
 
     if (!hasScope) {
@@ -165,7 +210,25 @@ export class DeviceRuntime {
       };
     }
 
-    // 4. Dispatch Capability Operation
+    // 7. Re-check Lifecycle Posture right before adapter execution
+    if (this.isLifecycleUnsafe()) {
+      const currentState = this.getAgentLifecycleState?.() ?? 'UNKNOWN';
+      const err = createNexusOSError(
+        'LIFECYCLE_STATE_REJECTED',
+        ErrorCategory.VALIDATION,
+        `Device operation rejected: Agent state transitioned to '${currentState}' during processing.`,
+        { details: { currentState } },
+      );
+      return {
+        success: false,
+        operationName,
+        error: err,
+        executedAt,
+      };
+    }
+
+    // 8. Dispatch Capability Operation under concurrency guard
+    this.activeOperationsCount++;
     try {
       let resultData: unknown;
 
@@ -179,7 +242,6 @@ export class DeviceRuntime {
               `Clipboard payload exceeds maximum size limit of ${this.config.maxClipboardSizeBytes} bytes.`,
             );
           }
-          // Redact secrets before returning payload
           resultData = { text: this.redactionFilter.redactString(rawText) };
           break;
         }
@@ -235,7 +297,6 @@ export class DeviceRuntime {
         }
       }
 
-      // Redact sensitive data from result object
       const sanitizedData = this.redactionFilter.redactObject(resultData);
 
       this.logger?.info('Device operation executed successfully', {
@@ -272,7 +333,19 @@ export class DeviceRuntime {
         error: nexusErr,
         executedAt,
       };
+    } finally {
+      this.activeOperationsCount--;
     }
+  }
+
+  private isLifecycleUnsafe(): boolean {
+    if (!this.getAgentLifecycleState) return false;
+    const currentState = this.getAgentLifecycleState();
+    return (
+      currentState === AgentLifecycleState.STOPPING ||
+      currentState === AgentLifecycleState.STOPPED ||
+      currentState === AgentLifecycleState.FAILED
+    );
   }
 
   private mapOperationToCapability(operationName: DeviceOperationName): string {

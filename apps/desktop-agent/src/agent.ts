@@ -13,7 +13,7 @@ import { SandboxIsolationBoundary } from './sandbox/isolation-boundary.js';
 import { PluginExecutionPolicy } from './runtimes/plugin/policy.js';
 import { IPCManager } from './ipc/ipc-manager.js';
 import { MemoryCacheManager } from './memory/memory-cache-manager.js';
-import { DeviceRuntime } from './runtimes/device/runtime.js';
+import { DeviceRuntime, DeviceOperationRequest } from './runtimes/device/index.js';
 
 export class DesktopAgent {
   public readonly lifecycle: AgentLifecycleManager;
@@ -63,6 +63,12 @@ export class DesktopAgent {
         () => this.lifecycle.getState(),
       );
     this.logger = new AgentLogger(baseLogger);
+
+    if (this.ipcManager) {
+      this.ipcManager.registerMethodHandler('device.execute', async (params) => {
+        return this.deviceRuntime.execute(params as DeviceOperationRequest);
+      });
+    }
   }
 
   async start(): Promise<void> {
