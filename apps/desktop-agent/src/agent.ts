@@ -20,6 +20,7 @@ import { TaskExecutionRequest } from './orchestrator/types.js';
 import { TaskScheduler } from './scheduler/task-scheduler.js';
 import { WorkflowEngine } from './workflow/workflow-engine.js';
 import { WorkflowDAG } from './workflow/types.js';
+import { ModelRuntimeManager } from './runtimes/local-ai/model-runtime-manager.js';
 
 export class DesktopAgent {
   public readonly lifecycle: AgentLifecycleManager;
@@ -32,6 +33,7 @@ export class DesktopAgent {
   public readonly orchestrator: AgentOrchestrator;
   public readonly taskScheduler: TaskScheduler;
   public readonly workflowEngine: WorkflowEngine;
+  public readonly modelRuntimeManager: ModelRuntimeManager;
   private readonly logger: AgentLogger;
 
   private identity?: AgentIdentity;
@@ -122,6 +124,11 @@ export class DesktopAgent {
       undefined,
       undefined,
       () => this.lifecycle.getState(),
+    );
+
+    this.modelRuntimeManager = new ModelRuntimeManager(
+      this.leaseBoundary,
+      '.nexus-local-ai',
     );
 
     this.logger = new AgentLogger(baseLogger);
@@ -217,6 +224,7 @@ export class DesktopAgent {
         await this.ipcManager.start();
       }
       await this.memoryCacheManager.start();
+      await this.modelRuntimeManager.initialize();
     } catch (err) {
       this.lifecycle.transitionTo(
         AgentLifecycleState.FAILED,
@@ -238,6 +246,7 @@ export class DesktopAgent {
     this.stopHeartbeat();
     this.taskScheduler.shutdown();
     this.workflowEngine.shutdown();
+    await this.modelRuntimeManager.shutdown();
 
     try {
       if (this.ipcManager) {
