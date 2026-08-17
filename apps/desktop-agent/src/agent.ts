@@ -17,6 +17,7 @@ import { DeviceRuntime, DeviceOperationRequest } from './runtimes/device/index.j
 import { AgentOrchestrator } from './orchestrator/agent-orchestrator.js';
 import { RuntimeRouter } from './orchestrator/runtime-router.js';
 import { TaskExecutionRequest } from './orchestrator/types.js';
+import { TaskScheduler } from './scheduler/task-scheduler.js';
 
 export class DesktopAgent {
   public readonly lifecycle: AgentLifecycleManager;
@@ -27,6 +28,7 @@ export class DesktopAgent {
   public readonly memoryCacheManager: MemoryCacheManager;
   public readonly deviceRuntime: DeviceRuntime;
   public readonly orchestrator: AgentOrchestrator;
+  public readonly taskScheduler: TaskScheduler;
   private readonly logger: AgentLogger;
 
   private identity?: AgentIdentity;
@@ -43,6 +45,7 @@ export class DesktopAgent {
     customIpcManager?: IPCManager,
     customDeviceRuntime?: DeviceRuntime,
     customOrchestrator?: AgentOrchestrator,
+    customScheduler?: TaskScheduler,
   ) {
     this.lifecycle = new AgentLifecycleManager();
     this.capabilityRegistry = new CapabilityRegistry();
@@ -91,6 +94,20 @@ export class DesktopAgent {
         this.deviceRuntime,
       );
 
+    this.taskScheduler =
+      customScheduler ||
+      new TaskScheduler(
+        this.config,
+        this.identityProvider,
+        this.leaseBoundary,
+        this.orchestrator,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        () => this.lifecycle.getState(),
+      );
+
     this.logger = new AgentLogger(baseLogger);
 
     if (this.ipcManager) {
@@ -98,22 +115,28 @@ export class DesktopAgent {
         return this.deviceRuntime.execute(params as unknown as DeviceOperationRequest);
       });
       this.ipcManager.registerMethodHandler('task.execute', async (params) => {
-        return this.orchestrator.executeTask(params as unknown as TaskExecutionRequest);
+        return this.taskScheduler.scheduleTask(params as unknown as TaskExecutionRequest);
       });
       this.ipcManager.registerMethodHandler('task.cancel', async (params) => {
-        const { taskId, reason } = params as { taskId: string; reason?: string };
-        return this.orchestrator.cancelTask(taskId, reason);
+        const { taskId, tenantId, reason } = params as {
+          taskId: string;
+          tenantId?: string;
+          reason?: string;
+        };
+        return this.taskScheduler.cancelScheduledTask(taskId, tenantId, reason);
       });
       this.ipcManager.registerMethodHandler('task.status', async (params) => {
-        const { taskId } = params as { taskId: string };
-        return this.orchestrator.getTaskStatus(taskId);
+        const { taskId, tenantId } = params as { taskId: string; tenantId?: string };
+        return this.taskScheduler.getScheduledTaskStatus(taskId, tenantId);
       });
     }
 
     if (typeof this.controlPlaneClient.registerCommandHandler === 'function') {
       this.controlPlaneClient.registerCommandHandler(async (envelope) => {
         if (envelope.payload && typeof envelope.payload === 'object') {
-          await this.orchestrator.executeTask(envelope.payload as unknown as TaskExecutionRequest);
+          await this.taskScheduler.scheduleTask(
+            envelope.payload as unknown as TaskExecutionRequest,
+          );
         }
       });
     }
