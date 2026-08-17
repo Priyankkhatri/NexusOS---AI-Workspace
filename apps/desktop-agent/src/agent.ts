@@ -167,6 +167,25 @@ export class DesktopAgent {
         const { workflowId, tenantId } = params as { workflowId: string; tenantId?: string };
         return this.workflowEngine.getWorkflowStatus(workflowId, tenantId);
       });
+      this.ipcManager.registerMethodHandler('localAi.listModels', async () => {
+        return this.modelRuntimeManager['modelCacheManager'].listCatalog();
+      });
+      this.ipcManager.registerMethodHandler('localAi.getHardwareProfile', async () => {
+        return this.modelRuntimeManager['hardwareDetector'].getProfile();
+      });
+      this.ipcManager.registerMethodHandler('localAi.generate', async (params) => {
+        const req = params as unknown as import('./runtimes/local-ai/types.js').InferenceRequest;
+        const chunks = [];
+        for await (const chunk of this.modelRuntimeManager.executeInference(req)) {
+          chunks.push(chunk);
+        }
+        return { chunks };
+      });
+      this.ipcManager.registerMethodHandler('localAi.unloadModel', async (params) => {
+        const { modelId } = params as { modelId: string };
+        await this.modelRuntimeManager.unloadModel(modelId);
+        return { success: true, modelId };
+      });
     }
 
     if (typeof this.controlPlaneClient.registerCommandHandler === 'function') {
