@@ -93,23 +93,7 @@ export class DeviceRuntime {
       };
     }
 
-    // 2. Check Concurrency Limits
-    if (this.activeOperationsCount >= this.config.maxConcurrentOperations) {
-      const err = createNexusOSError(
-        'RATE_LIMITED',
-        ErrorCategory.RATE_LIMITED,
-        `Device operation denied: Concurrent operation limit of ${this.config.maxConcurrentOperations} exceeded.`,
-        { details: { maxConcurrentOperations: this.config.maxConcurrentOperations } },
-      );
-      return {
-        success: false,
-        operationName: rawRequest?.operationName || 'unknown',
-        error: err,
-        executedAt,
-      };
-    }
-
-    // 3. Validate Request Schema
+    // 2. Validate Request Schema
     const parseResult = DeviceOperationRequestSchema.safeParse(rawRequest);
     if (!parseResult.success) {
       const err = createNexusOSError(
@@ -129,7 +113,7 @@ export class DeviceRuntime {
     const request = parseResult.data;
     const { context, operationName } = request;
 
-    // 4. Validate Execution Lease & Policy
+    // 3. Validate Execution Lease & Policy
     const leaseDecision = await this.leaseBoundary.validateLease(context.leaseHeader, undefined);
 
     if (!leaseDecision.valid) {
@@ -153,7 +137,7 @@ export class DeviceRuntime {
 
     const lease = leaseDecision.lease;
 
-    // 5. Enforce Task and Tenant Context Binding
+    // 4. Enforce Task and Tenant Context Binding
     if (lease?.task_id && context.taskId !== lease.task_id) {
       const err = createNexusOSError(
         'TASK_CONTEXT_MISMATCH',
@@ -184,7 +168,7 @@ export class DeviceRuntime {
       };
     }
 
-    // 6. Enforce Capability Scope Attenuation
+    // 5. Enforce Capability Scope Attenuation
     const requiredCapability = this.mapOperationToCapability(operationName);
     const leaseScopes = lease?.scopes || [];
     const hasScope = leaseScopes.some(
@@ -210,7 +194,7 @@ export class DeviceRuntime {
       };
     }
 
-    // 7. Re-check Lifecycle Posture right before adapter execution
+    // 6. Re-check Lifecycle Posture right before adapter execution
     if (this.isLifecycleUnsafe()) {
       const currentState = this.getAgentLifecycleState?.() ?? 'UNKNOWN';
       const err = createNexusOSError(
@@ -227,7 +211,23 @@ export class DeviceRuntime {
       };
     }
 
-    // 8. Dispatch Capability Operation under concurrency guard
+    // 7. Check Concurrency Limits right before execution dispatch
+    if (this.activeOperationsCount >= this.config.maxConcurrentOperations) {
+      const err = createNexusOSError(
+        'RATE_LIMITED',
+        ErrorCategory.RATE_LIMITED,
+        `Device operation denied: Concurrent operation limit of ${this.config.maxConcurrentOperations} exceeded.`,
+        { details: { maxConcurrentOperations: this.config.maxConcurrentOperations } },
+      );
+      return {
+        success: false,
+        operationName,
+        error: err,
+        executedAt,
+      };
+    }
+
+    // 8. Dispatch Capability Operation under concurrency tracking
     this.activeOperationsCount++;
     try {
       let resultData: unknown;
@@ -295,6 +295,23 @@ export class DeviceRuntime {
             `Unsupported device operation '${operationName}'.`,
           );
         }
+      }
+
+      // Re-verify lifecycle posture post-adapter execution to prevent stale output delivery if state transitioned mid-execution
+      if (this.isLifecycleUnsafe()) {
+        const currentState = this.getAgentLifecycleState?.() ?? 'UNKNOWN';
+        const err = createNexusOSError(
+          'LIFECYCLE_STATE_REJECTED',
+          ErrorCategory.VALIDATION,
+          `Device operation rejected: Agent state transitioned to '${currentState}' during processing.`,
+          { details: { currentState } },
+        );
+        return {
+          success: false,
+          operationName,
+          error: err,
+          executedAt,
+        };
       }
 
       const sanitizedData = this.redactionFilter.redactObject(resultData);
