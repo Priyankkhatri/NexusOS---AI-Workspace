@@ -19,6 +19,7 @@ import {
   WorkflowMetrics,
   WorkflowNode,
   WorkflowNodeExecutionState,
+  WorkflowNodeStatus,
 } from './types.js';
 
 export type WorkflowTaskStatus = TaskStatus | 'EXPIRED' | 'RECONCILING';
@@ -96,6 +97,13 @@ export class WorkflowEngine implements IWorkflowEngine {
     // Cross-tenant cancellation attempt rejected
     if (tenantId && state.tenantId !== tenantId) {
       return false;
+    }
+
+    // State-machine transition guard: terminal states cannot be cancelled
+    const terminalStatuses: WorkflowNodeStatus[] = ['Completed', 'Failed', 'CANCELED', 'EXPIRED'];
+    if (terminalStatuses.includes(state.status as WorkflowNodeStatus)) {
+      // Already in terminal state — idempotent: treat as already cancelled if CANCELED, else false
+      return state.status === 'CANCELED';
     }
 
     // Abort running node tasks
