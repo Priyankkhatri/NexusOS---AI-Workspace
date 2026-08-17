@@ -66,7 +66,7 @@ export class DesktopAgent {
 
     if (this.ipcManager) {
       this.ipcManager.registerMethodHandler('device.execute', async (params) => {
-        return this.deviceRuntime.execute(params as DeviceOperationRequest);
+        return this.deviceRuntime.execute(params as unknown as DeviceOperationRequest);
       });
     }
   }
