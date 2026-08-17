@@ -52,7 +52,10 @@ export class AgentOrchestrator implements IAgentOrchestrator {
     private readonly browserRuntime?: BrowserRuntime,
     private readonly pluginRuntime?: PluginRuntime,
     private readonly deviceRuntime?: DeviceRuntime,
-  ) {}
+  ) {
+    void this._config;
+    void this._secretsVault;
+  }
 
   public getActiveCount(): number {
     return this.activeCount;

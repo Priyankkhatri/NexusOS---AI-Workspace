@@ -15,7 +15,9 @@ export class RuntimeRouter implements IRuntimeRouter {
   constructor(
     private readonly capabilityRegistry: CapabilityRegistry,
     private readonly _runtimeRegistry?: RuntimeRegistry,
-  ) {}
+  ) {
+    void this._runtimeRegistry;
+  }
 
   public hasCapability(capabilityId: string): boolean {
     if (!capabilityId || typeof capabilityId !== 'string') {
