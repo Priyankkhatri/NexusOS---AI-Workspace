@@ -126,10 +126,7 @@ export class DesktopAgent {
       () => this.lifecycle.getState(),
     );
 
-    this.modelRuntimeManager = new ModelRuntimeManager(
-      this.leaseBoundary,
-      '.nexus-local-ai',
-    );
+    this.modelRuntimeManager = new ModelRuntimeManager(this.leaseBoundary, '.nexus-local-ai');
 
     this.logger = new AgentLogger(baseLogger);
 

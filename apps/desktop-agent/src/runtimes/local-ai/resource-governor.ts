@@ -49,9 +49,7 @@ export class ResourceGovernor {
     }
 
     // 2. Estimate required RAM and VRAM
-    const requiredRam = model?.fileSizeBytes
-      ? Math.ceil(model.fileSizeBytes * 1.1)
-      : 1073741824; // Default 1 GB estimate
+    const requiredRam = model?.fileSizeBytes ? Math.ceil(model.fileSizeBytes * 1.1) : 1073741824; // Default 1 GB estimate
     const requiredVram =
       hardware.gpuAdapters.length > 0
         ? model?.fileSizeBytes

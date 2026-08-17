@@ -60,7 +60,10 @@ export class ModelRuntimeManager {
 
   public async initialize(): Promise<void> {
     if (this.isShutdown) {
-      throw new ModelRuntimeError('Cannot initialize a shutdown ModelRuntimeManager.', 'ALREADY_SHUTDOWN');
+      throw new ModelRuntimeError(
+        'Cannot initialize a shutdown ModelRuntimeManager.',
+        'ALREADY_SHUTDOWN',
+      );
     }
     await this.modelCacheManager.initialize();
   }
@@ -104,7 +107,9 @@ export class ModelRuntimeManager {
     // 2. Re-validate execution lease authority immediately before model dispatch
     if (validatedRequest.leaseHeader) {
       try {
-        const isLeaseValid = this.leaseBoundary.validateLease(validatedRequest.leaseHeader as never);
+        const isLeaseValid = this.leaseBoundary.validateLease(
+          validatedRequest.leaseHeader as never,
+        );
         if (!isLeaseValid) {
           this.activeInferenceStates.set(validatedRequest.requestId, 'Denied');
           throw new ModelRuntimeError(
@@ -239,7 +244,9 @@ export class ModelRuntimeManager {
     for (const [modelId] of this.loadedModelStates.entries()) {
       try {
         await this.unloadModel(modelId);
-      } catch {}
+      } catch {
+        // ignore
+      }
     }
 
     this.resourceGovernor.reset();

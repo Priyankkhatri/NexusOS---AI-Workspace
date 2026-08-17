@@ -544,4 +544,3 @@ describe('Task 03S — WorkflowEngine: duplicate workflow submission protection'
     assert.ok(typeof result1.success === 'boolean', 'success must be a boolean');
   });
 });
-

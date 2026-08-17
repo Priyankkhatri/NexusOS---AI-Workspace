@@ -173,11 +173,7 @@ export const InferenceRequestSchema = z.object({
 });
 
 export const ModelArtifactSchema = z.object({
-  modelId: z
-    .string()
-    .min(1)
-    .max(128)
-    .regex(ModelIdPattern, 'modelId contains invalid characters'),
+  modelId: z.string().min(1).max(128).regex(ModelIdPattern, 'modelId contains invalid characters'),
   name: z.string().min(1).max(256),
   provider: z.enum(['ollama', 'llamacpp', 'lmstudio', 'onnx', 'cpu_fallback']),
   sha256: z

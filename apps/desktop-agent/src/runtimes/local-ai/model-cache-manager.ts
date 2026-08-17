@@ -115,10 +115,7 @@ export class ModelCacheManager {
 
     // 1. Verify file exists
     if (!fs.existsSync(safeStagedPath)) {
-      throw new ModelCacheError(
-        `Staged model file not found at '${stagedFilePath}'.`,
-        'NOT_FOUND',
-      );
+      throw new ModelCacheError(`Staged model file not found at '${stagedFilePath}'.`, 'NOT_FOUND');
     }
 
     // 2. Validate model ID pattern
@@ -135,7 +132,9 @@ export class ModelCacheManager {
       // Remove corrupted staged file
       try {
         await fs.promises.unlink(safeStagedPath);
-      } catch {}
+      } catch {
+        // ignore
+      }
       throw new ModelCacheError(
         `Model artifact SHA-256 verification failed for '${artifactMeta.modelId}'. Expected ${artifactMeta.sha256}. Staged file deleted.`,
         'HASH_MISMATCH',
@@ -200,7 +199,9 @@ export class ModelCacheManager {
         }
         this.catalog.delete(victim.modelId);
         currentTotalBytes -= victim.fileSizeBytes;
-      } catch {}
+      } catch {
+        // ignore
+      }
     }
 
     if (currentTotalBytes + requiredBytes > this.maxCacheBytes) {

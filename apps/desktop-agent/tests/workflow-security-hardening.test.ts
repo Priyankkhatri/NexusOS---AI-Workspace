@@ -524,7 +524,12 @@ describe('Task 03S Security Hardening — Compensation Idempotency', () => {
     const dag = createValidWorkflowDAG({
       nodes: [
         // Node with no compensationPayload — should never trigger a compensation task
-        { nodeId: 'A', capabilityId: 'device.execute', runtimeCategory: 'device', payload: { action: 'safe-read' } },
+        {
+          nodeId: 'A',
+          capabilityId: 'device.execute',
+          runtimeCategory: 'device',
+          payload: { action: 'safe-read' },
+        },
       ],
     });
     // Execute will likely fail at CAPABILITY_NOT_FOUND (no runtime registered in tests)
@@ -561,7 +566,11 @@ describe('Task 03S Security Hardening — Compensation Idempotency', () => {
     const wouldTrigger2 = !state.compensationTriggered;
 
     assert.equal(wouldTrigger1, true, 'First compensation check must return true (should trigger)');
-    assert.equal(wouldTrigger2, false, 'Second compensation check must return false (already triggered)');
+    assert.equal(
+      wouldTrigger2,
+      false,
+      'Second compensation check must return false (already triggered)',
+    );
     assert.equal(state.compensationTriggered, true, 'Flag must be set after first compensation');
   });
 });
@@ -596,7 +605,8 @@ describe('Task 03S Security Hardening — StepContext Output Safety', () => {
   it('SH-26: setNodeOutput rejects constructor key (prototype pollution attempt)', () => {
     const ctx = makeCtx();
     assert.throws(
-      () => ctx.setNodeOutput('node-B', { constructor: 'evil' } as unknown as Record<string, unknown>),
+      () =>
+        ctx.setNodeOutput('node-B', { constructor: 'evil' } as unknown as Record<string, unknown>),
       /prototype pollution/i,
       'Should reject constructor key with prototype pollution error',
     );

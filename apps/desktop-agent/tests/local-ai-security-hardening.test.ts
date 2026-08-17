@@ -4,7 +4,6 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { HardwareDetector } from '../src/runtimes/local-ai/hardware-detector.js';
 import { ModelCacheManager } from '../src/runtimes/local-ai/model-cache-manager.js';
 import { ModelRuntimeManager } from '../src/runtimes/local-ai/model-runtime-manager.js';
 import { validateLoopbackEndpoint } from '../src/runtimes/local-ai/provider-adapters.js';
@@ -45,7 +44,9 @@ describe('Task 03T — Local AI Runtime Security Hardening Regression Tests', ()
     await manager.shutdown();
     try {
       fs.rmSync(tmpDir, { recursive: true, force: true });
-    } catch {}
+    } catch {
+      // ignore
+    }
   });
 
   const makeReq = (id = 'req-sh-1'): InferenceRequest => ({
@@ -122,7 +123,11 @@ describe('Task 03T — Local AI Runtime Security Hardening Regression Tests', ()
       /SHA-256 verification failed/i,
     );
 
-    assert.equal(fs.existsSync(stagedFile), false, 'Tampered staged file must be automatically unlinked');
+    assert.equal(
+      fs.existsSync(stagedFile),
+      false,
+      'Tampered staged file must be automatically unlinked',
+    );
   });
 
   it('SH-04: streaming response containing Bearer secret is automatically redacted', async () => {
@@ -153,7 +158,11 @@ describe('Task 03T — Local AI Runtime Security Hardening Regression Tests', ()
           redacted: false,
         };
       },
-      getHealth: async () => ({ ready: true, providerType: 'cpu_fallback' as const, activeModels: [] }),
+      getHealth: async () => ({
+        ready: true,
+        providerType: 'cpu_fallback' as const,
+        activeModels: [],
+      }),
     };
 
     const mockAdapterFactory = {
@@ -179,7 +188,11 @@ describe('Task 03T — Local AI Runtime Security Hardening Regression Tests', ()
 
     assert.ok(chunks.length > 0);
     assert.ok(chunks[0].text.includes('REDACTED'));
-    assert.equal(chunks[0].text.includes('secret-token-xyz123'), false, 'Secret token must NOT be present in output');
+    assert.equal(
+      chunks[0].text.includes('secret-token-xyz123'),
+      false,
+      'Secret token must NOT be present in output',
+    );
     assert.equal(chunks[0].redacted, true, 'Chunk redacted flag must be set to true');
   });
 
@@ -202,12 +215,11 @@ describe('Task 03T — Local AI Runtime Security Hardening Regression Tests', ()
     const req = makeReq('req-sh-09');
     req.leaseHeader = { ...validLeaseHeader, signature: 'forged-signature' };
 
-    await assert.rejects(
-      async () => {
-        for await (const _chunk of manager.executeInference(req)) {}
-      },
-      /Lease re-validation failed/i,
-    );
+    await assert.rejects(async () => {
+      for await (const chunk of manager.executeInference(req)) {
+        void chunk;
+      }
+    }, /Lease re-validation failed/i);
 
     assert.equal(manager.getInferenceState(req.requestId), 'Denied');
   });
@@ -256,8 +268,6 @@ describe('Task 03T — Local AI Runtime Security Hardening Regression Tests', ()
 
   it('SH-20: InferenceRequestSchema rejects __proto__ and constructor prototype pollution', () => {
     const polluted = JSON.parse('{"__proto__": {"admin": true}}');
-    assert.throws(
-      () => InferenceRequestSchema.parse(polluted),
-    );
+    assert.throws(() => InferenceRequestSchema.parse(polluted));
   });
 });

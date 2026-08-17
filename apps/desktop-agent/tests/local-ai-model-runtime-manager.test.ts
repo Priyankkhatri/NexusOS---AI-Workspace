@@ -41,7 +41,9 @@ describe('Task 03T — ModelRuntimeManager Integration Tests', () => {
     await manager.shutdown();
     try {
       fs.rmSync(tmpDir, { recursive: true, force: true });
-    } catch {}
+    } catch {
+      // ignore
+    }
   });
 
   const makeReq = (id = 'req-1'): InferenceRequest => ({
@@ -74,14 +76,11 @@ describe('Task 03T — ModelRuntimeManager Integration Tests', () => {
     const req = makeReq('req-mrm-2');
     req.leaseHeader = { ...validLeaseHeader, signature: 'invalid-sig' };
 
-    await assert.rejects(
-      async () => {
-        for await (const _chunk of manager.executeInference(req)) {
-          // should throw
-        }
-      },
-      /Lease re-validation failed/i,
-    );
+    await assert.rejects(async () => {
+      for await (const chunk of manager.executeInference(req)) {
+        void chunk;
+      }
+    }, /Lease re-validation failed/i);
 
     assert.equal(manager.getInferenceState(req.requestId), 'Denied');
   });
@@ -105,13 +104,10 @@ describe('Task 03T — ModelRuntimeManager Integration Tests', () => {
     const req = makeReq('req-mrm-4');
     await manager.shutdown();
 
-    await assert.rejects(
-      async () => {
-        for await (const _chunk of manager.executeInference(req)) {
-          // should throw
-        }
-      },
-      /ModelRuntimeManager is shutdown/i,
-    );
+    await assert.rejects(async () => {
+      for await (const chunk of manager.executeInference(req)) {
+        void chunk;
+      }
+    }, /ModelRuntimeManager is shutdown/i);
   });
 });

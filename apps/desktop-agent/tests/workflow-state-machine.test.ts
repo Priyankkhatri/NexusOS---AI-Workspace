@@ -29,7 +29,11 @@ import {
   PolicySnapshot,
 } from '@nexusos/policy';
 import { TaskScheduler } from '../src/scheduler/task-scheduler.js';
-import { MockTransportAdapter, ProductionControlPlaneClient, ControlPlaneConfig } from '../src/index.js';
+import {
+  MockTransportAdapter,
+  ProductionControlPlaneClient,
+  ControlPlaneConfig,
+} from '../src/index.js';
 
 class AlwaysAllowPolicyEvaluator implements PolicyEvaluator {
   async evaluate(request: PolicyDecisionRequest): Promise<PolicyDecisionResult> {
@@ -46,7 +50,12 @@ class AlwaysAllowPolicyEvaluator implements PolicyEvaluator {
     };
   }
   getSnapshot(): PolicySnapshot {
-    return { policyVersion: '1.0.0', policyHash: 'test-hash', createdAt: new Date().toISOString(), rules: [] };
+    return {
+      policyVersion: '1.0.0',
+      policyHash: 'test-hash',
+      createdAt: new Date().toISOString(),
+      rules: [],
+    };
   }
 }
 
@@ -100,26 +109,53 @@ function createValidLeaseHeader(overrides: Record<string, unknown> = {}): Execut
 function createTestWorkflowEngine(lifecycleState: AgentLifecycleState = AgentLifecycleState.READY) {
   const mockTransport = new MockTransportAdapter();
   const controlPlaneClient = new ProductionControlPlaneClient(
-    mockConfig, identityProvider, leaseBoundary,
-    undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+    mockConfig,
+    identityProvider,
+    leaseBoundary,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
     mockTransport,
   );
   const orchestrator = new AgentOrchestrator(
     { agentVersion: '0.1.0-sprint0' } as never,
-    identityProvider, controlPlaneClient, leaseBoundary, runtimeRouter,
-    undefined, undefined, undefined, new RedactionFilter(), undefined, undefined,
+    identityProvider,
+    controlPlaneClient,
+    leaseBoundary,
+    runtimeRouter,
+    undefined,
+    undefined,
+    undefined,
+    new RedactionFilter(),
+    undefined,
+    undefined,
     () => lifecycleState,
   );
   const scheduler = new TaskScheduler(
     { agentVersion: '0.1.0-sprint0' } as never,
-    identityProvider, leaseBoundary, orchestrator,
-    undefined, undefined, new RedactionFilter(), undefined,
+    identityProvider,
+    leaseBoundary,
+    orchestrator,
+    undefined,
+    undefined,
+    new RedactionFilter(),
+    undefined,
     () => lifecycleState,
   );
   const workflowEngine = new WorkflowEngine(
     { agentVersion: '0.1.0-sprint0' } as never,
-    identityProvider, leaseBoundary, orchestrator, scheduler,
-    undefined, undefined, undefined, undefined,
+    identityProvider,
+    leaseBoundary,
+    orchestrator,
+    scheduler,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
     () => lifecycleState,
   );
   return { workflowEngine, scheduler };
@@ -162,7 +198,10 @@ describe('Task 03S — WorkflowEngine: state machine transition enforcement', ()
 
     // Cancel1 may be true (cancelled) or false (already completed before cancel ran)
     // The important invariant: no throw and the result is a boolean
-    assert.ok(typeof cancel1 === 'boolean', 'First cancellation must return a boolean without throwing');
+    assert.ok(
+      typeof cancel1 === 'boolean',
+      'First cancellation must return a boolean without throwing',
+    );
   });
 
   it('SM-03: cancelWorkflow on already-Completed workflow returns false (invalid transition)', async () => {
@@ -178,7 +217,11 @@ describe('Task 03S — WorkflowEngine: state machine transition enforcement', ()
 
     // A completed workflow is in a terminal state; cancellation is an invalid transition
     // Engine should return false (not mutate status to CANCELED)
-    assert.equal(cancelResult, false, 'Cannot cancel a completed workflow (invalid state transition)');
+    assert.equal(
+      cancelResult,
+      false,
+      'Cannot cancel a completed workflow (invalid state transition)',
+    );
   });
 
   it('SM-04: duplicate cancelWorkflow calls are safe (no double-abort race)', async () => {
@@ -218,7 +261,11 @@ describe('Task 03S — WorkflowEngine: state machine transition enforcement', ()
     if (status === 'FAILED') {
       assert.equal(cancelResult, false, 'Failed workflow cannot be cancelled (invalid transition)');
     } else if (status === 'COMPLETED') {
-      assert.equal(cancelResult, false, 'Completed workflow cannot be cancelled (invalid transition)');
+      assert.equal(
+        cancelResult,
+        false,
+        'Completed workflow cannot be cancelled (invalid transition)',
+      );
     } else {
       // CANCELED or other status — just verify no throw
       assert.ok(typeof cancelResult === 'boolean', 'Must return boolean without throwing');
@@ -231,7 +278,10 @@ describe('Task 03S — WorkflowEngine: state machine transition enforcement', ()
     await workflowEngine.executeWorkflow(dag);
 
     // Cross-tenant cancel attempt
-    const cancelResult = await workflowEngine.cancelWorkflow(dag.workflowId, 'evil-attacker-tenant');
+    const cancelResult = await workflowEngine.cancelWorkflow(
+      dag.workflowId,
+      'evil-attacker-tenant',
+    );
     workflowEngine.shutdown();
     assert.equal(cancelResult, false, 'Cross-tenant cancellation must always be denied');
   });

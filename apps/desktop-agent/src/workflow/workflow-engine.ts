@@ -363,7 +363,10 @@ export class WorkflowEngine implements IWorkflowEngine {
    * Validates that a restored checkpoint contains all required fields and correct types.
    * Returns false (and causes deletion) for any malformed or tampered checkpoint.
    */
-  private validateCheckpoint(state: unknown, expectedWorkflowId: string): state is WorkflowExecutionState {
+  private validateCheckpoint(
+    state: unknown,
+    expectedWorkflowId: string,
+  ): state is WorkflowExecutionState {
     if (!state || typeof state !== 'object') {
       return false;
     }
@@ -392,7 +395,6 @@ export class WorkflowEngine implements IWorkflowEngine {
     }
     return true;
   }
-
 
   private async executeDAGTiers(
     dag: WorkflowDAG,

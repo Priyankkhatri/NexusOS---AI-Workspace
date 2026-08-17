@@ -102,6 +102,10 @@ describe('Task 03T — ResourceGovernor Unit Tests', () => {
 
     const released2 = governor.release(res); // Double release
     assert.equal(released2, false, 'Second release must return false');
-    assert.equal(governor.getStats().activeConcurrentCount, 0, 'Counter must not underflow below 0');
+    assert.equal(
+      governor.getStats().activeConcurrentCount,
+      0,
+      'Counter must not underflow below 0',
+    );
   });
 });

@@ -47,7 +47,12 @@ class AlwaysAllowPolicyEvaluator implements PolicyEvaluator {
     };
   }
   getSnapshot(): PolicySnapshot {
-    return { policyVersion: '1.0.0', policyHash: 'test-hash', createdAt: new Date().toISOString(), rules: [] };
+    return {
+      policyVersion: '1.0.0',
+      policyHash: 'test-hash',
+      createdAt: new Date().toISOString(),
+      rules: [],
+    };
   }
 }
 
@@ -86,10 +91,7 @@ const runtimeRouter = new RuntimeRouter(capabilityRegistry, runtimeRegistry);
 /**
  * Creates an in-memory StateManager populated with a specific checkpoint.
  */
-function createStateManagerWithCheckpoint(
-  workflowId: string,
-  checkpoint: unknown,
-): StateManager {
+function createStateManagerWithCheckpoint(workflowId: string, checkpoint: unknown): StateManager {
   const store = new Map<string, unknown>();
   store.set('workflow_index', [workflowId]);
   store.set(`workflow_checkpoint:${workflowId}`, checkpoint);
@@ -105,7 +107,9 @@ function createStateManagerWithCheckpoint(
       store.delete(key);
     },
     has: async (key: string): Promise<boolean> => store.has(key),
-    clear: async (): Promise<void> => { store.clear(); },
+    clear: async (): Promise<void> => {
+      store.clear();
+    },
     shutdown: (): void => {},
   } as unknown as StateManager;
 }
@@ -113,26 +117,53 @@ function createStateManagerWithCheckpoint(
 function createWorkflowEngine(stateManager?: StateManager) {
   const mockTransport = new MockTransportAdapter();
   const controlPlaneClient = new ProductionControlPlaneClient(
-    mockConfig, identityProvider, leaseBoundary,
-    undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+    mockConfig,
+    identityProvider,
+    leaseBoundary,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
     mockTransport,
   );
   const orchestrator = new AgentOrchestrator(
     { agentVersion: '0.1.0-sprint0' } as never,
-    identityProvider, controlPlaneClient, leaseBoundary, runtimeRouter,
-    undefined, undefined, undefined, new RedactionFilter(), undefined, undefined,
+    identityProvider,
+    controlPlaneClient,
+    leaseBoundary,
+    runtimeRouter,
+    undefined,
+    undefined,
+    undefined,
+    new RedactionFilter(),
+    undefined,
+    undefined,
     () => AgentLifecycleState.READY,
   );
   const scheduler = new TaskScheduler(
     { agentVersion: '0.1.0-sprint0' } as never,
-    identityProvider, leaseBoundary, orchestrator,
-    undefined, undefined, new RedactionFilter(), undefined,
+    identityProvider,
+    leaseBoundary,
+    orchestrator,
+    undefined,
+    undefined,
+    new RedactionFilter(),
+    undefined,
     () => AgentLifecycleState.READY,
   );
   return new WorkflowEngine(
     { agentVersion: '0.1.0-sprint0' } as never,
-    identityProvider, leaseBoundary, orchestrator, scheduler,
-    stateManager, undefined, undefined, undefined,
+    identityProvider,
+    leaseBoundary,
+    orchestrator,
+    scheduler,
+    stateManager,
+    undefined,
+    undefined,
+    undefined,
     () => AgentLifecycleState.READY,
   );
 }
@@ -168,10 +199,16 @@ describe('Task 03S — WorkflowEngine: checkpoint restore validation', () => {
     // No checkpoint stored for this workflowId
     const stateManager = {
       get: async <T>(key: string): Promise<T | null> => (store.get(key) as T) ?? null,
-      set: async <T>(key: string, value: T): Promise<void> => { store.set(key, value); },
-      delete: async (key: string): Promise<void> => { store.delete(key); },
+      set: async <T>(key: string, value: T): Promise<void> => {
+        store.set(key, value);
+      },
+      delete: async (key: string): Promise<void> => {
+        store.delete(key);
+      },
       has: async (key: string): Promise<boolean> => store.has(key),
-      clear: async (): Promise<void> => { store.clear(); },
+      clear: async (): Promise<void> => {
+        store.clear();
+      },
       shutdown: (): void => {},
     } as unknown as StateManager;
 
@@ -182,7 +219,8 @@ describe('Task 03S — WorkflowEngine: checkpoint restore validation', () => {
     // The invalid workflow entry must be removed from the index
     const updatedIndex = store.get('workflow_index') as string[];
     assert.equal(
-      updatedIndex.includes(workflowId), false,
+      updatedIndex.includes(workflowId),
+      false,
       'Null checkpoint must be removed from workflow index',
     );
   });
@@ -212,8 +250,16 @@ describe('Task 03S — WorkflowEngine: checkpoint restore validation', () => {
     engine.shutdown();
 
     // Neither the indexed nor the tampered ID should appear as active
-    assert.equal(engine.getWorkflowStatus(indexedId), null, 'Tampered checkpoint must not be loaded (indexedId)');
-    assert.equal(engine.getWorkflowStatus(tamperedId), null, 'Tampered checkpoint must not be loaded (tamperedId)');
+    assert.equal(
+      engine.getWorkflowStatus(indexedId),
+      null,
+      'Tampered checkpoint must not be loaded (indexedId)',
+    );
+    assert.equal(
+      engine.getWorkflowStatus(tamperedId),
+      null,
+      'Tampered checkpoint must not be loaded (tamperedId)',
+    );
   });
 
   it('CP-04: initialize() rejects checkpoint with zero/negative epoch timestamps', async () => {
@@ -230,7 +276,8 @@ describe('Task 03S — WorkflowEngine: checkpoint restore validation', () => {
     engine.shutdown();
 
     assert.equal(
-      engine.getWorkflowStatus(workflowId), null,
+      engine.getWorkflowStatus(workflowId),
+      null,
       'Checkpoint with zero timestamps must be rejected',
     );
   });
@@ -248,7 +295,8 @@ describe('Task 03S — WorkflowEngine: checkpoint restore validation', () => {
 
     // A valid Running checkpoint should be restored into active map
     assert.equal(
-      status, 'RUNNING',
+      status,
+      'RUNNING',
       'Valid non-expired Running checkpoint must be restored as RUNNING status',
     );
   });
@@ -266,14 +314,18 @@ describe('Task 03S — WorkflowEngine: checkpoint restore validation', () => {
     engine.shutdown();
 
     assert.equal(
-      engine.getWorkflowStatus(workflowId), null,
+      engine.getWorkflowStatus(workflowId),
+      null,
       'Expired checkpoint must not be restored into active workflows',
     );
   });
 
   it('CP-07: initialize() without StateManager resolves cleanly (no-op)', async () => {
     const engine = createWorkflowEngine(); // no stateManager
-    await assert.doesNotReject(engine.initialize(), 'initialize() without StateManager must not throw');
+    await assert.doesNotReject(
+      engine.initialize(),
+      'initialize() without StateManager must not throw',
+    );
     engine.shutdown();
   });
 });

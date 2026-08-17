@@ -19,7 +19,9 @@ describe('Task 03T — ModelCacheManager Unit Tests', () => {
   afterEach(() => {
     try {
       fs.rmSync(tmpDir, { recursive: true, force: true });
-    } catch {}
+    } catch {
+      // ignore
+    }
   });
 
   it('MC-01: path traversal attempt outside base directory is blocked', () => {
