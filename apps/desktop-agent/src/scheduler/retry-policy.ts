@@ -4,6 +4,7 @@ export class TaskRetryPolicy {
     private readonly initialDelayMs: number = 1000,
     private readonly maxDelayMs: number = 30000,
     private readonly backoffMultiplier: number = 2.0,
+    private readonly randomSupplier: () => number = Math.random,
   ) {}
 
   public isRetryableError(errorCode?: string): boolean {
@@ -22,7 +23,8 @@ export class TaskRetryPolicy {
 
   public calculateNextBackoffDelay(currentAttempts: number): number {
     const baseDelay = this.initialDelayMs * Math.pow(this.backoffMultiplier, currentAttempts - 1);
-    const jitterFactor = 0.8 + Math.random() * 0.4; // Jitter between 80% and 120%
+    // Discovery specification requirement: Full jitter factor = random(0.5, 1.5)
+    const jitterFactor = 0.5 + this.randomSupplier() * 1.0;
     return Math.min(this.maxDelayMs, Math.floor(baseDelay * jitterFactor));
   }
 }

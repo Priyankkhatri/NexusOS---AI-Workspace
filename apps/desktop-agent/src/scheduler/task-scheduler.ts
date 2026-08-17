@@ -35,6 +35,7 @@ export class TaskScheduler implements ITaskScheduler {
     private readonly notificationManager?: NotificationManager,
     private readonly getAgentLifecycleState?: () => AgentLifecycleState,
     customQueue?: IExecutionQueue,
+    customRetryPolicy?: TaskRetryPolicy,
   ) {
     this.queue = customQueue || new ExecutionQueue(100, 20, 30000);
     this.admissionController = new TaskAdmissionController(
@@ -43,7 +44,7 @@ export class TaskScheduler implements ITaskScheduler {
       this.getAgentLifecycleState,
     );
     this.priorityPolicy = new TaskPriorityPolicy(30000);
-    this.retryPolicy = new TaskRetryPolicy(3, 1000, 30000, 2.0);
+    this.retryPolicy = customRetryPolicy || new TaskRetryPolicy(3, 1000, 30000, 2.0);
 
     void this.config;
     void this.redactionFilter;
@@ -287,6 +288,33 @@ export class TaskScheduler implements ITaskScheduler {
   ): Promise<TaskExecutionResult> {
     // If orchestrator is free, dispatch immediately
     if (this.orchestrator.getActiveCount() < 5) {
+      // Re-validate lease immediately at dispatch boundary
+      const leaseDecision = await this.leaseBoundary.validateLease(
+        item.request.leaseHeader,
+        undefined,
+      );
+
+      if (!leaseDecision.valid) {
+        if (this.stateManager) {
+          await this.stateManager.set(`task_checkpoint:${item.request.task_id}`, {
+            taskId: item.request.task_id,
+            status: 'EXPIRED',
+            errorMessage:
+              leaseDecision.reason || 'Execution lease validation failed at dispatch boundary.',
+            timestamp: new Date().toISOString(),
+          });
+        }
+        return {
+          success: false,
+          taskId: item.request.task_id,
+          stepId: item.request.step_id,
+          errorCode: 'LEASE_DENIED',
+          errorMessage:
+            leaseDecision.reason || 'Execution lease validation failed at dispatch boundary.',
+          executionTimeMs: Date.now() - startTime,
+        };
+      }
+
       const removed = this.queue.remove(item.request.task_id, item.tenantId);
       if (removed) {
         if (this.stateManager) {
@@ -326,7 +354,7 @@ export class TaskScheduler implements ITaskScheduler {
         }
 
         const now = Date.now();
-        // Queue Expiration Race Handling
+        // 1. Queue Expiration Race Handling
         if (now > item.expiresAt) {
           if (this.stateManager) {
             await this.stateManager.set(`task_checkpoint:${item.request.task_id}`, {
@@ -342,6 +370,31 @@ export class TaskScheduler implements ITaskScheduler {
             await this.stateManager.delete(`task_queue:${item.request.task_id}`);
           }
           continue;
+        }
+
+        // 2. F-01: Immediate Lease Re-Validation Before Dispatch
+        const leaseDecision = await this.leaseBoundary.validateLease(
+          item.request.leaseHeader,
+          undefined,
+        );
+
+        if (!leaseDecision.valid) {
+          if (this.stateManager) {
+            await this.stateManager.set(`task_checkpoint:${item.request.task_id}`, {
+              taskId: item.request.task_id,
+              status: 'EXPIRED',
+              errorMessage:
+                leaseDecision.reason || 'Execution lease validation failed at dispatch boundary.',
+              timestamp: new Date().toISOString(),
+            });
+            const index = (await this.stateManager.get<string[]>('task_queue_index')) || [];
+            await this.stateManager.set(
+              'task_queue_index',
+              index.filter((id) => id !== item.request.task_id),
+            );
+            await this.stateManager.delete(`task_queue:${item.request.task_id}`);
+          }
+          continue; // Lease invalid at dispatch boundary: DO NOT execute in orchestrator
         }
 
         if (this.stateManager) {
@@ -446,6 +499,7 @@ export class TaskScheduler implements ITaskScheduler {
   public shutdown(): void {
     if (this.maintenanceTimer) {
       clearInterval(this.maintenanceTimer);
+      this.maintenanceTimer = undefined;
     }
   }
 }

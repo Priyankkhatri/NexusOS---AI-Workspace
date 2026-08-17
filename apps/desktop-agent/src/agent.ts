@@ -205,6 +205,7 @@ export class DesktopAgent {
     this.logger.info('Desktop Agent stopping...');
 
     this.stopHeartbeat();
+    this.taskScheduler.shutdown();
 
     try {
       if (this.ipcManager) {

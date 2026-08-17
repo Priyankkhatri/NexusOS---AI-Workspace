@@ -9,6 +9,13 @@ export class ExecutionQueue implements IExecutionQueue {
     RETRY: [],
     BACKGROUND: [],
   };
+  private readonly lastServedTenant: Record<QueuePriorityLane, string | null> = {
+    CRITICAL: null,
+    INTERACTIVE: null,
+    NORMAL: null,
+    RETRY: null,
+    BACKGROUND: null,
+  };
   private readonly priorityPolicy: TaskPriorityPolicy;
 
   constructor(
@@ -57,10 +64,18 @@ export class ExecutionQueue implements IExecutionQueue {
       if (lane === 'RETRY') {
         const retryIndex = items.findIndex((item) => !item.nextRetryAt || now >= item.nextRetryAt);
         if (retryIndex !== -1) {
-          return items.splice(retryIndex, 1)[0] || null;
+          const item = items.splice(retryIndex, 1)[0];
+          this.lastServedTenant[lane] = item.tenantId;
+          return item;
         }
       } else {
-        return items.shift() || null;
+        // Per-tenant round-robin selection within the same priority lane
+        const nextIndex = this.findRoundRobinIndex(lane, items);
+        if (nextIndex !== -1) {
+          const item = items.splice(nextIndex, 1)[0];
+          this.lastServedTenant[lane] = item.tenantId;
+          return item;
+        }
       }
     }
 
@@ -89,7 +104,10 @@ export class ExecutionQueue implements IExecutionQueue {
           return item;
         }
       } else {
-        return items[0] || null;
+        const nextIndex = this.findRoundRobinIndex(lane, items);
+        if (nextIndex !== -1) {
+          return items[nextIndex];
+        }
       }
     }
 
@@ -176,5 +194,37 @@ export class ExecutionQueue implements IExecutionQueue {
       }
     }
     this.lanes.NORMAL = remainingNormal;
+  }
+
+  private findRoundRobinIndex(lane: QueuePriorityLane, items: ScheduledTaskItem[]): number {
+    if (items.length === 0) {
+      return -1;
+    }
+
+    // Extract unique tenant IDs in order of queue entry
+    const uniqueTenants: string[] = [];
+    for (const item of items) {
+      if (!uniqueTenants.includes(item.tenantId)) {
+        uniqueTenants.push(item.tenantId);
+      }
+    }
+
+    if (uniqueTenants.length === 1) {
+      return 0; // Single tenant present: FIFO
+    }
+
+    const lastTenant = this.lastServedTenant[lane];
+    let targetTenant = uniqueTenants[0];
+
+    if (lastTenant) {
+      const lastIdx = uniqueTenants.indexOf(lastTenant);
+      if (lastIdx !== -1) {
+        const nextIdx = (lastIdx + 1) % uniqueTenants.length;
+        targetTenant = uniqueTenants[nextIdx];
+      }
+    }
+
+    // Return the index of the oldest task belonging to targetTenant
+    return items.findIndex((it) => it.tenantId === targetTenant);
   }
 }

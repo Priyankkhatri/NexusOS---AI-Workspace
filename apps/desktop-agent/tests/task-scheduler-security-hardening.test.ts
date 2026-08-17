@@ -4,6 +4,7 @@ import crypto from 'node:crypto';
 import {
   TaskScheduler,
   ExecutionQueue,
+  TaskRetryPolicy,
   AgentOrchestrator,
   RuntimeRouter,
   ControlPlaneConfig,
@@ -359,5 +360,131 @@ describe('Task 03R Task Scheduler — Security Hardening & Vulnerability Audit',
     const expired = queue.pruneExpired(now);
     assert.equal(expired.length, 1);
     assert.equal(queue.getSize(), 0);
+  });
+
+  it('F-01 REMEDIATION: re-validates lease immediately at dispatch boundary and rejects execution if lease becomes invalid', async () => {
+    let leaseValid = true;
+    const mockLeaseBoundary = {
+      validateLease: async () => ({
+        valid: leaseValid,
+        reason: leaseValid ? undefined : 'Lease revoked at dispatch boundary',
+      }),
+    } as unknown as ExecutionLeaseBoundary;
+
+    const { scheduler, orchestrator } = createTestScheduler();
+    (scheduler as unknown as Record<string, unknown>)['leaseBoundary'] = mockLeaseBoundary;
+    (scheduler as unknown as Record<string, unknown>)['admissionController'] = {
+      evaluateAdmission: async () => ({ admitted: true }),
+    };
+
+    const leaseHeader = createValidLeaseHeader();
+    let executedInOrchestrator = false;
+    (orchestrator as unknown as Record<string, unknown>)['executeTask'] = async () => {
+      executedInOrchestrator = true;
+      return { success: true, taskId: 'task-f01', stepId: 'step-1', executionTimeMs: 10 };
+    };
+
+    // 1. Lease valid during queueing
+    leaseValid = false; // Lease becomes invalid right at dispatch boundary
+
+    const res = await scheduler.scheduleTask({
+      task_id: 'task-f01',
+      step_id: 'step-1',
+      correlation_id: 'corr-f01',
+      leaseHeader,
+      capabilityId: 'device.execute',
+      runtimeCategory: 'device',
+      payload: {},
+    });
+
+    assert.equal(res.success, false);
+    assert.equal(res.errorCode, 'LEASE_DENIED');
+    assert.equal(
+      executedInOrchestrator,
+      false,
+      'Orchestrator MUST NOT be called when lease fails at dispatch boundary',
+    );
+  });
+
+  it('F-02 REMEDIATION: taskScheduler.shutdown() stops maintenance timer and is idempotent', () => {
+    const { scheduler } = createTestScheduler();
+    // Verify maintenance timer active
+    assert.ok((scheduler as unknown as Record<string, unknown>)['maintenanceTimer'] !== undefined);
+
+    scheduler.shutdown();
+    assert.equal((scheduler as unknown as Record<string, unknown>)['maintenanceTimer'], undefined);
+
+    // Repeated shutdown MUST be safe & idempotent
+    assert.doesNotThrow(() => scheduler.shutdown());
+  });
+
+  it('F-03 REMEDIATION: TaskRetryPolicy calculates jitter strictly within [0.5, 1.5] bounds', () => {
+    // Min jitter supplier
+    const minPolicy = new TaskRetryPolicy(3, 1000, 30000, 2.0, () => 0.0);
+    const minDelay = minPolicy.calculateNextBackoffDelay(1);
+    assert.equal(minDelay, 500, 'Min jitter (0.0 supplier) MUST yield 50% of base delay (500ms)');
+
+    // Max jitter supplier
+    const maxPolicy = new TaskRetryPolicy(3, 1000, 30000, 2.0, () => 1.0);
+    const maxDelay = maxPolicy.calculateNextBackoffDelay(1);
+    assert.equal(
+      maxDelay,
+      1500,
+      'Max jitter (1.0 supplier) MUST yield 150% of base delay (1500ms)',
+    );
+  });
+
+  it('F-04 REMEDIATION: ExecutionQueue interleaves tasks in round-robin order across multiple tenants', () => {
+    const queue = new ExecutionQueue(100, 20);
+    const leaseHeader = createValidLeaseHeader();
+
+    // Enqueue 3 tasks for Tenant A, 3 for Tenant B, 3 for Tenant C in same priority lane
+    const tenants = ['tenant-A', 'tenant-B', 'tenant-C'];
+    for (let i = 1; i <= 3; i++) {
+      for (const tenantId of tenants) {
+        queue.enqueue({
+          request: {
+            task_id: `task-${tenantId}-${i}`,
+            step_id: 'step-1',
+            correlation_id: `corr-${tenantId}-${i}`,
+            leaseHeader: { ...leaseHeader, tenant_id: tenantId },
+            capabilityId: 'device.execute',
+            runtimeCategory: 'device',
+            payload: {},
+          },
+          priorityLane: 'NORMAL',
+          tenantId,
+          queuedAt: Date.now(),
+          expiresAt: Date.now() + 60000,
+          retryCount: 0,
+        });
+      }
+    }
+
+    assert.equal(queue.getSize(), 9);
+
+    // Dequeue all 9 items and record sequence of tenant IDs
+    const sequence: string[] = [];
+    for (let i = 0; i < 9; i++) {
+      const item = queue.dequeue();
+      assert.ok(item !== null);
+      sequence.push(item!.tenantId);
+    }
+
+    assert.deepEqual(
+      sequence,
+      [
+        'tenant-A',
+        'tenant-B',
+        'tenant-C',
+        'tenant-A',
+        'tenant-B',
+        'tenant-C',
+        'tenant-A',
+        'tenant-B',
+        'tenant-C',
+      ],
+      'Queue MUST interleave tasks in round-robin order across distinct tenants within the same priority lane',
+    );
   });
 });
