@@ -189,6 +189,30 @@ export class WorkflowEngine implements IWorkflowEngine {
       };
     }
 
+    // 3.5 Duplicate Workflow Submission Guard
+    if (this.activeWorkflows.has(dag.workflowId)) {
+      const existing = this.activeWorkflows.get(dag.workflowId)!;
+      // Cross-tenant attempt on an existing workflow is treated as not-found to prevent probing
+      if (existing.tenantId !== identity.pairedTenantId) {
+        return {
+          success: false,
+          taskId: dag.taskId,
+          stepId: dag.workflowId,
+          errorCode: 'WORKFLOW_NOT_FOUND',
+          errorMessage: 'Workflow not found for this tenant.',
+          executionTimeMs: Date.now() - startTime,
+        };
+      }
+      return {
+        success: false,
+        taskId: dag.taskId,
+        stepId: dag.workflowId,
+        errorCode: 'DUPLICATE_WORKFLOW_ID',
+        errorMessage: `Workflow '${dag.workflowId}' is already active or has not been cleared.`,
+        executionTimeMs: Date.now() - startTime,
+      };
+    }
+
     // 4. Maximum Active Workflows Limit Check
     if (this.activeWorkflows.size >= this.maxActiveWorkflows) {
       return {
