@@ -332,6 +332,12 @@ export class WorkflowEngine implements IWorkflowEngine {
           continue;
         }
 
+        // Checkpoint restore validation: reject malformed or tampered checkpoints
+        if (!this.validateCheckpoint(state, workflowId)) {
+          await this.stateManager.delete(key);
+          continue;
+        }
+
         if (
           now > state.expiresAt ||
           state.status === 'Completed' ||
@@ -352,6 +358,41 @@ export class WorkflowEngine implements IWorkflowEngine {
 
     await this.stateManager.set('workflow_index', remainingIndex);
   }
+
+  /**
+   * Validates that a restored checkpoint contains all required fields and correct types.
+   * Returns false (and causes deletion) for any malformed or tampered checkpoint.
+   */
+  private validateCheckpoint(state: unknown, expectedWorkflowId: string): state is WorkflowExecutionState {
+    if (!state || typeof state !== 'object') {
+      return false;
+    }
+    const s = state as Record<string, unknown>;
+    if (
+      typeof s.workflowId !== 'string' ||
+      s.workflowId !== expectedWorkflowId || // workflowId must match the index key
+      typeof s.taskId !== 'string' ||
+      typeof s.tenantId !== 'string' ||
+      typeof s.deviceId !== 'string' ||
+      typeof s.correlationId !== 'string' ||
+      typeof s.status !== 'string' ||
+      typeof s.expiresAt !== 'number' ||
+      typeof s.createdAt !== 'number' ||
+      !Array.isArray(s.completedNodes) ||
+      !Array.isArray(s.pendingNodes) ||
+      !Array.isArray(s.activeNodes) ||
+      typeof s.nodeStates !== 'object' ||
+      typeof s.nodeOutputs !== 'object'
+    ) {
+      return false;
+    }
+    // Sanity: expiresAt must be a plausible future or recent epoch (not 0 or negative)
+    if ((s.expiresAt as number) <= 0 || (s.createdAt as number) <= 0) {
+      return false;
+    }
+    return true;
+  }
+
 
   private async executeDAGTiers(
     dag: WorkflowDAG,
