@@ -2,7 +2,7 @@ import { Logger } from '@nexusos/backend';
 import { DesktopAgentConfig } from './config/index.js';
 import { AgentLifecycleManager, AgentLifecycleState } from './lifecycle/index.js';
 import { AgentIdentityProvider, AgentIdentity } from './identity/agent-identity.js';
-import { ControlPlaneClient } from './communication/control-plane-client.js';
+import { ControlPlaneClient } from './communication/types.js';
 import { CapabilityRegistry } from './registry/capability-registry.js';
 import { RuntimeRegistry } from './registry/runtime-registry.js';
 import { ExecutionLeaseBoundary } from './permissions/lease-boundary.js';

@@ -1,5 +1,5 @@
 import { ExecutionLeaseHeaderSchema, ExecutionLeaseHeader } from '@nexusos/contracts';
-import { PolicyEvaluator } from '@nexusos/policy';
+import { PolicyEvaluator, ReferencePolicyEvaluator, loadPolicyConfig } from '@nexusos/policy';
 import { AuthenticatedContext } from '@nexusos/identity';
 
 export interface LeaseValidationResult {
@@ -9,7 +9,11 @@ export interface LeaseValidationResult {
 }
 
 export class ExecutionLeaseBoundary {
-  constructor(private readonly policyEvaluator: PolicyEvaluator) {}
+  constructor(
+    private readonly policyEvaluator: PolicyEvaluator = new ReferencePolicyEvaluator(
+      loadPolicyConfig(),
+    ),
+  ) {}
 
   async validateLease(
     rawLease: unknown,
