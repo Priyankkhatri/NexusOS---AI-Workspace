@@ -4,7 +4,7 @@ import { TelemetryManager } from '../telemetry/telemetry-manager.js';
 import { RedactionFilter } from '../telemetry/redaction-filter.js';
 import { StateCryptoVault } from './crypto-vault.js';
 import { EncryptedStateStore } from './encrypted-state-store.js';
-import { LocalAgentStateSnapshotSchema, StateConfigSchema } from './schemas.js';
+import { LocalAgentStateSnapshotSchema, StateConfigSchema, StateRecordSchema } from './schemas.js';
 import { LocalStateStore } from './local-state-store.js';
 import {
   IStateManager,
@@ -103,6 +103,24 @@ export class StateManager implements IStateManager, LocalStateStore {
         record.version,
         this.config.currentSchemaVersion,
       );
+
+      // Revalidate migrated data against StateRecordSchema or snapshot schema if applicable
+      const migratedChecksum = this.vault.computeChecksum(migratedValue);
+      const migratedRecord = {
+        key: record.key,
+        version: this.config.currentSchemaVersion,
+        updatedAt: new Date().toISOString(),
+        data: migratedValue,
+        checksum: migratedChecksum,
+      };
+
+      const parseResult = StateRecordSchema.safeParse(migratedRecord);
+      if (!parseResult.success) {
+        throw new Error(
+          `Migrated record failed schema validation for key '${key}': ${parseResult.error.message}`,
+        );
+      }
+
       return migratedValue as T;
     }
 

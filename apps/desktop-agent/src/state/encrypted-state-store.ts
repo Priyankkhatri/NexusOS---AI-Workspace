@@ -3,7 +3,7 @@ import path from 'node:path';
 import { PathSecurityService } from '../runtimes/filesystem/path-security.js';
 import { RedactionFilter } from '../telemetry/redaction-filter.js';
 import { StateCryptoVault } from './crypto-vault.js';
-import { StateRecordSchema } from './schemas.js';
+import { EncryptedStateEnvelopeSchema, StateRecordSchema } from './schemas.js';
 import { IEncryptedStateStore, StateConfig, StateRecord } from './types.js';
 
 export class EncryptedStateStore implements IEncryptedStateStore {
@@ -15,6 +15,7 @@ export class EncryptedStateStore implements IEncryptedStateStore {
   private tmpFilePath: string = '';
   private isLoaded = false;
   private corruptedRecoveryCount = 0;
+  private activeFlushPromise: Promise<void> | null = null;
 
   constructor(
     private readonly config: StateConfig,
@@ -41,13 +42,25 @@ export class EncryptedStateStore implements IEncryptedStateStore {
   }
 
   public async saveRecord<T>(key: string, data: T, version = '1.0.0'): Promise<void> {
-    if (!key || typeof key !== 'string') {
-      throw new Error('Record key must be a valid non-empty string.');
+    if (!key || typeof key !== 'string' || key.trim().length === 0 || key.length > 256) {
+      throw new Error('Record key must be a non-empty string under 256 characters.');
+    }
+
+    if (key.includes('\0')) {
+      throw new Error('Null bytes in record key are strictly prohibited.');
     }
 
     if (this.records.size >= this.config.maxRecords && !this.records.has(key)) {
       throw new Error(
         `Storage limit exceeded: maximum allowed record count of ${this.config.maxRecords} reached.`,
+      );
+    }
+
+    // Quick size bound check before redacting/allocating memory
+    const estimatedSize = Buffer.byteLength(JSON.stringify(data || ''), 'utf-8');
+    if (estimatedSize > this.config.maxStorageSizeBytes) {
+      throw new Error(
+        `Storage size bounds exceeded: state size exceeds limit of ${this.config.maxStorageSizeBytes} bytes.`,
       );
     }
 
@@ -116,21 +129,34 @@ export class EncryptedStateStore implements IEncryptedStateStore {
     }
 
     try {
+      this.validatePathConfinement(this.lkgFilePath);
       const lkgRaw = fs.readFileSync(this.lkgFilePath, 'utf-8');
-      const envelope = JSON.parse(lkgRaw);
-      const decryptedJson = this.vault.decrypt(envelope);
-      const rawRecords: StateRecord<unknown>[] = JSON.parse(decryptedJson);
+      const envelopeParse = EncryptedStateEnvelopeSchema.safeParse(JSON.parse(lkgRaw));
+      if (!envelopeParse.success) {
+        return false;
+      }
+
+      const decryptedJson = this.vault.decrypt(envelopeParse.data);
+      const rawRecords: unknown = JSON.parse(decryptedJson);
+
+      if (!Array.isArray(rawRecords)) {
+        return false;
+      }
 
       this.records.clear();
       for (const rec of rawRecords) {
         const parseResult = StateRecordSchema.safeParse(rec);
         if (parseResult.success) {
-          this.records.set(rec.key, rec);
+          const validRecord = parseResult.data as StateRecord<unknown>;
+          const computedChecksum = this.vault.computeChecksum(validRecord.data);
+          if (validRecord.checksum === computedChecksum) {
+            this.records.set(validRecord.key, validRecord);
+          }
         }
       }
 
       this.corruptedRecoveryCount++;
-      await this.flush(); // Persist restored LKG as current primary state
+      await this.flushInternal(); // Persist restored LKG as current primary state
       return true;
     } catch {
       return false;
@@ -138,6 +164,19 @@ export class EncryptedStateStore implements IEncryptedStateStore {
   }
 
   public async flush(): Promise<void> {
+    // Serialization lock to prevent race conditions on atomic write
+    while (this.activeFlushPromise) {
+      await this.activeFlushPromise;
+    }
+
+    this.activeFlushPromise = this.flushInternal().finally(() => {
+      this.activeFlushPromise = null;
+    });
+
+    return this.activeFlushPromise;
+  }
+
+  private async flushInternal(): Promise<void> {
     const rawRecords = Array.from(this.records.values());
     const jsonStr = JSON.stringify(rawRecords);
 
@@ -160,12 +199,17 @@ export class EncryptedStateStore implements IEncryptedStateStore {
       fs.mkdirSync(parentDir, { recursive: true, mode: 0o700 });
     }
 
-    // 3. Create LKG backup of existing valid primary file
+    // 3. Create LKG backup of existing primary file ONLY if valid
     if (fs.existsSync(this.primaryFilePath)) {
       try {
-        fs.copyFileSync(this.primaryFilePath, this.lkgFilePath);
+        const existingRaw = fs.readFileSync(this.primaryFilePath, 'utf-8');
+        const envelopeParse = EncryptedStateEnvelopeSchema.safeParse(JSON.parse(existingRaw));
+        if (envelopeParse.success) {
+          this.vault.decrypt(envelopeParse.data); // Test decrypt & HMAC
+          fs.copyFileSync(this.primaryFilePath, this.lkgFilePath);
+        }
       } catch {
-        // Suppress backup copy error
+        // Primary file corrupted or tampered: DO NOT overwrite LKG backup!
       }
     }
 
@@ -181,6 +225,7 @@ export class EncryptedStateStore implements IEncryptedStateStore {
     // Clean up stale interrupted write file if present
     if (fs.existsSync(this.tmpFilePath)) {
       try {
+        this.validatePathConfinement(this.tmpFilePath);
         fs.unlinkSync(this.tmpFilePath);
       } catch {
         // Ignore unlink error
@@ -198,8 +243,17 @@ export class EncryptedStateStore implements IEncryptedStateStore {
 
     try {
       this.validatePathConfinement(this.primaryFilePath);
+
+      // Stat file size on disk BEFORE reading into memory
+      const stat = fs.statSync(this.primaryFilePath);
+      if (stat.size > this.config.maxStorageSizeBytes * 2) {
+        throw new Error(
+          `Primary state file size (${stat.size} bytes) exceeds maximum storage bounds (${this.config.maxStorageSizeBytes * 2} bytes).`,
+        );
+      }
+
       const rawText = fs.readFileSync(this.primaryFilePath, 'utf-8');
-      const envelope = JSON.parse(rawText);
+      const envelope = EncryptedStateEnvelopeSchema.parse(JSON.parse(rawText));
       const decryptedJson = this.vault.decrypt(envelope);
       const rawRecords: unknown = JSON.parse(decryptedJson);
 
@@ -243,6 +297,11 @@ export class EncryptedStateStore implements IEncryptedStateStore {
     this.primaryFilePath = path.join(resolvedDir, this.config.stateFileName);
     this.lkgFilePath = path.join(resolvedDir, this.config.lkgFileName);
     this.tmpFilePath = path.join(resolvedDir, `${this.config.stateFileName}.tmp`);
+
+    // Immediate path confinement validation on initialization
+    this.validatePathConfinement(this.primaryFilePath);
+    this.validatePathConfinement(this.lkgFilePath);
+    this.validatePathConfinement(this.tmpFilePath);
   }
 
   private validatePathConfinement(targetPath: string): void {

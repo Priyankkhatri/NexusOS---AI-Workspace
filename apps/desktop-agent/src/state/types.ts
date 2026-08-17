@@ -11,6 +11,7 @@ export interface StateRecord<T = unknown> {
 export interface EncryptedStateEnvelope {
   formatVersion: string;
   algorithm: 'AES-256-GCM';
+  createdAt?: string;
   iv: string; // Base64 12-byte IV
   authTag: string; // Base64 16-byte Auth Tag
   hmac: string; // Base64 HMAC-SHA256 over ciphertext

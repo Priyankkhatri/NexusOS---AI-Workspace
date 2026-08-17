@@ -2,8 +2,14 @@ import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { StateManager, StateCryptoVault, EncryptedStateStore } from '../src/state/index.js';
+import {
+  StateManager,
+  StateCryptoVault,
+  EncryptedStateStore,
+  StateConfigSchema,
+} from '../src/state/index.js';
 import { AgentLifecycleState } from '../src/lifecycle/index.js';
+import { MemoryCacheManager } from '../src/memory/memory-cache-manager.js';
 
 describe('Task 03M State Manager — Security Hardening & Vulnerability Audit', () => {
   const storageDir = path.resolve('.test-state-sec-dir');
@@ -121,22 +127,13 @@ describe('Task 03M State Manager — Security Hardening & Vulnerability Audit', 
   });
 
   it('VULNERABILITY-M05: rejects path traversal and scope escape in state file paths', async () => {
-    const vault = new StateCryptoVault(encKey);
-    const store = new EncryptedStateStore(
-      {
+    assert.throws(() => {
+      StateConfigSchema.parse({
         storageDir,
         stateFileName: '../escaped-state.enc',
-        lkgFileName: 'lkg.enc',
-        maxStorageSizeBytes: 1048576,
-        maxRecords: 100,
-        currentSchemaVersion: '1.0.0',
-      },
-      vault,
-    );
-
-    await assert.rejects(async () => {
-      await store.flush();
-    }, /Path traversal \/ scope escape detected/);
+        encryptionKey: encKey,
+      });
+    }, /stateFileName must be a single valid filename/);
   });
 
   it('VULNERABILITY-M06: rejects malformed record schemas fail-closed', async () => {
@@ -229,5 +226,128 @@ describe('Task 03M State Manager — Security Hardening & Vulnerability Audit', 
     }, /State mutation rejected/);
 
     await nonWritableManager.stop();
+  });
+
+  it('VULNERABILITY-M11: authenticates formatVersion, algorithm, and createdAt metadata inside HMAC signature', async () => {
+    await stateManager.set('meta:key', 'unmodified_data');
+    await stateManager.stop();
+
+    const stateFilePath = path.join(storageDir, 'test-sec-state.enc');
+    const rawContent = fs.readFileSync(stateFilePath, 'utf-8');
+    const envelope = JSON.parse(rawContent);
+
+    // Tamper with formatVersion metadata without altering ciphertext
+    envelope.formatVersion = '2.0.0';
+    fs.writeFileSync(stateFilePath, JSON.stringify(envelope), 'utf-8');
+
+    // Remove LKG file so fallback cannot happen
+    const lkgFilePath = path.join(storageDir, 'test-sec-state.lkg.enc');
+    if (fs.existsSync(lkgFilePath)) fs.unlinkSync(lkgFilePath);
+
+    const tamperedMetaManager = new StateManager({
+      storageDir,
+      stateFileName: 'test-sec-state.enc',
+      lkgFileName: 'test-sec-state.lkg.enc',
+      encryptionKey: encKey,
+    });
+
+    await assert.rejects(async () => {
+      await tamperedMetaManager.start();
+    }, /Failed to load encrypted state from disk|Integrity verification failed/);
+  });
+
+  it('VULNERABILITY-M12: preserves valid LKG backup when primary file is corrupted during flush', async () => {
+    await stateManager.set('lkg:checkpoint', 'initial_valid_state');
+    await stateManager.stop();
+
+    const stateFilePath = path.join(storageDir, 'test-sec-state.enc');
+    const lkgFilePath = path.join(storageDir, 'test-sec-state.lkg.enc');
+
+    // Create valid LKG backup explicitly
+    fs.copyFileSync(stateFilePath, lkgFilePath);
+
+    // Corrupt primary state file on disk
+    fs.writeFileSync(stateFilePath, 'CORRUPTED_PRIMARY_PAYLOAD_GARBAGE', 'utf-8');
+
+    const vault = new StateCryptoVault(encKey);
+    const store = new EncryptedStateStore(
+      {
+        storageDir,
+        stateFileName: 'test-sec-state.enc',
+        lkgFileName: 'test-sec-state.lkg.enc',
+        maxStorageSizeBytes: 1048576,
+        maxRecords: 100,
+        currentSchemaVersion: '1.0.0',
+      },
+      vault,
+    );
+
+    // Flush store to disk — must NOT overwrite the valid lkg.enc with corrupted primary file
+    await store.saveRecord('new:record', 'new_data');
+
+    // LKG file content must remain valid decryptable state
+    const lkgRaw = fs.readFileSync(lkgFilePath, 'utf-8');
+    const lkgEnvelope = JSON.parse(lkgRaw);
+    const decryptedLkg = vault.decrypt(lkgEnvelope);
+
+    assert.ok(decryptedLkg.includes('lkg:checkpoint'));
+  });
+
+  it('VULNERABILITY-M13: rejects disk state files exceeding maximum storage size bounds before reading', async () => {
+    const hugeStateFilePath = path.join(storageDir, 'huge-sec-state.enc');
+    fs.mkdirSync(storageDir, { recursive: true });
+    // Write 500 KB file while storage limit is 100 KB
+    fs.writeFileSync(hugeStateFilePath, 'A'.repeat(500000), 'utf-8');
+
+    const tightStoreManager = new StateManager({
+      storageDir,
+      stateFileName: 'huge-sec-state.enc',
+      maxStorageSizeBytes: 100000, // 100 KB limit
+      encryptionKey: encKey,
+    });
+
+    await assert.rejects(async () => {
+      await tightStoreManager.start();
+    }, /exceeds maximum storage bounds/);
+  });
+
+  it('VULNERABILITY-M14: handles concurrent saveRecord operations serially without race condition file corruption', async () => {
+    const concurrentPuts = Array.from({ length: 10 }).map((_, i) =>
+      stateManager.set(`concurrent:key:${i}`, `value_${i}`),
+    );
+
+    await Promise.all(concurrentPuts);
+
+    for (let i = 0; i < 10; i++) {
+      const val = await stateManager.get<string>(`concurrent:key:${i}`);
+      assert.equal(val, `value_${i}`);
+    }
+  });
+
+  it('VULNERABILITY-M15: proves Task 03N Memory Cache operations never persist to StateManager disk storage', async () => {
+    const memCache = new MemoryCacheManager();
+    await memCache.start();
+
+    await memCache.put(
+      'ephemeral:secret',
+      { data: 'transient_heap_only' },
+      {
+        taskId: 't1',
+        workspaceId: 'w1',
+      },
+    );
+
+    // Verify StateManager disk directory has no records of 'ephemeral:secret'
+    const diskVal = await stateManager.get('ephemeral:secret');
+    assert.equal(diskVal, null);
+
+    const stateFilePath = path.join(storageDir, 'test-sec-state.enc');
+    if (fs.existsSync(stateFilePath)) {
+      const content = fs.readFileSync(stateFilePath, 'utf-8');
+      assert.equal(content.includes('ephemeral:secret'), false);
+      assert.equal(content.includes('transient_heap_only'), false);
+    }
+
+    await memCache.stop();
   });
 });
