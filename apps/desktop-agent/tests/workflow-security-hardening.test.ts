@@ -566,3 +566,61 @@ describe('Task 03S Security Hardening — Compensation Idempotency', () => {
   });
 });
 
+// ============================================================
+// WorkflowStepContext: Output Serialization & Prototype Safety
+// ============================================================
+
+describe('Task 03S Security Hardening — StepContext Output Safety', () => {
+  const makeCtx = () =>
+    new WorkflowStepContext({
+      workflowId: 'wf-1',
+      taskId: 'task-1',
+      tenantId: 'tenant-1',
+      deviceId: 'device-1',
+      correlationId: 'corr-1',
+      leaseHeader: {} as never,
+    });
+
+  it('SH-25: setNodeOutput rejects __proto__ key (prototype pollution attempt)', () => {
+    const ctx = makeCtx();
+    // Use JSON.parse to create an object with __proto__ as a real own enumerable key
+    // (object literal { __proto__: x } sets the prototype, not an own key)
+    const withProtoKey = JSON.parse('{"__proto__": {"admin": true}}') as Record<string, unknown>;
+    assert.throws(
+      () => ctx.setNodeOutput('node-A', withProtoKey),
+      /prototype pollution/i,
+      'Should reject __proto__ key with prototype pollution error',
+    );
+  });
+
+  it('SH-26: setNodeOutput rejects constructor key (prototype pollution attempt)', () => {
+    const ctx = makeCtx();
+    assert.throws(
+      () => ctx.setNodeOutput('node-B', { constructor: 'evil' } as unknown as Record<string, unknown>),
+      /prototype pollution/i,
+      'Should reject constructor key with prototype pollution error',
+    );
+  });
+
+  it('SH-27: setNodeOutput rejects circular reference (non-serializable output)', () => {
+    const ctx = makeCtx();
+    // Create a circular reference object
+    const circular: Record<string, unknown> = { data: 'test' };
+    circular.self = circular;
+    assert.throws(
+      () => ctx.setNodeOutput('node-C', circular),
+      /not JSON-serializable/i,
+      'Should reject circular reference with serialization error',
+    );
+  });
+
+  it('SH-28: setNodeOutput accepts valid safe output without throwing', () => {
+    const ctx = makeCtx();
+    assert.doesNotThrow(
+      () => ctx.setNodeOutput('node-D', { result: 'success', count: 42, data: ['a', 'b'] }),
+      'Valid safe output must not throw',
+    );
+    const retrieved = ctx.getNodeOutput('node-D');
+    assert.deepEqual(retrieved, { result: 'success', count: 42, data: ['a', 'b'] });
+  });
+});
