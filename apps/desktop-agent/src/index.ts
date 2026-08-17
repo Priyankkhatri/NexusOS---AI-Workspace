@@ -26,4 +26,5 @@ export * from './ipc/index.js';
 export * from './memory/index.js';
 export * from './orchestrator/index.js';
 export * from './scheduler/index.js';
+export * from './workflow/index.js';
 export * from './agent.js';
