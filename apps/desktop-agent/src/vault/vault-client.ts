@@ -20,6 +20,8 @@ import {
   VaultOperationResult,
 } from './types.js';
 
+import { NotificationManager } from '../notifications/notification-manager.js';
+
 /**
  * Maximum number of concurrently active (non-revoked) secret leases.
  * Prevents unbounded secret accumulation in memory.
@@ -36,6 +38,7 @@ export class SecretsVaultClient {
     public readonly redactionRegistry: SecretRedactionRegistry = new SecretRedactionRegistry(),
     public readonly revocationHandler: SecretRevocationHandler = new SecretRevocationHandler(),
     _logger?: AgentLogger,
+    private readonly notificationManager?: NotificationManager,
   ) {}
 
   /**
@@ -105,6 +108,15 @@ export class SecretsVaultClient {
       // createNexusOSError returns a plain object, not an Error instance.
       // Extract .message from the object directly; fall back to String(err).
       const errMessage = (err as { message?: string }).message || String(err);
+
+      if (errCode === 'SECRET_REVOKED' || errCode === 'SECRET_LEASE_LIMIT_EXCEEDED') {
+        this.notificationManager?.notify({
+          category: 'SECURITY_ALERT',
+          priority: 'HIGH',
+          title: 'Vault Security Policy Alert',
+          message: errMessage,
+        });
+      }
 
       const result: VaultOperationResult<SecretLeasePayload> = {
         success: false,
