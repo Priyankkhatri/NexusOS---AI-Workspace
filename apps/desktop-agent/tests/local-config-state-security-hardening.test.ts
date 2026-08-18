@@ -83,10 +83,9 @@ describe('Task 03Y — Configuration & State Security Hardening Suite', () => {
 
   test('03Y-SEC-02: Unsigned enterprise policy overlay injection rejected', async () => {
     const manager = new ConfigurationManager();
-    const res = await manager.applyConfigurationUpdate(
-      ConfigLayer.ENTERPRISE_POLICY_OVERLAYS,
-      { settings: { logLevel: 'error' } } as any,
-    );
+    const res = await manager.applyConfigurationUpdate(ConfigLayer.ENTERPRISE_POLICY_OVERLAYS, {
+      settings: { logLevel: 'error' },
+    } as any);
 
     assert.equal(res.result.success, false);
     assert.equal(res.result.error?.code, 'CONFIG_SIGNATURE_MISSING');

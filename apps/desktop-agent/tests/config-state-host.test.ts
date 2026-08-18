@@ -37,14 +37,11 @@ describe('Task 03Y — Configuration & State Host Unit Suite', () => {
 
   test('rejects updates that attempt to set security baselines to false', async () => {
     const manager = new ConfigurationManager();
-    const updateResult = await manager.applyConfigurationUpdate(
-      ConfigLayer.USER_PREFERENCES,
-      {
-        securityBaselines: {
-          leaseValidationEnabled: false as any,
-        },
+    const updateResult = await manager.applyConfigurationUpdate(ConfigLayer.USER_PREFERENCES, {
+      securityBaselines: {
+        leaseValidationEnabled: false as any,
       },
-    );
+    });
 
     assert.equal(updateResult.result.success, false);
     assert.equal(updateResult.result.action, 'REJECT');
