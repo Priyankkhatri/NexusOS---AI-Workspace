@@ -274,6 +274,53 @@ export class DesktopAgent {
         await this.modelRuntimeManager.unloadModel(modelId);
         return { success: true, modelId };
       });
+      this.ipcManager.registerMethodHandler('tray.getStatus', async () => {
+        return this.trayController.getStatus();
+      });
+      this.ipcManager.registerMethodHandler('tray.pause', async (params) => {
+        const { reason } = (params || {}) as { reason?: string };
+        return this.trayController.pause(reason);
+      });
+      this.ipcManager.registerMethodHandler('tray.resume', async () => {
+        return this.trayController.resume();
+      });
+      this.ipcManager.registerMethodHandler('tray.getMenuDescriptors', async () => {
+        return this.trayController.getMenuDescriptors();
+      });
+      this.ipcManager.registerMethodHandler('approval.presentPrompt', async (params) => {
+        const prompt = await this.approvalHost.presentPrompt(
+          params as unknown as import('./ui/types.js').ApprovalPromptRequest,
+        );
+        this.trayController.setPendingApprovalCount(
+          this.approvalHost.listPendingPrompts().length,
+        );
+        return prompt;
+      });
+      this.ipcManager.registerMethodHandler('approval.getPrompt', async (params) => {
+        const { promptId, tenantId } = (params || {}) as { promptId: string; tenantId?: string };
+        return this.approvalHost.getPrompt(promptId, tenantId);
+      });
+      this.ipcManager.registerMethodHandler('approval.listPending', async (params) => {
+        const { tenantId } = (params || {}) as { tenantId?: string };
+        return this.approvalHost.listPendingPrompts(tenantId);
+      });
+      this.ipcManager.registerMethodHandler('approval.submitDecision', async (params) => {
+        const res = await this.approvalHost.submitDecision(
+          params as unknown as import('./ui/types.js').ApprovalDecisionRequest,
+        );
+        this.trayController.setPendingApprovalCount(
+          this.approvalHost.listPendingPrompts().length,
+        );
+        return res;
+      });
+      this.ipcManager.registerMethodHandler('approval.cancelPrompt', async (params) => {
+        const { promptId, reason } = (params || {}) as { promptId: string; reason?: string };
+        const success = this.approvalHost.cancelPrompt(promptId, reason);
+        this.trayController.setPendingApprovalCount(
+          this.approvalHost.listPendingPrompts().length,
+        );
+        return { success };
+      });
     }
 
     if (typeof this.controlPlaneClient.registerCommandHandler === 'function') {
