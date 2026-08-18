@@ -9,6 +9,8 @@ import {
   ResourceUsage,
 } from './types.js';
 
+import { NotificationManager } from '../notifications/notification-manager.js';
+
 export class HealthMonitor implements IHealthMonitor {
   private readonly startTime = Date.now();
   private lastCpuUsage = process.cpuUsage();
@@ -19,6 +21,7 @@ export class HealthMonitor implements IHealthMonitor {
     private readonly agentVersion: string = '0.1.0-sprint0',
     private readonly readinessGate: ReadinessGate = new ReadinessGate(),
     private readonly storageDir: string = '.',
+    private readonly notificationManager?: NotificationManager,
   ) {}
 
   public checkLiveness(): boolean {
@@ -38,6 +41,8 @@ export class HealthMonitor implements IHealthMonitor {
   public getHealthReport(): HealthReport {
     const readiness = this.readinessGate.evaluateReadiness();
     const liveness = this.checkLiveness();
+    const resourceUsage = this.sampleResourceUsage();
+    const uptimeSeconds = Math.floor((Date.now() - this.startTime) / 1000);
 
     let state: HealthState = 'HEALTHY';
     if (!liveness || readiness.state === 'FAILED') {
@@ -46,8 +51,19 @@ export class HealthMonitor implements IHealthMonitor {
       state = 'DEGRADED';
     }
 
-    const resourceUsage = this.sampleResourceUsage();
-    const uptimeSeconds = Math.floor((Date.now() - this.startTime) / 1000);
+    // Disk headroom check: below 100MB triggers DEGRADED state
+    if (resourceUsage.diskHeadroomBytes < 100 * 1024 * 1024 && state === 'HEALTHY') {
+      state = 'DEGRADED';
+    }
+
+    if (state === 'DEGRADED' || state === 'FAILED') {
+      this.notificationManager?.notify({
+        category: 'SYSTEM_INFO',
+        priority: state === 'FAILED' ? 'CRITICAL' : 'HIGH',
+        title: 'NexusOS Agent Health Alert',
+        message: `Agent health state changed to ${state}. Low disk headroom or readiness dependency issue.`,
+      });
+    }
 
     return {
       state,

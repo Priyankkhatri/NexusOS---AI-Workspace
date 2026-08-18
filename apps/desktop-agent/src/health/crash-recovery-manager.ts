@@ -11,6 +11,8 @@ import {
   StepCheckpoint,
 } from './types.js';
 
+import { NotificationManager } from '../notifications/notification-manager.js';
+
 export class CrashRecoveryManager implements ICrashRecoveryManager {
   private readonly checkpoints: StepCheckpoint[] = [];
 
@@ -18,6 +20,7 @@ export class CrashRecoveryManager implements ICrashRecoveryManager {
     private readonly agentId: string = '00000000-0000-4000-8000-000000000000',
     private readonly manifestStore: IRecoveryManifestStore = new RecoveryManifestStore(),
     private readonly reconciliationEngine: IProcessReconciliationEngine = new ProcessReconciliationEngine(),
+    private readonly notificationManager?: NotificationManager,
   ) {}
 
   public recordStepCheckpoint(checkpoint: StepCheckpoint): void {
@@ -118,6 +121,15 @@ export class CrashRecoveryManager implements ICrashRecoveryManager {
 
     const action =
       blockedStepsCount > 0 && resumedStepsCount === 0 ? 'BLOCKED_AMBIGUOUS' : 'RESUMED';
+
+    if (action === 'BLOCKED_AMBIGUOUS') {
+      this.notificationManager?.notify({
+        category: 'RECOVERY_INTERVENTION',
+        priority: 'CRITICAL',
+        title: 'Crash Recovery Action Required',
+        message: `Recovery for manifest '${manifest.manifestId}' blocked due to ambiguous step executions. User intervention required.`,
+      });
+    }
 
     // 5. Clear Processed Manifest
     this.manifestStore.clearManifest();
