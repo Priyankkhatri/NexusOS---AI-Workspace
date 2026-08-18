@@ -747,6 +747,7 @@ export class DesktopAgent {
       if (this.ipcManager) {
         await this.ipcManager.start();
       }
+      await this.stateManager.start();
       await this.memoryCacheManager.start();
       await this.modelRuntimeManager.initialize();
     } catch (err) {
@@ -777,6 +778,7 @@ export class DesktopAgent {
     this.vaultClient.shutdown();
     this.updateManager.shutdown();
     await this.modelRuntimeManager.shutdown();
+    await this.stateManager.stop();
 
     try {
       if (this.ipcManager) {
