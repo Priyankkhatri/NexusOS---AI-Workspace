@@ -645,6 +645,26 @@ export class DesktopAgent {
         this.trayController.setPendingApprovalCount(this.approvalHost.listPendingPrompts().length);
         return { success };
       });
+      this.ipcManager.registerMethodHandler('config.getActive', async (params) => {
+        const { ConfigGetActiveRequestSchema } = await import('./config/schemas.js');
+        ConfigGetActiveRequestSchema.parse(params || {});
+        return this.configurationManager.getActiveConfiguration();
+      });
+      this.ipcManager.registerMethodHandler('config.applyUpdate', async (params) => {
+        const { ConfigApplyUpdateRequestSchema } = await import('./config/schemas.js');
+        const req = ConfigApplyUpdateRequestSchema.parse(params || {});
+        const { result, event } = await this.configurationManager.applyConfigurationUpdate(
+          req.layer as any,
+          req.update as any,
+        );
+        return { result, event };
+      });
+      this.ipcManager.registerMethodHandler('config.rollback', async (params) => {
+        const { ConfigRollbackRequestSchema } = await import('./config/schemas.js');
+        ConfigRollbackRequestSchema.parse(params || {});
+        const { result, event } = await this.configurationManager.rollbackToLKG();
+        return { result, event };
+      });
     }
 
     if (typeof this.controlPlaneClient.registerCommandHandler === 'function') {
