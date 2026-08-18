@@ -45,6 +45,17 @@ export class ReadinessGate implements IReadinessGate {
     });
   }
 
+  public bindPolicyFreshnessCheck(getPolicyAgeSec: () => number): void {
+    this.registerProvider({
+      name: 'policy_freshness',
+      critical: true,
+      check: () => {
+        const ageSec = getPolicyAgeSec();
+        return ageSec <= 300;
+      },
+    });
+  }
+
   public bindTelemetrySpool(spool: ITelemetrySpool): void {
     this.registerProvider({
       name: 'telemetry_spool',
