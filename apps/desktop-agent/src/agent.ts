@@ -38,6 +38,8 @@ import {
   ProcessReconciliationEngine,
   RecoveryManifestStore,
 } from './health/index.js';
+import { ConfigurationManager } from './config/configuration-manager.js';
+import { StateManager } from './state/state-manager.js';
 
 export class DesktopAgent {
   public readonly lifecycle: AgentLifecycleManager;
@@ -61,6 +63,8 @@ export class DesktopAgent {
   public readonly readinessGate: ReadinessGate;
   public readonly healthMonitor: HealthMonitor;
   public readonly crashRecoveryManager: CrashRecoveryManager;
+  public readonly configurationManager: ConfigurationManager;
+  public readonly stateManager: StateManager;
   private readonly logger: AgentLogger;
 
   private identity?: AgentIdentity;
@@ -88,6 +92,8 @@ export class DesktopAgent {
     customHealthMonitor?: HealthMonitor,
     customCrashRecoveryManager?: CrashRecoveryManager,
     customReadinessGate?: ReadinessGate,
+    customConfigurationManager?: ConfigurationManager,
+    customStateManager?: StateManager,
   ) {
     this.lifecycle = new AgentLifecycleManager();
     this.capabilityRegistry = new CapabilityRegistry();
@@ -284,6 +290,55 @@ export class DesktopAgent {
       isDangerous: true,
       requiredScope: 'recovery:write',
     });
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'config.getActive',
+      category: 'runtime',
+      description: 'Retrieve active multi-layer desktop agent configuration snapshot',
+      isDangerous: false,
+      requiredScope: 'config:read',
+    });
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'config.applyUpdate',
+      category: 'runtime',
+      description: 'Apply signed or user-preference configuration layer update',
+      isDangerous: true,
+      requiredScope: 'config:write',
+    });
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'config.rollback',
+      category: 'runtime',
+      description: 'Rollback active configuration to last known good (LKG) snapshot',
+      isDangerous: true,
+      requiredScope: 'config:write',
+    });
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'state.getRecord',
+      category: 'runtime',
+      description: 'Retrieve encrypted durable local state record by key',
+      isDangerous: false,
+      requiredScope: 'state:read',
+    });
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'state.setRecord',
+      category: 'runtime',
+      description: 'Set encrypted durable local state record by key',
+      isDangerous: true,
+      requiredScope: 'state:write',
+    });
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'state.deleteRecord',
+      category: 'runtime',
+      description: 'Delete encrypted durable local state record by key',
+      isDangerous: true,
+      requiredScope: 'state:write',
+    });
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'state.getStatus',
+      category: 'runtime',
+      description: 'Retrieve state manager initialization and persistence status',
+      isDangerous: false,
+      requiredScope: 'state:read',
+    });
 
     this.modelRuntimeManager = new ModelRuntimeManager(this.leaseBoundary, '.nexus-local-ai');
     const redactionFilter = new RedactionFilter(new SecretRedactionRegistry());
@@ -332,6 +387,11 @@ export class DesktopAgent {
         new ProcessReconciliationEngine(),
         this.notificationManager,
       );
+    this.configurationManager =
+      customConfigurationManager || new ConfigurationManager(this.leaseBoundary);
+    this.stateManager =
+      customStateManager ||
+      new StateManager(undefined, undefined, undefined, () => this.lifecycle.getState());
 
     this.runtimeRegistry.registerRuntime({
       runtimeId: 'vault-client',
@@ -363,6 +423,20 @@ export class DesktopAgent {
         'executeRecovery',
         'reconcileOrphanedProcesses',
       ],
+    });
+    this.runtimeRegistry.registerRuntime({
+      runtimeId: 'config-manager',
+      category: RuntimeCategory.CONFIG,
+      version: '1.0.0',
+      isExecutable: true,
+      supportedActions: ['getActive', 'applyUpdate', 'rollback'],
+    });
+    this.runtimeRegistry.registerRuntime({
+      runtimeId: 'state-manager',
+      category: RuntimeCategory.STATE,
+      version: '1.0.0',
+      isExecutable: true,
+      supportedActions: ['getRecord', 'setRecord', 'deleteRecord', 'getStatus'],
     });
 
     this.logger = new AgentLogger(baseLogger);
