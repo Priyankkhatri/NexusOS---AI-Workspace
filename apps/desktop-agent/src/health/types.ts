@@ -108,3 +108,20 @@ export interface ICrashRecoveryManager {
   recordStepCheckpoint(checkpoint: StepCheckpoint): void;
   getRecoveryManifest(): RecoveryManifest | null;
 }
+
+import { z } from 'zod';
+import {
+  HealthGetReportRequestSchema,
+  HealthCheckReadinessRequestSchema,
+  HealthCheckLivenessRequestSchema,
+  RecoveryLoadManifestRequestSchema,
+  RecoveryReconcileRequestSchema,
+  RecoveryExecuteRequestSchema,
+} from './schemas.js';
+
+export type HealthGetReportRequest = z.infer<typeof HealthGetReportRequestSchema>;
+export type HealthCheckReadinessRequest = z.infer<typeof HealthCheckReadinessRequestSchema>;
+export type HealthCheckLivenessRequest = z.infer<typeof HealthCheckLivenessRequestSchema>;
+export type RecoveryLoadManifestRequest = z.infer<typeof RecoveryLoadManifestRequestSchema>;
+export type RecoveryReconcileRequest = z.infer<typeof RecoveryReconcileRequestSchema>;
+export type RecoveryExecuteRequest = z.infer<typeof RecoveryExecuteRequestSchema>;

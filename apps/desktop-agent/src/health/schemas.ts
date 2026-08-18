@@ -43,3 +43,25 @@ export const RecoveryManifestSchema = z.object({
   activeStepCheckpoints: z.array(StepCheckpointSchema),
   manifestHash: z.string().min(1),
 });
+
+export const HealthGetReportRequestSchema = z.object({
+  tenantId: z.string().optional(),
+});
+
+export const HealthCheckReadinessRequestSchema = z.object({
+  tenantId: z.string().optional(),
+});
+
+export const HealthCheckLivenessRequestSchema = z.object({});
+
+export const RecoveryLoadManifestRequestSchema = z.object({
+  tenantId: z.string().optional(),
+});
+
+export const RecoveryReconcileRequestSchema = z.object({
+  tenantId: z.string().optional(),
+});
+
+export const RecoveryExecuteRequestSchema = z.object({
+  tenantId: z.string().optional(),
+});
