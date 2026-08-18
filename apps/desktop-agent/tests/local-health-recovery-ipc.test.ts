@@ -35,7 +35,11 @@ class MockLeaseBoundary extends ExecutionLeaseBoundary {
 test('IPC Integration - health.* and recovery.* method invocation and agent lifecycle', async () => {
   const config = loadDesktopAgentConfig({});
 
-  const identityProvider = new DefaultAgentIdentityProvider(config.deviceId, crypto.randomUUID(), config.agentVersion);
+  const identityProvider = new DefaultAgentIdentityProvider(
+    config.deviceId,
+    crypto.randomUUID(),
+    config.agentVersion,
+  );
   const controlPlaneClient = new MockControlPlaneClient();
   const leaseBoundary = new MockLeaseBoundary();
   const stateStore = new InMemoryLocalStateStore();
@@ -59,7 +63,10 @@ test('IPC Integration - health.* and recovery.* method invocation and agent life
     ipcManager,
   );
 
-  const handlers = (ipcManager as any).methodHandlers as Map<string, (params?: any) => Promise<any>>;
+  const handlers = (ipcManager as any).methodHandlers as Map<
+    string,
+    (params?: any) => Promise<any>
+  >;
 
   // 1. health.getReport
   const getReportHandler = handlers.get('health.getReport')!;

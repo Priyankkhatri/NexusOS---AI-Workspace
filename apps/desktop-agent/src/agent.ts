@@ -258,7 +258,8 @@ export class DesktopAgent {
     this.capabilityRegistry.registerCapability({
       capabilityId: 'health.getReport',
       category: 'runtime',
-      description: 'Retrieve aggregate desktop agent system health report and resource saturation metrics',
+      description:
+        'Retrieve aggregate desktop agent system health report and resource saturation metrics',
       isDangerous: false,
       requiredScope: 'health:read',
     });
