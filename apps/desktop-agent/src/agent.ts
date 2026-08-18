@@ -31,6 +31,13 @@ import { SecretsVaultClient } from './vault/vault-client.js';
 import { UpdateManager } from './updater/update-manager.js';
 import { NotificationManager } from './notifications/notification-manager.js';
 import { RuntimeCategory } from './registry/runtime-registry.js';
+import {
+  HealthMonitor,
+  ReadinessGate,
+  CrashRecoveryManager,
+  ProcessReconciliationEngine,
+  RecoveryManifestStore,
+} from './health/index.js';
 
 export class DesktopAgent {
   public readonly lifecycle: AgentLifecycleManager;
@@ -51,6 +58,9 @@ export class DesktopAgent {
   public readonly notificationManager: NotificationManager;
   public readonly vaultClient: SecretsVaultClient;
   public readonly updateManager: UpdateManager;
+  public readonly readinessGate: ReadinessGate;
+  public readonly healthMonitor: HealthMonitor;
+  public readonly crashRecoveryManager: CrashRecoveryManager;
   private readonly logger: AgentLogger;
 
   private identity?: AgentIdentity;
@@ -75,6 +85,9 @@ export class DesktopAgent {
     customVaultClient?: SecretsVaultClient,
     customUpdateManager?: UpdateManager,
     customNotificationManager?: NotificationManager,
+    customHealthMonitor?: HealthMonitor,
+    customCrashRecoveryManager?: CrashRecoveryManager,
+    customReadinessGate?: ReadinessGate,
   ) {
     this.lifecycle = new AgentLifecycleManager();
     this.capabilityRegistry = new CapabilityRegistry();
@@ -242,6 +255,34 @@ export class DesktopAgent {
       isDangerous: true,
       requiredScope: 'update:write',
     });
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'health.getReport',
+      category: 'runtime',
+      description: 'Retrieve aggregate desktop agent system health report and resource saturation metrics',
+      isDangerous: false,
+      requiredScope: 'health:read',
+    });
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'health.checkReadiness',
+      category: 'runtime',
+      description: 'Evaluate pre-flight startup readiness gate dependencies',
+      isDangerous: false,
+      requiredScope: 'health:read',
+    });
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'recovery.execute',
+      category: 'runtime',
+      description: 'Execute startup recovery manifest processing and checkpoint restoration',
+      isDangerous: true,
+      requiredScope: 'recovery:write',
+    });
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'recovery.reconcile',
+      category: 'runtime',
+      description: 'Reconcile orphaned process trees following abnormal crash exit',
+      isDangerous: true,
+      requiredScope: 'recovery:write',
+    });
 
     this.modelRuntimeManager = new ModelRuntimeManager(this.leaseBoundary, '.nexus-local-ai');
     const redactionFilter = new RedactionFilter(new SecretRedactionRegistry());
@@ -272,6 +313,24 @@ export class DesktopAgent {
         undefined,
         this.notificationManager,
       );
+    this.readinessGate = customReadinessGate || new ReadinessGate();
+    this.healthMonitor =
+      customHealthMonitor ||
+      new HealthMonitor(
+        this.config.deviceId,
+        this.config.agentVersion,
+        this.readinessGate,
+        '.',
+        this.notificationManager,
+      );
+    this.crashRecoveryManager =
+      customCrashRecoveryManager ||
+      new CrashRecoveryManager(
+        this.config.deviceId,
+        new RecoveryManifestStore(),
+        new ProcessReconciliationEngine(),
+        this.notificationManager,
+      );
 
     this.runtimeRegistry.registerRuntime({
       runtimeId: 'vault-client',
@@ -290,6 +349,18 @@ export class DesktopAgent {
         'checkForUpdates',
         'downloadAndVerifyUpdate',
         'stageAndActivateUpdate',
+      ],
+    });
+    this.runtimeRegistry.registerRuntime({
+      runtimeId: 'health-monitor',
+      category: RuntimeCategory.HEALTH,
+      version: '1.0.0',
+      isExecutable: true,
+      supportedActions: [
+        'getHealthReport',
+        'checkReadiness',
+        'executeRecovery',
+        'reconcileOrphanedProcesses',
       ],
     });
 
