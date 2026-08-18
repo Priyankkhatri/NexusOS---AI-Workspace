@@ -22,7 +22,9 @@ export class PluginExecutionPolicy implements RuntimeExecutionPolicy {
       descriptor.category === RuntimeCategory.DEVICE ||
       descriptor.category === RuntimeCategory.VAULT ||
       descriptor.category === RuntimeCategory.UPDATER ||
-      descriptor.category === RuntimeCategory.HEALTH
+      descriptor.category === RuntimeCategory.HEALTH ||
+      descriptor.category === RuntimeCategory.CONFIG ||
+      descriptor.category === RuntimeCategory.STATE
     );
   }
 }

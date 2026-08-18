@@ -13,6 +13,8 @@ export enum RuntimeCategory {
   VAULT = 'VAULT',
   UPDATER = 'UPDATER',
   HEALTH = 'HEALTH',
+  CONFIG = 'CONFIG',
+  STATE = 'STATE',
 }
 
 export interface ToolRuntimeDescriptor {
