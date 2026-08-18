@@ -282,4 +282,18 @@ export class SecretsVaultClient {
 
     return { result, event };
   }
+
+  /**
+   * Idempotently purges all active secret leases, zeroizes memory buffers, and clears active maps.
+   */
+  public shutdown(): void {
+    for (const [refId, payload] of this.activeLeases.entries()) {
+      if (payload) {
+        this.revocationHandler.zeroizePayloadBuffer(payload);
+        this.redactionRegistry.unregisterSecret(payload.fingerprintId);
+      }
+      this.revocationHandler.revokeSecretLease(refId);
+    }
+    this.activeLeases.clear();
+  }
 }
