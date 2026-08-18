@@ -556,6 +556,8 @@ export class DesktopAgent {
     this.ideAdapter.reset();
     this.trayController.shutdown();
     this.approvalHost.shutdown();
+    this.vaultClient.shutdown();
+    this.updateManager.shutdown();
     await this.modelRuntimeManager.shutdown();
 
     try {
