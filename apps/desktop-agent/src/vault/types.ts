@@ -118,4 +118,35 @@ export interface ISecretRedactionRegistry {
 export interface ISecretRevocationHandler {
   revokeSecretLease(referenceId: string): boolean;
   isRevoked(referenceId: string): boolean;
+  zeroizePayloadBuffer(payload: SecretLeasePayload): void;
 }
+
+import { z } from 'zod';
+import { ExecutionLeaseHeaderSchema } from '@nexusos/contracts';
+
+export const InjectionChannelSchema = z.enum(['TERMINAL', 'BROWSER', 'PLUGIN']);
+
+export const ResolveSecretRequestSchema = z.object({
+  leaseHeader: ExecutionLeaseHeaderSchema,
+  referenceString: z.string().min(1).max(2048),
+  allowedRoots: z.array(z.string()).optional(),
+  isOffline: z.boolean().optional(),
+  protectedLocalLeaseValid: z.boolean().optional(),
+});
+
+export type ResolveSecretRequest = z.infer<typeof ResolveSecretRequestSchema>;
+
+export const InjectSecretRequestSchema = z.object({
+  leaseHeader: ExecutionLeaseHeaderSchema,
+  referenceId: z.string().min(1),
+  channel: InjectionChannelSchema,
+  targetId: z.string().min(1),
+});
+
+export type InjectSecretRequest = z.infer<typeof InjectSecretRequestSchema>;
+
+export const RevokeSecretRequestSchema = z.object({
+  referenceString: z.string().min(1).max(2048),
+});
+
+export type RevokeSecretRequest = z.infer<typeof RevokeSecretRequestSchema>;

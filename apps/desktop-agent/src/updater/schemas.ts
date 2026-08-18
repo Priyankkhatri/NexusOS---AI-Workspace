@@ -38,3 +38,16 @@ export const UpdateStatusSchema = z.object({
   rollbackAvailable: z.boolean(),
   errorReason: z.string().optional(),
 });
+
+export const CheckForUpdatesRequestSchema = z.object({
+  customManifest: UpdateManifestSchema.optional(),
+});
+
+export const DownloadAndUpdateRequestSchema = z.object({
+  manifest: UpdateManifestSchema,
+  packageDataBase64: z.string().optional(),
+});
+
+export const StageAndActivateRequestSchema = z.object({
+  healthCheckEnabled: z.boolean().optional(),
+});
