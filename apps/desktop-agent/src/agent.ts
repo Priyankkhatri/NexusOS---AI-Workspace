@@ -27,6 +27,10 @@ import { TrayUIController } from './ui/tray-controller.js';
 import { NativeApprovalHost } from './ui/approval-host.js';
 import { RedactionFilter } from './telemetry/redaction-filter.js';
 import { SecretRedactionRegistry } from './vault/redaction-registry.js';
+import { SecretsVaultClient } from './vault/vault-client.js';
+import { UpdateManager } from './updater/update-manager.js';
+import { NotificationManager } from './notifications/notification-manager.js';
+import { RuntimeCategory } from './registry/runtime-registry.js';
 
 export class DesktopAgent {
   public readonly lifecycle: AgentLifecycleManager;
@@ -44,6 +48,9 @@ export class DesktopAgent {
   public readonly ideAdapter: IDEIntegrationAdapter;
   public readonly trayController: TrayUIController;
   public readonly approvalHost: NativeApprovalHost;
+  public readonly notificationManager: NotificationManager;
+  public readonly vaultClient: SecretsVaultClient;
+  public readonly updateManager: UpdateManager;
   private readonly logger: AgentLogger;
 
   private identity?: AgentIdentity;
@@ -65,6 +72,9 @@ export class DesktopAgent {
     customIDEAdapter?: IDEIntegrationAdapter,
     customTrayController?: TrayUIController,
     customApprovalHost?: NativeApprovalHost,
+    customVaultClient?: SecretsVaultClient,
+    customUpdateManager?: UpdateManager,
+    customNotificationManager?: NotificationManager,
   ) {
     this.lifecycle = new AgentLifecycleManager();
     this.capabilityRegistry = new CapabilityRegistry();
@@ -182,6 +192,56 @@ export class DesktopAgent {
       () => this.lifecycle.getState(),
     );
 
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'vault.resolve',
+      category: 'runtime',
+      description: 'Resolve opaque secret reference into short-lived unpersisted memory payload',
+      isDangerous: true,
+      requiredScope: 'vault:read',
+    });
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'vault.inject',
+      category: 'runtime',
+      description: 'Inject resolved secret into authorized runner channel',
+      isDangerous: true,
+      requiredScope: 'vault:write',
+    });
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'vault.revoke',
+      category: 'runtime',
+      description: 'Revoke active secret lease and zeroize memory buffer',
+      isDangerous: false,
+      requiredScope: 'vault:write',
+    });
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'update.getStatus',
+      category: 'runtime',
+      description: 'Retrieve current agent update status and channel configuration',
+      isDangerous: false,
+      requiredScope: 'update:read',
+    });
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'update.checkForUpdates',
+      category: 'runtime',
+      description: 'Check for release updates and verify manifest signature and anti-rollback rules',
+      isDangerous: false,
+      requiredScope: 'update:read',
+    });
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'update.downloadAndUpdate',
+      category: 'runtime',
+      description: 'Download update package and verify SHA-256 checksum integrity',
+      isDangerous: true,
+      requiredScope: 'update:write',
+    });
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'update.stageAndActivate',
+      category: 'runtime',
+      description: 'Create LKG rollback snapshot, run health checks, and activate staged update',
+      isDangerous: true,
+      requiredScope: 'update:write',
+    });
+
     this.modelRuntimeManager = new ModelRuntimeManager(this.leaseBoundary, '.nexus-local-ai');
     const redactionFilter = new RedactionFilter(new SecretRedactionRegistry());
     this.clipboardRuntime =
@@ -190,6 +250,47 @@ export class DesktopAgent {
     this.trayController = customTrayController || new TrayUIController();
     this.approvalHost =
       customApprovalHost || new NativeApprovalHost(this.leaseBoundary, redactionFilter);
+    this.notificationManager = customNotificationManager || new NotificationManager();
+    this.vaultClient =
+      customVaultClient ||
+      new SecretsVaultClient(
+        this.leaseBoundary,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        this.notificationManager,
+      );
+    this.updateManager =
+      customUpdateManager ||
+      new UpdateManager(
+        this.config.agentVersion,
+        'stable',
+        undefined,
+        undefined,
+        this.notificationManager,
+      );
+
+    this.runtimeRegistry.registerRuntime({
+      runtimeId: 'vault-client',
+      category: RuntimeCategory.VAULT,
+      version: '1.0.0',
+      isExecutable: true,
+      supportedActions: ['resolveSecret', 'injectSecret', 'revokeSecret'],
+    });
+    this.runtimeRegistry.registerRuntime({
+      runtimeId: 'update-manager',
+      category: RuntimeCategory.UPDATER,
+      version: '1.0.0',
+      isExecutable: true,
+      supportedActions: [
+        'getStatus',
+        'checkForUpdates',
+        'downloadAndVerifyUpdate',
+        'stageAndActivateUpdate',
+      ],
+    });
 
     this.logger = new AgentLogger(baseLogger);
 
