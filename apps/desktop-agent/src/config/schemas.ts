@@ -129,3 +129,18 @@ export const IMMUTABLE_SHIPPED_SNAPSHOT: ConfigurationSnapshot = Object.freeze({
   hash: 'shipped_default_hash_000000000000',
   updatedAt: '1970-01-01T00:00:00.000Z',
 });
+
+export const ConfigGetActiveRequestSchema = z.object({
+  tenantId: z.string().optional(),
+});
+
+export const ConfigApplyUpdateRequestSchema = z.object({
+  layer: z.nativeEnum(ConfigLayer),
+  update: z.record(z.unknown()),
+  tenantId: z.string().optional(),
+});
+
+export const ConfigRollbackRequestSchema = z.object({
+  targetRevision: z.number().int().optional(),
+  tenantId: z.string().optional(),
+});

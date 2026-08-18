@@ -69,3 +69,16 @@ export interface LocalAgentStateSnapshot {
   registeredRuntimes: string[];
   lastHeartbeatAt?: string;
 }
+
+import { z } from 'zod';
+import {
+  StateGetRecordRequestSchema,
+  StateSetRecordRequestSchema,
+  StateDeleteRecordRequestSchema,
+  StateGetStatusRequestSchema,
+} from './schemas.js';
+
+export type StateGetRecordRequest = z.infer<typeof StateGetRecordRequestSchema>;
+export type StateSetRecordRequest = z.infer<typeof StateSetRecordRequestSchema>;
+export type StateDeleteRecordRequest = z.infer<typeof StateDeleteRecordRequestSchema>;
+export type StateGetStatusRequest = z.infer<typeof StateGetStatusRequestSchema>;

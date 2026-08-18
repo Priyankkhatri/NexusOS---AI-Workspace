@@ -149,3 +149,14 @@ export interface IConfigurationManager {
   ): Promise<{ result: ConfigOperationResult; event: EventEnvelope }>;
   rollbackToLKG(): Promise<{ result: ConfigOperationResult; event: EventEnvelope }>;
 }
+
+import { z } from 'zod';
+import {
+  ConfigGetActiveRequestSchema,
+  ConfigApplyUpdateRequestSchema,
+  ConfigRollbackRequestSchema,
+} from './schemas.js';
+
+export type ConfigGetActiveRequest = z.infer<typeof ConfigGetActiveRequestSchema>;
+export type ConfigApplyUpdateRequest = z.infer<typeof ConfigApplyUpdateRequestSchema>;
+export type ConfigRollbackRequest = z.infer<typeof ConfigRollbackRequestSchema>;

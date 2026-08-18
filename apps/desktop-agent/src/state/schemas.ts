@@ -68,3 +68,24 @@ export const LocalAgentStateSnapshotSchema = z.object({
 export type StateRecordZod = z.infer<typeof StateRecordSchema>;
 export type EncryptedStateEnvelopeZod = z.infer<typeof EncryptedStateEnvelopeSchema>;
 export type StateConfigZod = z.infer<typeof StateConfigSchema>;
+
+export const StateGetRecordRequestSchema = z.object({
+  key: z.string().min(1),
+  tenantId: z.string().optional(),
+});
+
+export const StateSetRecordRequestSchema = z.object({
+  key: z.string().min(1),
+  data: z.unknown(),
+  version: z.string().optional(),
+  tenantId: z.string().optional(),
+});
+
+export const StateDeleteRecordRequestSchema = z.object({
+  key: z.string().min(1),
+  tenantId: z.string().optional(),
+});
+
+export const StateGetStatusRequestSchema = z.object({
+  tenantId: z.string().optional(),
+});
