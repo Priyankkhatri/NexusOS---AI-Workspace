@@ -62,4 +62,5 @@ export interface IUpdateManager {
   ): Promise<boolean>;
   stageAndActivateUpdate(healthCheckFn?: () => boolean | Promise<boolean>): Promise<boolean>;
   rollback(): Promise<boolean>;
+  shutdown?(): void;
 }

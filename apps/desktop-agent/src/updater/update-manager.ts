@@ -285,4 +285,11 @@ export class UpdateManager implements IUpdateManager {
       return false;
     }
   }
+
+  public shutdown(): void {
+    this.verifiedManifestId = undefined;
+    this.currentManifest = undefined;
+    this.stagingStore.clearStaging();
+    this.status.state = 'IDLE';
+  }
 }
