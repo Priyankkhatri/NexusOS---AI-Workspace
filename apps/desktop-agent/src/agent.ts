@@ -592,6 +592,10 @@ export class DesktopAgent {
     this.logger.info('Desktop Agent starting...', { version: this.config.agentVersion });
 
     try {
+      // 0. Pre-flight Readiness Gate & Crash Recovery Execution
+      this.readinessGate.assertReadyForLease();
+      await this.crashRecoveryManager.executeStartupRecovery();
+
       // 1. Resolve Identity
       this.identity = await this.identityProvider.getIdentity();
       this.logger.info('Loaded Agent identity', {
