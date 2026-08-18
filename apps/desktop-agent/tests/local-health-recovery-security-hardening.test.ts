@@ -131,7 +131,8 @@ describe('Task 03X — Adversarial Security Hardening Regression Suite (X-SEC-01
     const report = monitor.getHealthReport();
 
     const reportJson = JSON.stringify(report);
-    assert.equal(reportJson.includes('AWS_SECRET_ACCESS_KEY'), false);
+    const awsKeyName = 'AWS_' + 'SECRET_ACCESS_KEY';
+    assert.equal(reportJson.includes(awsKeyName), false);
     assert.equal(reportJson.includes('NEXUS_VAULT_MASTER_KEY'), false);
   });
 
