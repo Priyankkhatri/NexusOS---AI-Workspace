@@ -378,6 +378,39 @@ export class DesktopAgent {
       this.ipcManager.registerMethodHandler('tray.getStatus', async () => {
         return this.trayController.getStatus();
       });
+      this.ipcManager.registerMethodHandler('vault.resolveSecret', async (params) => {
+        const req = params as unknown as import('./vault/types.js').ResolveSecretRequest;
+        const ctx: import('./vault/types.js').VaultOperationRequestContext = {
+          lease: req.leaseHeader,
+          allowedRoots: req.allowedRoots || ['.'],
+          isOffline: req.isOffline,
+          protectedLocalLeaseValid: req.protectedLocalLeaseValid,
+        };
+        const { result } = await this.vaultClient.resolveSecret(req.referenceString, ctx);
+        return result;
+      });
+      this.ipcManager.registerMethodHandler('vault.injectSecret', async (params) => {
+        const req = params as unknown as import('./vault/types.js').InjectSecretRequest;
+        const ctx: import('./vault/types.js').VaultOperationRequestContext = {
+          lease: req.leaseHeader,
+          allowedRoots: ['.'],
+        };
+        const payload: import('./vault/types.js').SecretLeasePayload = {
+          referenceId: req.referenceId,
+          secretName: 'injected_secret',
+          payloadBuffer: Buffer.from(''),
+          fingerprintId: 'fp-' + req.referenceId,
+          expiresAt: new Date(Date.now() + 60000).toISOString(),
+          isRevoked: false,
+        };
+        const { result } = await this.vaultClient.injectSecret(payload, req.channel, req.targetId, ctx);
+        return result;
+      });
+      this.ipcManager.registerMethodHandler('vault.revokeSecret', async (params) => {
+        const req = params as unknown as import('./vault/types.js').RevokeSecretRequest;
+        const { result } = await this.vaultClient.revokeSecret(req.referenceString);
+        return result;
+      });
       this.ipcManager.registerMethodHandler('tray.pause', async (params) => {
         const { reason } = (params || {}) as { reason?: string };
         return this.trayController.pause(reason);
