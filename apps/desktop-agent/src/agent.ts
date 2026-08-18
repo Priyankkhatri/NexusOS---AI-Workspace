@@ -291,9 +291,7 @@ export class DesktopAgent {
         const prompt = await this.approvalHost.presentPrompt(
           params as unknown as import('./ui/types.js').ApprovalPromptRequest,
         );
-        this.trayController.setPendingApprovalCount(
-          this.approvalHost.listPendingPrompts().length,
-        );
+        this.trayController.setPendingApprovalCount(this.approvalHost.listPendingPrompts().length);
         return prompt;
       });
       this.ipcManager.registerMethodHandler('approval.getPrompt', async (params) => {
@@ -308,17 +306,13 @@ export class DesktopAgent {
         const res = await this.approvalHost.submitDecision(
           params as unknown as import('./ui/types.js').ApprovalDecisionRequest,
         );
-        this.trayController.setPendingApprovalCount(
-          this.approvalHost.listPendingPrompts().length,
-        );
+        this.trayController.setPendingApprovalCount(this.approvalHost.listPendingPrompts().length);
         return res;
       });
       this.ipcManager.registerMethodHandler('approval.cancelPrompt', async (params) => {
         const { promptId, reason } = (params || {}) as { promptId: string; reason?: string };
         const success = this.approvalHost.cancelPrompt(promptId, reason);
-        this.trayController.setPendingApprovalCount(
-          this.approvalHost.listPendingPrompts().length,
-        );
+        this.trayController.setPendingApprovalCount(this.approvalHost.listPendingPrompts().length);
         return { success };
       });
     }

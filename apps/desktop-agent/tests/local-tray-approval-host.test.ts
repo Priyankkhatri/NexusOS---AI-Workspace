@@ -1,18 +1,22 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import { TrayUIController } from '../src/ui/tray-controller.js';
 import { NativeApprovalHost } from '../src/ui/approval-host.js';
 import { ExecutionLeaseBoundary } from '../src/permissions/lease-boundary.js';
 import { RedactionFilter } from '../src/telemetry/redaction-filter.js';
 import { SecretRedactionRegistry } from '../src/vault/redaction-registry.js';
-import type { LeaseHeader } from '../src/permissions/lease-boundary.js';
+import type { ExecutionLeaseHeader } from '@nexusos/contracts';
 
-function createDummyLeaseHeader(): LeaseHeader {
+function createDummyLeaseHeader(): ExecutionLeaseHeader {
   return {
-    lease_id: 'lease-test-v01',
-    tenant_id: 'tenant-test-v01',
-    granted_capabilities: ['approval:present', 'approval:submit'],
-    expires_at: Date.now() + 3600000,
+    lease_id: crypto.randomUUID(),
+    task_id: crypto.randomUUID(),
+    agent_id: 'agent-test-v01',
+    tenant_id: crypto.randomUUID(),
+    scopes: ['approval:present', 'approval:submit'],
+    issued_at: new Date().toISOString(),
+    expires_at: new Date(Date.now() + 3600000).toISOString(),
     signature: 'sig-dummy-v01',
   };
 }
@@ -21,8 +25,8 @@ class MockLeaseBoundary extends ExecutionLeaseBoundary {
   constructor(private readonly isValid = true) {
     super();
   }
-  override async validateLease(_leaseHeader: LeaseHeader) {
-    return { valid: this.isValid, error: this.isValid ? undefined : 'Mock lease invalid' };
+  override async validateLease(_leaseHeader: unknown) {
+    return { valid: this.isValid, reason: this.isValid ? undefined : 'Mock lease invalid' };
   }
 }
 
@@ -121,8 +125,8 @@ test('NativeApprovalHost - secret redaction and lock-screen privacy filtering', 
   const item = await host.presentPrompt({
     leaseHeader: createDummyLeaseHeader(),
     requestId: 'req-003',
-    title: 'Access Secret Authorization bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.e30.secret',
-    description: 'Connecting with apiKey sk-1234567890abcdef1234567890abcdef',
+    title: 'Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.e30.secret',
+    description: 'api_key: sk-1234567890abcdef1234567890abcdef',
     riskTier: 'HIGH' as const,
     actionIdentifier: 'auth.connect',
     isLockScreenPrivate: true,

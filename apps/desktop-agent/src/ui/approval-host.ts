@@ -30,10 +30,7 @@ export class NativeApprovalHost {
     if (this.leaseBoundary) {
       const leaseRes = await this.leaseBoundary.validateLease(parsed.leaseHeader);
       if (!leaseRes.valid) {
-        throw new UIError(
-          'Lease re-validation failed for approval prompt request',
-          'UNAUTHORIZED',
-        );
+        throw new UIError('Lease re-validation failed for approval prompt request', 'UNAUTHORIZED');
       }
     }
 
@@ -213,10 +210,7 @@ export class NativeApprovalHost {
       const leaseRes = await this.leaseBoundary.validateLease(request.leaseHeader);
       if (!leaseRes.valid) {
         item.state = 'DENIED';
-        throw new UIError(
-          'Lease re-validation failed at decision submission time',
-          'UNAUTHORIZED',
-        );
+        throw new UIError('Lease re-validation failed at decision submission time', 'UNAUTHORIZED');
       }
     }
 

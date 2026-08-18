@@ -3,7 +3,7 @@
 **Task Name:** Local System Tray UI Host & Native Approval Prompt Host  
 **Subsystem:** `apps/desktop-agent/src/ui/`  
 **Date:** 2026-08-18  
-**Baseline Commit:** `30d59cd1ae539c0c49b46326fe9b184d1a929d7f`  
+**Baseline Commit:** `30d59cd1ae539c0c49b46326fe9b184d1a929d7f`
 
 ---
 
@@ -50,17 +50,20 @@ The implementation establishes a dedicated, unprivileged presentation subsystem 
 ## 4. Test Strategy & Results
 
 Three new test suites were added to `apps/desktop-agent/tests/`:
+
 1. `local-tray-approval-host.test.ts` (Unit tests for `TrayUIController` & `NativeApprovalHost`)
 2. `local-tray-ipc.test.ts` (Integration tests for `tray.*` and `approval.*` IPC methods & lifecycle)
 3. `local-tray-approval-security-hardening.test.ts` (Security regression suite `SH-01` through `SH-15`)
 
 **Test Execution Results:**
+
 ```text
 ℹ tests 522
 ℹ suites 89
 ℹ pass 522
 ℹ fail 0
 ```
+
 - Total Monorepo Tests Passing: **522 / 522 passed 100% GREEN**
 
 ---
@@ -68,6 +71,7 @@ Three new test suites were added to `apps/desktop-agent/tests/`:
 ## 5. Quality Gates Summary
 
 All automated quality gates passed cleanly with zero errors/warnings:
+
 - `pnpm run format`: Clean
 - `pnpm -r run build`: Clean (5/5 monorepo projects built)
 - `pnpm run typecheck`: 0 TypeScript errors

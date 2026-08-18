@@ -1,18 +1,23 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import { NativeApprovalHost } from '../src/ui/approval-host.js';
 import { ExecutionLeaseBoundary } from '../src/permissions/lease-boundary.js';
 import { RedactionFilter } from '../src/telemetry/redaction-filter.js';
 import { SecretRedactionRegistry } from '../src/vault/redaction-registry.js';
 import { UIError } from '../src/ui/types.js';
-import type { LeaseHeader } from '../src/permissions/lease-boundary.js';
+import type { ExecutionLeaseHeader } from '@nexusos/contracts';
 
-function createDummyLeaseHeader(tenantId = 'tenant-sec-v01'): LeaseHeader {
+function createDummyLeaseHeader(tenantId?: string): ExecutionLeaseHeader {
   return {
-    lease_id: 'lease-sec-v01',
-    tenant_id: tenantId,
-    granted_capabilities: ['approval:present', 'approval:submit'],
-    expires_at: Date.now() + 3600000,
+    lease_id: crypto.randomUUID(),
+    task_id: crypto.randomUUID(),
+    agent_id: 'agent-sec-v01',
+    tenant_id:
+      tenantId && tenantId.includes('-') && tenantId.length === 36 ? tenantId : crypto.randomUUID(),
+    scopes: ['approval:present', 'approval:submit'],
+    issued_at: new Date().toISOString(),
+    expires_at: new Date(Date.now() + 3600000).toISOString(),
     signature: 'sig-sec-v01',
   };
 }
@@ -26,8 +31,8 @@ class MockLeaseBoundary extends ExecutionLeaseBoundary {
     this.isValid = valid;
   }
 
-  override async validateLease(_header: LeaseHeader) {
-    return { valid: this.isValid, error: this.isValid ? undefined : 'Lease invalid' };
+  override async validateLease(_header: unknown) {
+    return { valid: this.isValid, reason: this.isValid ? undefined : 'Lease invalid' };
   }
 }
 
@@ -57,8 +62,8 @@ test('SH-02: Secret redaction in prompt header & body', async () => {
   const prompt = await host.presentPrompt({
     leaseHeader: createDummyLeaseHeader(),
     requestId: 'req-sh-02',
-    title: 'Auth token eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.e30.secret present',
-    description: 'Using apiKey sk-1234567890abcdef1234567890abcdef',
+    title: 'Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.e30.secret',
+    description: 'api_key: sk-1234567890abcdef1234567890abcdef',
     riskTier: 'HIGH',
     actionIdentifier: 'auth.verify',
   });
@@ -102,7 +107,7 @@ test('SH-04: Malformed lease header rejection', async () => {
   await assert.rejects(
     async () => {
       await host.presentPrompt({
-        leaseHeader: {} as LeaseHeader,
+        leaseHeader: {} as ExecutionLeaseHeader,
         requestId: 'req-sh-04',
         title: 'Bad Lease',
         description: 'Malformed lease header',
@@ -185,7 +190,7 @@ test('SH-07: Nonexistent prompt decision submission', async () => {
   await assert.rejects(
     async () => {
       await host.submitDecision({
-        promptId: '00000000-0000-0000-0000-000000000000',
+        promptId: crypto.randomUUID(),
         decision: 'ALLOW',
         nonce: 'fake-nonce',
         leaseHeader: createDummyLeaseHeader(),
@@ -214,8 +219,11 @@ test('SH-08: Lock-screen privacy sanitization', async () => {
 
 test('SH-09: Cross-tenant approval decision blocking', async () => {
   const host = new NativeApprovalHost();
+  const tenantA = crypto.randomUUID();
+  const tenantB = crypto.randomUUID();
+
   const prompt = await host.presentPrompt({
-    leaseHeader: createDummyLeaseHeader('tenant-A'),
+    leaseHeader: createDummyLeaseHeader(tenantA),
     requestId: 'req-sh-09',
     title: 'Tenant A Action',
     description: 'Tenant A action description',
@@ -229,8 +237,8 @@ test('SH-09: Cross-tenant approval decision blocking', async () => {
         promptId: prompt.promptId,
         decision: 'ALLOW',
         nonce: prompt.nonce,
-        leaseHeader: createDummyLeaseHeader('tenant-B'),
-        tenantId: 'tenant-B',
+        leaseHeader: createDummyLeaseHeader(tenantB),
+        tenantId: tenantB,
       });
     },
     (err: UIError) => err.code === 'TENANT_MISMATCH',

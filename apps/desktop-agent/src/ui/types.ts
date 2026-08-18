@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { LeaseHeaderSchema, type LeaseHeader } from '../permissions/lease-boundary.js';
+import { ExecutionLeaseHeaderSchema, type ExecutionLeaseHeader } from '@nexusos/contracts';
 
 export type TrayState =
   | 'CONNECTED'
@@ -42,7 +42,7 @@ export const MAX_PROMPT_DESCRIPTION_BYTES = 65536; // 64 KB limit
 export const DEFAULT_PROMPT_TTL_SECONDS = 60; // 60s default timeout
 
 export interface ApprovalPromptRequest {
-  leaseHeader: LeaseHeader;
+  leaseHeader: ExecutionLeaseHeader;
   requestId: string;
   title: string;
   description: string;
@@ -77,7 +77,7 @@ export interface ApprovalDecisionRequest {
   promptId: string;
   decision: 'ALLOW' | 'DENY';
   nonce: string;
-  leaseHeader: LeaseHeader;
+  leaseHeader: ExecutionLeaseHeader;
   tenantId?: string;
   userNotes?: string;
 }
@@ -94,7 +94,7 @@ export interface ApprovalDecisionResult {
 // --- Zod Schemas ---
 
 export const ApprovalPromptRequestSchema = z.object({
-  leaseHeader: LeaseHeaderSchema,
+  leaseHeader: ExecutionLeaseHeaderSchema,
   requestId: z.string().min(1).max(128),
   title: z.string().min(1).max(256),
   description: z.string().min(1).max(MAX_PROMPT_DESCRIPTION_BYTES),
@@ -111,7 +111,7 @@ export const ApprovalDecisionRequestSchema = z.object({
   promptId: z.string().uuid(),
   decision: z.enum(['ALLOW', 'DENY']),
   nonce: z.string().min(1).max(128),
-  leaseHeader: LeaseHeaderSchema,
+  leaseHeader: ExecutionLeaseHeaderSchema,
   tenantId: z.string().optional(),
   userNotes: z.string().max(1024).optional(),
 });
