@@ -9,6 +9,7 @@ export enum RuntimeCategory {
   MICROPHONE = 'MICROPHONE',
   LOCAL_AI = 'LOCAL_AI',
   IDE = 'IDE',
+  UI = 'UI',
 }
 
 export interface ToolRuntimeDescriptor {
