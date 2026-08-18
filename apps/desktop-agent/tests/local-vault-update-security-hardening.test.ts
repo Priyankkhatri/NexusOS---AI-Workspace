@@ -17,7 +17,14 @@ function createDummyLeaseHeader(tenantId?: string): ExecutionLeaseHeader {
     task_id: crypto.randomUUID(),
     agent_id: 'agent-sec-01',
     tenant_id: tenantId || crypto.randomUUID(),
-    scopes: ['secret:read', 'secret:write', 'vault:read', 'vault:write', 'update:read', 'update:write'],
+    scopes: [
+      'secret:read',
+      'secret:write',
+      'vault:read',
+      'vault:write',
+      'update:read',
+      'update:write',
+    ],
     issued_at: new Date().toISOString(),
     expires_at: new Date(Date.now() + 3600000).toISOString(),
     signature: 'sig-sec-01',
@@ -40,33 +47,52 @@ describe('Task 03W — Vault & Update Security Hardening Regression Suite', () =
   });
 
   it('W-SEC-02: Revoked secret reference resolution rejection', async () => {
-    const boundary = new ExecutionLeaseBoundary({ evaluate: async () => ({ allowed: true }) } as any);
+    const boundary = new ExecutionLeaseBoundary({
+      evaluate: async () => ({ allowed: true }),
+    } as any);
     const revocationHandler = new SecretRevocationHandler();
     revocationHandler.revokeSecretLease('vault:sec_ref_revoked_99');
 
-    const vaultClient = new SecretsVaultClient(boundary, undefined, undefined, undefined, revocationHandler);
+    const vaultClient = new SecretsVaultClient(
+      boundary,
+      undefined,
+      undefined,
+      undefined,
+      revocationHandler,
+    );
     const lease = createDummyLeaseHeader();
 
-    const { result } = await vaultClient.resolveSecret('vault:sec_ref_revoked_99', { lease, allowedRoots: ['.'] });
+    const { result } = await vaultClient.resolveSecret('vault:sec_ref_revoked_99', {
+      lease,
+      allowedRoots: ['.'],
+    });
 
     assert.equal(result.success, false);
     assert.equal(result.error?.code, 'SECRET_REVOKED');
   });
 
   it('W-SEC-03: Active secret lease ceiling bound (64 max)', async () => {
-    const boundary = new ExecutionLeaseBoundary({ evaluate: async () => ({ allowed: true }) } as any);
+    const boundary = new ExecutionLeaseBoundary({
+      evaluate: async () => ({ allowed: true }),
+    } as any);
     const vaultClient = new SecretsVaultClient(boundary);
     const lease = createDummyLeaseHeader();
 
     for (let i = 0; i < 64; i++) {
       const ref = `vault:sec_ref_sec_${i}`;
-      (vaultClient.resolver as any).mockVaultStore.set(ref, { secretName: `S_${i}`, secretValue: `v_${i}` });
+      (vaultClient.resolver as any).mockVaultStore.set(ref, {
+        secretName: `S_${i}`,
+        secretValue: `v_${i}`,
+      });
       const res = await vaultClient.resolveSecret(ref, { lease, allowedRoots: ['.'] });
       assert.equal(res.result.success, true);
     }
 
     const overflowRef = 'vault:sec_ref_overflow';
-    (vaultClient.resolver as any).mockVaultStore.set(overflowRef, { secretName: 'OV', secretValue: 'ov_val' });
+    (vaultClient.resolver as any).mockVaultStore.set(overflowRef, {
+      secretName: 'OV',
+      secretValue: 'ov_val',
+    });
     const overflow = await vaultClient.resolveSecret(overflowRef, { lease, allowedRoots: ['.'] });
 
     assert.equal(overflow.result.success, false);
@@ -168,7 +194,7 @@ describe('Task 03W — Vault & Update Security Hardening Regression Suite', () =
   });
 
   it('W-SEC-09: Lease TOCTOU race on secret resolution', async () => {
-    let leaseValid = false;
+    const leaseValid = false;
     const boundary = new ExecutionLeaseBoundary({
       evaluate: async () => ({ allowed: leaseValid }),
     } as any);
@@ -176,7 +202,10 @@ describe('Task 03W — Vault & Update Security Hardening Regression Suite', () =
     const vaultClient = new SecretsVaultClient(boundary);
     const lease = createDummyLeaseHeader();
 
-    const { result } = await vaultClient.resolveSecret('vault:sec_ref_db_password', { lease, allowedRoots: ['.'] });
+    const { result } = await vaultClient.resolveSecret('vault:sec_ref_db_password', {
+      lease,
+      allowedRoots: ['.'],
+    });
 
     assert.equal(result.success, false);
     assert.equal(result.error?.code, 'LEASE_OR_POLICY_INVALID');
@@ -193,7 +222,9 @@ describe('Task 03W — Vault & Update Security Hardening Regression Suite', () =
   });
 
   it('W-SEC-11: Injection channel isolation enforcement', async () => {
-    const boundary = new ExecutionLeaseBoundary({ evaluate: async () => ({ allowed: true }) } as any);
+    const boundary = new ExecutionLeaseBoundary({
+      evaluate: async () => ({ allowed: true }),
+    } as any);
     const vaultClient = new SecretsVaultClient(boundary);
 
     const lease = createDummyLeaseHeader();
@@ -206,17 +237,25 @@ describe('Task 03W — Vault & Update Security Hardening Regression Suite', () =
       isRevoked: false,
     };
 
-    const res = await vaultClient.injectSecret(payload, 'INVALID_CHANNEL' as any, 'target', { lease, allowedRoots: ['.'] });
+    const res = await vaultClient.injectSecret(payload, 'INVALID_CHANNEL' as any, 'target', {
+      lease,
+      allowedRoots: ['.'],
+    });
     assert.equal(res.result.success, false);
     assert.equal(res.result.error?.code, 'UNAUTHORIZED_INJECTION_CHANNEL');
   });
 
   it('W-SEC-12: Shutdown secret purge and memory zeroization', async () => {
-    const boundary = new ExecutionLeaseBoundary({ evaluate: async () => ({ allowed: true }) } as any);
+    const boundary = new ExecutionLeaseBoundary({
+      evaluate: async () => ({ allowed: true }),
+    } as any);
     const vaultClient = new SecretsVaultClient(boundary);
     const lease = createDummyLeaseHeader();
 
-    const { result } = await vaultClient.resolveSecret('vault:sec_ref_db_password', { lease, allowedRoots: ['.'] });
+    const { result } = await vaultClient.resolveSecret('vault:sec_ref_db_password', {
+      lease,
+      allowedRoots: ['.'],
+    });
     assert.equal(result.success, true);
     assert.ok(result.data?.payloadBuffer);
 

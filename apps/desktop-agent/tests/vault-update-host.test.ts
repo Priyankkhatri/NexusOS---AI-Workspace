@@ -15,7 +15,14 @@ function createDummyLeaseHeader(): ExecutionLeaseHeader {
     task_id: crypto.randomUUID(),
     agent_id: 'agent-unit-01',
     tenant_id: crypto.randomUUID(),
-    scopes: ['secret:read', 'secret:write', 'vault:read', 'vault:write', 'update:read', 'update:write'],
+    scopes: [
+      'secret:read',
+      'secret:write',
+      'vault:read',
+      'vault:write',
+      'update:read',
+      'update:write',
+    ],
     issued_at: new Date().toISOString(),
     expires_at: new Date(Date.now() + 3600000).toISOString(),
     signature: 'sig-dummy-unit-01',
@@ -24,7 +31,9 @@ function createDummyLeaseHeader(): ExecutionLeaseHeader {
 
 describe('Task 03W — Secrets Vault Host Unit Tests', () => {
   it('resolves secret reference and registers redaction fingerprint', async () => {
-    const boundary = new ExecutionLeaseBoundary({ evaluate: async () => ({ allowed: true }) } as any);
+    const boundary = new ExecutionLeaseBoundary({
+      evaluate: async () => ({ allowed: true }),
+    } as any);
     const redactionRegistry = new SecretRedactionRegistry();
     const vaultClient = new SecretsVaultClient(boundary, undefined, undefined, redactionRegistry);
 
@@ -43,11 +52,19 @@ describe('Task 03W — Secrets Vault Host Unit Tests', () => {
   });
 
   it('rejects revoked secret reference resolution', async () => {
-    const boundary = new ExecutionLeaseBoundary({ evaluate: async () => ({ allowed: true }) } as any);
+    const boundary = new ExecutionLeaseBoundary({
+      evaluate: async () => ({ allowed: true }),
+    } as any);
     const revocationHandler = new SecretRevocationHandler();
     revocationHandler.revokeSecretLease('vault:sec_ref_revoked_01');
 
-    const vaultClient = new SecretsVaultClient(boundary, undefined, undefined, undefined, revocationHandler);
+    const vaultClient = new SecretsVaultClient(
+      boundary,
+      undefined,
+      undefined,
+      undefined,
+      revocationHandler,
+    );
 
     const lease = createDummyLeaseHeader();
     const context: VaultOperationRequestContext = { lease, allowedRoots: ['.'] };
@@ -59,7 +76,9 @@ describe('Task 03W — Secrets Vault Host Unit Tests', () => {
   });
 
   it('enforces active secret lease bound ceiling (64 max)', async () => {
-    const boundary = new ExecutionLeaseBoundary({ evaluate: async () => ({ allowed: true }) } as any);
+    const boundary = new ExecutionLeaseBoundary({
+      evaluate: async () => ({ allowed: true }),
+    } as any);
     const vaultClient = new SecretsVaultClient(boundary);
     const lease = createDummyLeaseHeader();
     const context: VaultOperationRequestContext = { lease, allowedRoots: ['.'] };
@@ -85,7 +104,9 @@ describe('Task 03W — Secrets Vault Host Unit Tests', () => {
   });
 
   it('zeroizes memory buffers and clears leases on shutdown', async () => {
-    const boundary = new ExecutionLeaseBoundary({ evaluate: async () => ({ allowed: true }) } as any);
+    const boundary = new ExecutionLeaseBoundary({
+      evaluate: async () => ({ allowed: true }),
+    } as any);
     const vaultClient = new SecretsVaultClient(boundary);
     const lease = createDummyLeaseHeader();
     const context: VaultOperationRequestContext = { lease, allowedRoots: ['.'] };

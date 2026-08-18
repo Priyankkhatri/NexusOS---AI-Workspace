@@ -223,7 +223,8 @@ export class DesktopAgent {
     this.capabilityRegistry.registerCapability({
       capabilityId: 'update.checkForUpdates',
       category: 'runtime',
-      description: 'Check for release updates and verify manifest signature and anti-rollback rules',
+      description:
+        'Check for release updates and verify manifest signature and anti-rollback rules',
       isDangerous: false,
       requiredScope: 'update:read',
     });
@@ -403,7 +404,12 @@ export class DesktopAgent {
           expiresAt: new Date(Date.now() + 60000).toISOString(),
           isRevoked: false,
         };
-        const { result } = await this.vaultClient.injectSecret(payload, req.channel, req.targetId, ctx);
+        const { result } = await this.vaultClient.injectSecret(
+          payload,
+          req.channel,
+          req.targetId,
+          ctx,
+        );
         return result;
       });
       this.ipcManager.registerMethodHandler('vault.revokeSecret', async (params) => {

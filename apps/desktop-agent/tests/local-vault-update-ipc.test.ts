@@ -16,7 +16,14 @@ function createDummyLeaseHeader(): ExecutionLeaseHeader {
     task_id: crypto.randomUUID(),
     agent_id: 'agent-ipc-vault-01',
     tenant_id: crypto.randomUUID(),
-    scopes: ['secret:read', 'secret:write', 'vault:read', 'vault:write', 'update:read', 'update:write'],
+    scopes: [
+      'secret:read',
+      'secret:write',
+      'vault:read',
+      'vault:write',
+      'update:read',
+      'update:write',
+    ],
     issued_at: new Date().toISOString(),
     expires_at: new Date(Date.now() + 3600000).toISOString(),
     signature: 'sig-dummy-ipc-vault-01',
@@ -49,7 +56,11 @@ class MockLeaseBoundary extends ExecutionLeaseBoundary {
 test('IPC Integration - vault.* and update.* method invocation and agent lifecycle', async () => {
   const config = loadDesktopAgentConfig({});
 
-  const identityProvider = new DefaultAgentIdentityProvider(config.deviceId, crypto.randomUUID(), config.agentVersion);
+  const identityProvider = new DefaultAgentIdentityProvider(
+    config.deviceId,
+    crypto.randomUUID(),
+    config.agentVersion,
+  );
   const controlPlaneClient = new MockControlPlaneClient();
   const leaseBoundary = new MockLeaseBoundary();
   const stateStore = new InMemoryLocalStateStore();
@@ -73,7 +84,10 @@ test('IPC Integration - vault.* and update.* method invocation and agent lifecyc
     ipcManager,
   );
 
-  const handlers = (ipcManager as any).methodHandlers as Map<string, (params?: any) => Promise<any>>;
+  const handlers = (ipcManager as any).methodHandlers as Map<
+    string,
+    (params?: any) => Promise<any>
+  >;
 
   // Seed mock secret for test
   (agent.vaultClient.resolver as any).mockVaultStore.set('vault:sec_ref_ipc_01', {
