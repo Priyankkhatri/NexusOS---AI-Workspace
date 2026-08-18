@@ -21,7 +21,8 @@ export class PluginExecutionPolicy implements RuntimeExecutionPolicy {
       descriptor.category === RuntimeCategory.CLIPBOARD ||
       descriptor.category === RuntimeCategory.DEVICE ||
       descriptor.category === RuntimeCategory.VAULT ||
-      descriptor.category === RuntimeCategory.UPDATER
+      descriptor.category === RuntimeCategory.UPDATER ||
+      descriptor.category === RuntimeCategory.HEALTH
     );
   }
 }
