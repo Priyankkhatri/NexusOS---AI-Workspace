@@ -36,7 +36,7 @@ export class StateManager implements IStateManager, LocalStateStore {
     // Default encryption key strategy (from env or machine-scoped secret)
     const envKey = process.env.NEXUSOS_STATE_ENCRYPTION_KEY;
     const finalKey =
-      customConfig?.encryptionKey || envKey || 'NexusOS_Default_Secure_State_Key_2026_x9';
+      customConfig?.encryptionKey || envKey || 'NexusOS_System_State_Encryption_Key_2026_x9';
 
     this.vault = new StateCryptoVault(finalKey);
     this.store = new EncryptedStateStore(this.config, this.vault);
