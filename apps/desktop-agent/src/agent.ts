@@ -23,6 +23,8 @@ import { WorkflowDAG } from './workflow/types.js';
 import { ModelRuntimeManager } from './runtimes/local-ai/model-runtime-manager.js';
 import { ClipboardRuntimeManager } from './runtimes/clipboard/clipboard-runtime.js';
 import { IDEIntegrationAdapter } from './adapters/ide/ide-adapter.js';
+import { TrayUIController } from './ui/tray-controller.js';
+import { NativeApprovalHost } from './ui/approval-host.js';
 import { RedactionFilter } from './telemetry/redaction-filter.js';
 import { SecretRedactionRegistry } from './vault/redaction-registry.js';
 
@@ -40,6 +42,8 @@ export class DesktopAgent {
   public readonly modelRuntimeManager: ModelRuntimeManager;
   public readonly clipboardRuntime: ClipboardRuntimeManager;
   public readonly ideAdapter: IDEIntegrationAdapter;
+  public readonly trayController: TrayUIController;
+  public readonly approvalHost: NativeApprovalHost;
   private readonly logger: AgentLogger;
 
   private identity?: AgentIdentity;
@@ -59,6 +63,8 @@ export class DesktopAgent {
     customScheduler?: TaskScheduler,
     customClipboardRuntime?: ClipboardRuntimeManager,
     customIDEAdapter?: IDEIntegrationAdapter,
+    customTrayController?: TrayUIController,
+    customApprovalHost?: NativeApprovalHost,
   ) {
     this.lifecycle = new AgentLifecycleManager();
     this.capabilityRegistry = new CapabilityRegistry();
@@ -181,6 +187,9 @@ export class DesktopAgent {
     this.clipboardRuntime =
       customClipboardRuntime || new ClipboardRuntimeManager(this.leaseBoundary, redactionFilter);
     this.ideAdapter = customIDEAdapter || new IDEIntegrationAdapter(this.leaseBoundary);
+    this.trayController = customTrayController || new TrayUIController();
+    this.approvalHost =
+      customApprovalHost || new NativeApprovalHost(this.leaseBoundary, redactionFilter);
 
     this.logger = new AgentLogger(baseLogger);
 
@@ -346,6 +355,8 @@ export class DesktopAgent {
     this.workflowEngine.shutdown();
     this.clipboardRuntime.shutdown();
     this.ideAdapter.reset();
+    this.trayController.shutdown();
+    this.approvalHost.shutdown();
     await this.modelRuntimeManager.shutdown();
 
     try {
