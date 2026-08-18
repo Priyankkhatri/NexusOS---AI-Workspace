@@ -24,11 +24,20 @@ function createDummyLeaseHeader(): ExecutionLeaseHeader {
 }
 
 class MockControlPlaneClient implements ControlPlaneClient {
-  async connect() {}
-  async disconnect() {}
+  async start() {}
+  async registerAgent() {
+    return { accepted: true, controlPlaneVersion: '1.0.0' };
+  }
   async sendHeartbeat() {
     return true;
   }
+  async relayEvent() {
+    return { success: true };
+  }
+  getConnectionState() {
+    return 'CONNECTED_ACTIVE' as any;
+  }
+  async disconnect() {}
 }
 
 class MockLeaseBoundary extends ExecutionLeaseBoundary {

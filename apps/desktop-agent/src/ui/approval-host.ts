@@ -135,7 +135,7 @@ export class NativeApprovalHost {
   /**
    * Cancels a pending approval prompt.
    */
-  public cancelPrompt(promptId: string, reason = 'Cancelled by system'): boolean {
+  public cancelPrompt(promptId: string, _reason = 'Cancelled by system'): boolean {
     const item = this.prompts.get(promptId);
     if (item && item.state === 'PENDING') {
       item.state = 'CANCELLED';
