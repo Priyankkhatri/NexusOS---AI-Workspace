@@ -512,6 +512,15 @@ export class DesktopAgent {
         const success = await this.updateManager.stageAndActivateUpdate();
         return { success, status: this.updateManager.getStatus() };
       });
+      this.ipcManager.registerMethodHandler('health.getReport', async () => {
+        return this.healthMonitor.getHealthReport();
+      });
+      this.ipcManager.registerMethodHandler('health.checkReadiness', async () => {
+        return this.healthMonitor.checkReadiness();
+      });
+      this.ipcManager.registerMethodHandler('health.checkLiveness', async () => {
+        return { alive: this.healthMonitor.checkLiveness() };
+      });
       this.ipcManager.registerMethodHandler('tray.pause', async (params) => {
         const { reason } = (params || {}) as { reason?: string };
         return this.trayController.pause(reason);
