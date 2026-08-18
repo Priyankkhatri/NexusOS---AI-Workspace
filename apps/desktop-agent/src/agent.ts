@@ -665,6 +665,28 @@ export class DesktopAgent {
         const { result, event } = await this.configurationManager.rollbackToLKG();
         return { result, event };
       });
+      this.ipcManager.registerMethodHandler('state.getRecord', async (params) => {
+        const { StateGetRecordRequestSchema } = await import('./state/schemas.js');
+        const req = StateGetRecordRequestSchema.parse(params || {});
+        return { record: await this.stateManager.get(req.key) };
+      });
+      this.ipcManager.registerMethodHandler('state.setRecord', async (params) => {
+        const { StateSetRecordRequestSchema } = await import('./state/schemas.js');
+        const req = StateSetRecordRequestSchema.parse(params || {});
+        await this.stateManager.set(req.key, req.data);
+        return { success: true };
+      });
+      this.ipcManager.registerMethodHandler('state.deleteRecord', async (params) => {
+        const { StateDeleteRecordRequestSchema } = await import('./state/schemas.js');
+        const req = StateDeleteRecordRequestSchema.parse(params || {});
+        const deleted = await this.stateManager.delete(req.key);
+        return { deleted };
+      });
+      this.ipcManager.registerMethodHandler('state.getStatus', async (params) => {
+        const { StateGetStatusRequestSchema } = await import('./state/schemas.js');
+        StateGetStatusRequestSchema.parse(params || {});
+        return this.stateManager.getStatus();
+      });
     }
 
     if (typeof this.controlPlaneClient.registerCommandHandler === 'function') {
