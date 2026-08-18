@@ -10,6 +10,8 @@ export enum RuntimeCategory {
   LOCAL_AI = 'LOCAL_AI',
   IDE = 'IDE',
   UI = 'UI',
+  VAULT = 'VAULT',
+  UPDATER = 'UPDATER',
 }
 
 export interface ToolRuntimeDescriptor {
