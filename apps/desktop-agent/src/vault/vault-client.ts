@@ -275,7 +275,7 @@ export class SecretsVaultClient {
     }
 
     const agentId = context?.lease.agent_id || 'agent_vault_system';
-    const taskId = context?.lease.task_id || 'task_vault_system';
+    const taskId = context?.lease.task_id || crypto.randomUUID();
 
     const result: VaultOperationResult<boolean> = {
       success: true,
