@@ -411,6 +411,30 @@ export class DesktopAgent {
         const { result } = await this.vaultClient.revokeSecret(req.referenceString);
         return result;
       });
+      this.ipcManager.registerMethodHandler('update.getStatus', async () => {
+        return this.updateManager.getStatus();
+      });
+      this.ipcManager.registerMethodHandler('update.checkForUpdates', async (params) => {
+        const { customManifest } = (params || {}) as {
+          customManifest?: import('./updater/types.js').UpdateManifest;
+        };
+        return this.updateManager.checkForUpdates(customManifest);
+      });
+      this.ipcManager.registerMethodHandler('update.downloadAndUpdate', async (params) => {
+        const { manifest, packageDataBase64 } = (params || {}) as {
+          manifest: import('./updater/types.js').UpdateManifest;
+          packageDataBase64?: string;
+        };
+        const packageData = packageDataBase64
+          ? Buffer.from(packageDataBase64, 'base64')
+          : undefined;
+        const success = await this.updateManager.downloadAndVerifyUpdate(manifest, packageData);
+        return { success, status: this.updateManager.getStatus() };
+      });
+      this.ipcManager.registerMethodHandler('update.stageAndActivate', async () => {
+        const success = await this.updateManager.stageAndActivateUpdate();
+        return { success, status: this.updateManager.getStatus() };
+      });
       this.ipcManager.registerMethodHandler('tray.pause', async (params) => {
         const { reason } = (params || {}) as { reason?: string };
         return this.trayController.pause(reason);
