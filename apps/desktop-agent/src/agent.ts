@@ -521,6 +521,17 @@ export class DesktopAgent {
       this.ipcManager.registerMethodHandler('health.checkLiveness', async () => {
         return { alive: this.healthMonitor.checkLiveness() };
       });
+      this.ipcManager.registerMethodHandler('recovery.loadManifest', async () => {
+        return this.crashRecoveryManager.getRecoveryManifest();
+      });
+      this.ipcManager.registerMethodHandler('recovery.reconcile', async () => {
+        const { result } = await this.crashRecoveryManager.executeStartupRecovery();
+        return result;
+      });
+      this.ipcManager.registerMethodHandler('recovery.execute', async () => {
+        const { result } = await this.crashRecoveryManager.executeStartupRecovery();
+        return result;
+      });
       this.ipcManager.registerMethodHandler('tray.pause', async (params) => {
         const { reason } = (params || {}) as { reason?: string };
         return this.trayController.pause(reason);
