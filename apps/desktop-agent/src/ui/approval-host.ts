@@ -73,7 +73,36 @@ export class NativeApprovalHost {
     };
 
     this.prompts.set(promptId, item);
+
+    // Schedule auto-expiration timer
+    const timer = setTimeout(() => {
+      this.performAutoExpire(promptId);
+    }, ttlSeconds * 1000);
+
+    if (timer.unref) {
+      timer.unref();
+    }
+    this.promptTimers.set(promptId, timer);
+
     return { ...item };
+  }
+
+  /**
+   * Retrieves a prompt item for UI presentation, applying lock-screen privacy sanitization when active.
+   */
+  public getSanitizedPromptForUI(
+    promptId: string,
+    isLockScreen = false,
+  ): ApprovalPromptItem | undefined {
+    const item = this.prompts.get(promptId);
+    if (!item) return undefined;
+
+    const copy = { ...item };
+    if (isLockScreen || item.isLockScreenPrivate) {
+      copy.description = '[REDACTED FOR PRIVACY - SENSITIVE CONTENT]';
+      copy.metadata = undefined;
+    }
+    return copy;
   }
 
   /**
@@ -107,6 +136,34 @@ export class NativeApprovalHost {
   }
 
   /**
+   * Cancels a pending approval prompt.
+   */
+  public cancelPrompt(promptId: string, reason = 'Cancelled by system'): boolean {
+    const item = this.prompts.get(promptId);
+    if (item && item.state === 'PENDING') {
+      item.state = 'CANCELLED';
+      const timer = this.promptTimers.get(promptId);
+      if (timer) {
+        clearTimeout(timer);
+        this.promptTimers.delete(promptId);
+      }
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Performs auto-expiration when timer fires.
+   */
+  private performAutoExpire(promptId: string): void {
+    const item = this.prompts.get(promptId);
+    if (item && item.state === 'PENDING') {
+      item.state = 'EXPIRED';
+    }
+    this.promptTimers.delete(promptId);
+  }
+
+  /**
    * Submits a user authorization decision (ALLOW / DENY) for a pending prompt under lease validation and replay protection.
    */
   public async submitDecision(request: ApprovalDecisionRequest): Promise<ApprovalDecisionResult> {
@@ -136,6 +193,13 @@ export class NativeApprovalHost {
         `Nonce mismatch for approval prompt '${request.promptId}'`,
         'NONCE_MISMATCH',
       );
+    }
+
+    // Clear auto-expire timer
+    const timer = this.promptTimers.get(request.promptId);
+    if (timer) {
+      clearTimeout(timer);
+      this.promptTimers.delete(request.promptId);
     }
 
     // 3. TTL Expiration check
@@ -172,5 +236,21 @@ export class NativeApprovalHost {
       resolvedAt,
       receiptHash,
     };
+  }
+
+  /**
+   * Deterministic shutdown purging all pending timers and cancelling pending prompts.
+   */
+  public shutdown(): void {
+    for (const timer of this.promptTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.promptTimers.clear();
+
+    for (const item of this.prompts.values()) {
+      if (item.state === 'PENDING') {
+        item.state = 'CANCELLED';
+      }
+    }
   }
 }
