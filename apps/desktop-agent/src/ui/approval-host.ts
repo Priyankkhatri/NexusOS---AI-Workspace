@@ -105,4 +105,72 @@ export class NativeApprovalHost {
 
     return pending;
   }
+
+  /**
+   * Submits a user authorization decision (ALLOW / DENY) for a pending prompt under lease validation and replay protection.
+   */
+  public async submitDecision(request: ApprovalDecisionRequest): Promise<ApprovalDecisionResult> {
+    const item = this.prompts.get(request.promptId);
+    if (!item) {
+      throw new UIError(`Approval prompt '${request.promptId}' not found`, 'PROMPT_NOT_FOUND');
+    }
+
+    if (request.tenantId && item.tenantId !== request.tenantId) {
+      throw new UIError(
+        `Cross-tenant decision submission blocked for prompt '${request.promptId}'`,
+        'TENANT_MISMATCH',
+      );
+    }
+
+    // 1. Double-click & replay race protection: state must be PENDING
+    if (item.state !== 'PENDING') {
+      throw new UIError(
+        `Approval prompt '${request.promptId}' is already resolved in state '${item.state}'`,
+        'PROMPT_ALREADY_RESOLVED',
+      );
+    }
+
+    // 2. Nonce verification
+    if (item.nonce !== request.nonce) {
+      throw new UIError(
+        `Nonce mismatch for approval prompt '${request.promptId}'`,
+        'NONCE_MISMATCH',
+      );
+    }
+
+    // 3. TTL Expiration check
+    if (Date.now() > item.expiresAt) {
+      item.state = 'EXPIRED';
+      throw new UIError(`Approval prompt '${request.promptId}' has expired`, 'PROMPT_EXPIRED');
+    }
+
+    // 4. Lease TOCTOU protection: re-validate lease header at decision time
+    if (this.leaseBoundary) {
+      const leaseRes = await this.leaseBoundary.validateLease(request.leaseHeader);
+      if (!leaseRes.valid) {
+        item.state = 'DENIED';
+        throw new UIError(
+          'Lease re-validation failed at decision submission time',
+          'UNAUTHORIZED',
+        );
+      }
+    }
+
+    // 5. Atomic state transition
+    const finalState = request.decision === 'ALLOW' ? 'APPROVED' : 'DENIED';
+    item.state = finalState;
+
+    const resolvedAt = Date.now();
+    const receiptPayload = `${item.promptId}:${item.requestId}:${request.decision}:${resolvedAt}:${request.nonce}`;
+    const receiptHash = crypto.createHash('sha256').update(receiptPayload).digest('hex');
+
+    return {
+      promptId: item.promptId,
+      requestId: item.requestId,
+      decision: request.decision,
+      state: finalState,
+      resolvedAt,
+      receiptHash,
+    };
+  }
 }
