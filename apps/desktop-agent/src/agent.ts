@@ -546,6 +546,14 @@ export class DesktopAgent {
         'setLockScreen',
       ],
     });
+    this.runtimeRegistry.registerRuntime({
+      runtimeId: 'rt:device-v1',
+      category: RuntimeCategory.DEVICE,
+      version: '0.1.0-sprint0',
+      isExecutable: true,
+      supportedActions: ['queryInfo', 'getPosture', 'executeOperation'],
+    });
+
 
     this.logger = new AgentLogger(baseLogger);
 
