@@ -34,6 +34,7 @@ yarn-error.log*
 .test-update-staging-dir/
 .test-update-hardening-dir/
 .nexusos-update-staging/
+.nexusos-state/
 
 # Testing & Coverage
 coverage/
