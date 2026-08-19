@@ -97,6 +97,7 @@ export interface ITelemetryManager {
   trackTrace(name: string, attributes?: Record<string, unknown>): void;
   trackEventEnvelope(envelope: EventEnvelope): void;
   flush(): Promise<TelemetryBatch | null>;
+  verifyBatchIntegrity(batch: TelemetryBatch): boolean;
   getHealthMetrics(): SpoolMetrics;
   exportDiagnosticBundle(targetDir?: string): Promise<DiagnosticBundle>;
 }

@@ -85,6 +85,29 @@ export class TelemetryManager implements ITelemetryManager {
     };
   }
 
+  public verifyBatchIntegrity(batch: TelemetryBatch): boolean {
+    if (!batch || !batch.batchId || !batch.batchHash || !Array.isArray(batch.items)) {
+      return false;
+    }
+    try {
+      const canonicalString = `${batch.batchId}:${batch.agentId}:${batch.createdAt}:${JSON.stringify(batch.items)}`;
+      const expectedHash = crypto
+        .createHmac('sha256', this.hmacSecretKey)
+        .update(canonicalString)
+        .digest('hex');
+
+      const expectedBuf = Buffer.from(expectedHash, 'hex');
+      const actualBuf = Buffer.from(batch.batchHash, 'hex');
+
+      if (expectedBuf.length !== actualBuf.length) {
+        return false;
+      }
+      return crypto.timingSafeEqual(expectedBuf, actualBuf);
+    } catch {
+      return false;
+    }
+  }
+
   public getHealthMetrics(): SpoolMetrics {
     return this.spool.getSpoolMetrics();
   }
