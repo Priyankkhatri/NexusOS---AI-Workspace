@@ -164,6 +164,8 @@ export class DesktopAgent {
         () => this.lifecycle.getState(),
       );
 
+
+
     const runtimeRouter = new RuntimeRouter(this.capabilityRegistry, this.runtimeRegistry);
     this.orchestrator =
       customOrchestrator ||
