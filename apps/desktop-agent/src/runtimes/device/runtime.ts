@@ -82,7 +82,6 @@ export class DeviceRuntime {
     }
   }
 
-
   public async execute(rawRequest: DeviceOperationRequest): Promise<DeviceOperationResult> {
     const executedAt = new Date().toISOString();
 

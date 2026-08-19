@@ -84,4 +84,3 @@ export const DeviceExecuteIPCRequestSchema = z.object({
   request: DeviceOperationRequestSchema,
   tenantId: z.string().optional(),
 });
-

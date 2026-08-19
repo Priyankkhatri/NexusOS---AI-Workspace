@@ -164,8 +164,6 @@ export class DesktopAgent {
         () => this.lifecycle.getState(),
       );
 
-
-
     const runtimeRouter = new RuntimeRouter(this.capabilityRegistry, this.runtimeRegistry);
     this.orchestrator =
       customOrchestrator ||
@@ -443,7 +441,6 @@ export class DesktopAgent {
       requiredScope: 'device:write',
     });
 
-
     this.modelRuntimeManager = new ModelRuntimeManager(this.leaseBoundary, '.nexus-local-ai');
     const redactionFilter = new RedactionFilter(new SecretRedactionRegistry());
     this.clipboardRuntime =
@@ -577,7 +574,6 @@ export class DesktopAgent {
       isExecutable: true,
       supportedActions: ['queryInfo', 'getPosture', 'executeOperation'],
     });
-
 
     this.logger = new AgentLogger(baseLogger);
 
@@ -1008,7 +1004,6 @@ export class DesktopAgent {
         return { posture: sanitizedPosture };
       });
     }
-
 
     if (typeof this.controlPlaneClient.registerCommandHandler === 'function') {
       this.controlPlaneClient.registerCommandHandler(async (envelope) => {

@@ -4,22 +4,58 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
+import { ExecutionLeaseHeader } from '@nexusos/contracts';
+import {
+  PolicyEvaluator,
+  PolicyDecisionRequest,
+  PolicyDecisionResult,
+  PolicyEffect,
+  PolicySnapshot,
+} from '@nexusos/policy';
+import { ExecutionLeaseBoundary } from '../src/permissions/lease-boundary.js';
 import { DesktopAgent } from '../src/agent.js';
 import { DesktopAgentConfig } from '../src/config/index.js';
 import { AgentIdentityProvider } from '../src/identity/agent-identity.js';
 import { ControlPlaneClient } from '../src/communication/types.js';
-import { ExecutionLeaseBoundary } from '../src/permissions/lease-boundary.js';
 import { InMemoryLocalStateStore } from '../src/state/local-state-store.js';
 import { Logger } from '@nexusos/backend';
 import { DeviceRuntime } from '../src/runtimes/device/runtime.js';
 import { DeviceOperationName, DeviceRequestContext } from '../src/runtimes/device/types.js';
-import { ExecutionLeaseHeader } from '@nexusos/contracts';
+
+class StubAllowPolicyEvaluator implements PolicyEvaluator {
+  async evaluate(request: PolicyDecisionRequest): Promise<PolicyDecisionResult> {
+    return {
+      decisionId: crypto.randomUUID(),
+      effect: PolicyEffect.ALLOW,
+      allowed: true,
+      policyVersion: '1.0.0',
+      policyHash: 'stub-hash',
+      reason: 'Allowed in test',
+      evaluatedAt: new Date().toISOString(),
+      requestId: request.context.requestId,
+      correlationId: request.context.correlationId,
+    };
+  }
+
+  getSnapshot(): PolicySnapshot {
+    return {
+      policyVersion: '1.0.0',
+      policyHash: 'stub-hash',
+      createdAt: new Date().toISOString(),
+      rules: [],
+    };
+  }
+}
 
 describe('Task 041 — Local Device IPC & Host Integration Tests', () => {
   let agent: DesktopAgent;
   let tmpDir: string;
 
-  function createValidLease(scopes: string[], taskId = crypto.randomUUID(), tenantId = 'tenant-041'): ExecutionLeaseHeader {
+  function createValidLease(
+    scopes: string[],
+    taskId = crypto.randomUUID(),
+    tenantId = crypto.randomUUID(),
+  ): ExecutionLeaseHeader {
     return {
       lease_id: crypto.randomUUID(),
       task_id: taskId,
@@ -30,17 +66,21 @@ describe('Task 041 — Local Device IPC & Host Integration Tests', () => {
       scopes,
       signature: 'valid-signature-041',
       nonce: crypto.randomUUID(),
-      policy_hash: 'stub-policy-hash',
+      policy_hash: 'stub-hash',
     };
   }
 
-  function createRequestContext(scopes: string[], taskId = crypto.randomUUID(), tenantId = 'tenant-041'): DeviceRequestContext {
+  function createRequestContext(
+    scopes: string[],
+    taskId = crypto.randomUUID(),
+    tenantId = crypto.randomUUID(),
+  ): DeviceRequestContext {
     const leaseHeader = createValidLease(scopes, taskId, tenantId);
     return {
       taskId: leaseHeader.task_id,
       workspaceId: crypto.randomUUID(),
       tenantId: leaseHeader.tenant_id,
-      subjectId: 'user-041',
+      subjectId: crypto.randomUUID(),
       correlationId: crypto.randomUUID(),
       leaseHeader,
     };
@@ -82,7 +122,7 @@ describe('Task 041 — Local Device IPC & Host Integration Tests', () => {
       disconnect: async () => {},
     };
 
-    const leaseBoundary = new ExecutionLeaseBoundary();
+    const leaseBoundary = new ExecutionLeaseBoundary(new StubAllowPolicyEvaluator());
     const stateStore = new InMemoryLocalStateStore();
     const baseLogger: Logger = {
       debug: () => {},
@@ -197,12 +237,14 @@ describe('Task 041 — Local Device IPC & Host Integration Tests', () => {
   it('8. device.execute — rejects request with task context mismatch', async () => {
     await agent.start();
 
-    const leaseHeader = createValidLease(['capability:clipboard:write'], 'task-correct-123');
+    const correctTaskId = crypto.randomUUID();
+    const wrongTaskId = crypto.randomUUID();
+    const leaseHeader = createValidLease(['capability:clipboard:write'], correctTaskId);
     const mismatchedContext: DeviceRequestContext = {
-      taskId: 'task-WRONG-456',
+      taskId: wrongTaskId,
       workspaceId: crypto.randomUUID(),
       tenantId: leaseHeader.tenant_id,
-      subjectId: 'user-041',
+      subjectId: crypto.randomUUID(),
       correlationId: crypto.randomUUID(),
       leaseHeader,
     };
@@ -220,12 +262,15 @@ describe('Task 041 — Local Device IPC & Host Integration Tests', () => {
   it('9. device.execute — rejects request with tenant context mismatch', async () => {
     await agent.start();
 
-    const leaseHeader = createValidLease(['capability:clipboard:write'], 'task-123', 'tenant-A');
+    const taskId = crypto.randomUUID();
+    const tenantA = crypto.randomUUID();
+    const tenantB = crypto.randomUUID();
+    const leaseHeader = createValidLease(['capability:clipboard:write'], taskId, tenantA);
     const mismatchedContext: DeviceRequestContext = {
-      taskId: 'task-123',
+      taskId,
       workspaceId: crypto.randomUUID(),
-      tenantId: 'tenant-WRONG-B',
-      subjectId: 'user-041',
+      tenantId: tenantB,
+      subjectId: crypto.randomUUID(),
       correlationId: crypto.randomUUID(),
       leaseHeader,
     };
@@ -259,7 +304,6 @@ describe('Task 041 — Local Device IPC & Host Integration Tests', () => {
   it('11. DesktopAgent stop() cleanly calls deviceRuntime.shutdown()', async () => {
     await agent.start();
 
-    // Perform an operation to ensure runtime is active
     const writeCtx = createRequestContext(['capability:clipboard:write']);
     await agent.deviceRuntime.execute({
       operationName: DeviceOperationName.CLIPBOARD_WRITE,
