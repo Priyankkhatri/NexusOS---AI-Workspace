@@ -35,3 +35,29 @@ export const TelemetryBatchSchema = z.object({
   items: z.array(TelemetryItemSchema),
   batchHash: z.string().min(1),
 });
+
+export const TelemetryTrackMetricRequestSchema = z.object({
+  name: z.string().min(1).max(256),
+  value: z.number(),
+  attributes: z.record(z.unknown()).optional(),
+  tenantId: z.string().optional(),
+});
+
+export const TelemetryTrackTraceRequestSchema = z.object({
+  name: z.string().min(1).max(256),
+  attributes: z.record(z.unknown()).optional(),
+  tenantId: z.string().optional(),
+});
+
+export const TelemetryFlushRequestSchema = z.object({
+  tenantId: z.string().optional(),
+});
+
+export const TelemetryGetMetricsRequestSchema = z.object({
+  tenantId: z.string().optional(),
+});
+
+export const TelemetryExportDiagnosticBundleRequestSchema = z.object({
+  outputPath: z.string().optional(),
+  tenantId: z.string().optional(),
+});

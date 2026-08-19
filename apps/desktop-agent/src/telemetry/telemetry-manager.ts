@@ -88,4 +88,25 @@ export class TelemetryManager implements ITelemetryManager {
   public getHealthMetrics(): SpoolMetrics {
     return this.spool.getSpoolMetrics();
   }
+
+  public async exportDiagnosticBundle(
+    _targetDir?: string,
+  ): Promise<import('./types.js').DiagnosticBundle> {
+    const metrics = this.getHealthMetrics();
+    const bundleId = crypto.randomUUID();
+    const generatedAt = new Date().toISOString();
+    const hash = crypto
+      .createHmac('sha256', this.hmacSecretKey)
+      .update(`${bundleId}:${this.agentId}:${generatedAt}:${JSON.stringify(metrics)}`)
+      .digest('hex');
+
+    return {
+      bundleId,
+      generatedAt,
+      agentId: this.agentId,
+      metrics,
+      spoolItemCount: metrics.totalItemsSpooled,
+      hash,
+    };
+  }
 }

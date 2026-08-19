@@ -81,6 +81,15 @@ export interface IStructuredLogger {
   setCorrelationContext(correlationId?: string, taskId?: string, stepId?: string): void;
 }
 
+export interface DiagnosticBundle {
+  bundleId: string;
+  generatedAt: string;
+  agentId: string;
+  metrics: SpoolMetrics;
+  spoolItemCount: number;
+  hash: string;
+}
+
 export interface ITelemetryManager {
   logger: IStructuredLogger;
   spool: ITelemetrySpool;
@@ -89,4 +98,22 @@ export interface ITelemetryManager {
   trackEventEnvelope(envelope: EventEnvelope): void;
   flush(): Promise<TelemetryBatch | null>;
   getHealthMetrics(): SpoolMetrics;
+  exportDiagnosticBundle(targetDir?: string): Promise<DiagnosticBundle>;
 }
+
+import { z } from 'zod';
+import {
+  TelemetryTrackMetricRequestSchema,
+  TelemetryTrackTraceRequestSchema,
+  TelemetryFlushRequestSchema,
+  TelemetryGetMetricsRequestSchema,
+  TelemetryExportDiagnosticBundleRequestSchema,
+} from './schemas.js';
+
+export type TelemetryTrackMetricRequest = z.infer<typeof TelemetryTrackMetricRequestSchema>;
+export type TelemetryTrackTraceRequest = z.infer<typeof TelemetryTrackTraceRequestSchema>;
+export type TelemetryFlushRequest = z.infer<typeof TelemetryFlushRequestSchema>;
+export type TelemetryGetMetricsRequest = z.infer<typeof TelemetryGetMetricsRequestSchema>;
+export type TelemetryExportDiagnosticBundleRequest = z.infer<
+  typeof TelemetryExportDiagnosticBundleRequestSchema
+>;
