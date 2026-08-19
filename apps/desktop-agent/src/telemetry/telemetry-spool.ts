@@ -67,12 +67,7 @@ export class TelemetrySpool implements ITelemetrySpool {
     if (!envelope) return false;
 
     // Determine priority: Security, state changes, policy decisions, audit evidence are CRITICAL!
-    const isCritical =
-      envelope.schema_id.startsWith('nexusos.events.security') ||
-      envelope.schema_id.startsWith('nexusos.events.agent.state') ||
-      envelope.schema_id.startsWith('nexusos.events.policy') ||
-      envelope.schema_id.startsWith('nexusos.events.config') ||
-      envelope.schema_id.startsWith('nexusos.events.recovery');
+    const isCritical = this.backpressureController.isCriticalSchemaId(envelope.schema_id);
 
     const item: TelemetryItem = {
       itemId: envelope.event_id,

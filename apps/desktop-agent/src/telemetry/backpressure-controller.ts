@@ -22,6 +22,19 @@ export class BackpressureController implements IBackpressureController {
     this.isCriticalFull = isFull;
   }
 
+  public isCriticalSchemaId(schemaId: string): boolean {
+    if (!schemaId || typeof schemaId !== 'string') return false;
+    // Attacker prevention: Must strictly start with authorized nexusos.events namespace!
+    if (!schemaId.startsWith('nexusos.events.')) return false;
+    return (
+      schemaId.startsWith('nexusos.events.security') ||
+      schemaId.startsWith('nexusos.events.agent.state') ||
+      schemaId.startsWith('nexusos.events.policy') ||
+      schemaId.startsWith('nexusos.events.config') ||
+      schemaId.startsWith('nexusos.events.recovery')
+    );
+  }
+
   public shouldSampleLog(level: LogLevel, priority: EventPriority): boolean {
     // CRITICAL events must NEVER be sampled or dropped!
     if (priority === 'CRITICAL' || level === 'fatal' || level === 'error') {
