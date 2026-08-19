@@ -25,7 +25,8 @@ export class PluginExecutionPolicy implements RuntimeExecutionPolicy {
       descriptor.category === RuntimeCategory.HEALTH ||
       descriptor.category === RuntimeCategory.CONFIG ||
       descriptor.category === RuntimeCategory.STATE ||
-      descriptor.category === RuntimeCategory.TELEMETRY
+      descriptor.category === RuntimeCategory.TELEMETRY ||
+      descriptor.category === RuntimeCategory.NOTIFICATION
     );
   }
 }
