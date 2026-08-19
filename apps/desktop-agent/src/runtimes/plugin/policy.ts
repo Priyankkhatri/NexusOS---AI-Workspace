@@ -5,11 +5,14 @@ import {
 } from '../../registry/runtime-registry.js';
 
 /**
- * Execution policy for Task 03E: Plugin Host Manager.
+ * Execution policy for Plugin Host Manager.
  *
  * Explicitly authorizes RuntimeCategory.PLUGIN, RuntimeCategory.BROWSER,
- * RuntimeCategory.TERMINAL, and RuntimeCategory.FILESYSTEM descriptors as executable.
- * Keeps all remaining runtime categories (CAMERA, MICROPHONE, CLIPBOARD, LOCAL_AI) strictly fail-closed.
+ * RuntimeCategory.TERMINAL, RuntimeCategory.FILESYSTEM, RuntimeCategory.CLIPBOARD,
+ * RuntimeCategory.DEVICE, RuntimeCategory.VAULT, RuntimeCategory.UPDATER,
+ * RuntimeCategory.HEALTH, RuntimeCategory.CONFIG, RuntimeCategory.STATE,
+ * RuntimeCategory.TELEMETRY, and RuntimeCategory.NOTIFICATION descriptors as executable.
+ * Keeps remaining runtime categories (CAMERA, MICROPHONE, LOCAL_AI) strictly fail-closed.
  */
 export class PluginExecutionPolicy implements RuntimeExecutionPolicy {
   allowExecutableRegistration(descriptor: ToolRuntimeDescriptor): boolean {
