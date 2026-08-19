@@ -113,7 +113,7 @@ export class TelemetryManager implements ITelemetryManager {
   }
 
   public async exportDiagnosticBundle(
-    _targetDir?: string,
+    targetDir?: string,
   ): Promise<import('./types.js').DiagnosticBundle> {
     const metrics = this.getHealthMetrics();
     const bundleId = crypto.randomUUID();
@@ -123,7 +123,7 @@ export class TelemetryManager implements ITelemetryManager {
       .update(`${bundleId}:${this.agentId}:${generatedAt}:${JSON.stringify(metrics)}`)
       .digest('hex');
 
-    return {
+    const bundle: import('./types.js').DiagnosticBundle = {
       bundleId,
       generatedAt,
       agentId: this.agentId,
@@ -131,5 +131,28 @@ export class TelemetryManager implements ITelemetryManager {
       spoolItemCount: metrics.totalItemsSpooled,
       hash,
     };
+
+    if (targetDir) {
+      const fs = await import('node:fs');
+      const path = await import('node:path');
+      const { PathSecurityService } = await import('../runtimes/filesystem/path-security.js');
+      const pathService = new PathSecurityService();
+
+      const normalizedDir = pathService.normalizePath(targetDir);
+      const filePath = path.join(normalizedDir, `diagnostic-bundle-${bundleId}.json`);
+
+      const rootDir = path.dirname(normalizedDir);
+      const validation = pathService.validatePath(filePath, [normalizedDir, rootDir]);
+      if (!validation.valid && validation.error) {
+        throw new Error(`[SECURITY_ERROR] Path security validation failed for diagnostic export: ${validation.error.message}`);
+      }
+
+      if (!fs.existsSync(normalizedDir)) {
+        fs.mkdirSync(normalizedDir, { recursive: true });
+      }
+      fs.writeFileSync(filePath, JSON.stringify(bundle, null, 2), 'utf-8');
+    }
+
+    return bundle;
   }
 }
