@@ -740,6 +740,35 @@ export class DesktopAgent {
         StateGetStatusRequestSchema.parse(params || {});
         return this.stateManager.getStatus();
       });
+      this.ipcManager.registerMethodHandler('telemetry.trackMetric', async (params) => {
+        const { TelemetryTrackMetricRequestSchema } = await import('./telemetry/schemas.js');
+        const req = TelemetryTrackMetricRequestSchema.parse(params || {});
+        this.telemetryManager.trackMetric(req.name, req.value, req.attributes || {});
+        return { success: true };
+      });
+      this.ipcManager.registerMethodHandler('telemetry.trackTrace', async (params) => {
+        const { TelemetryTrackTraceRequestSchema } = await import('./telemetry/schemas.js');
+        const req = TelemetryTrackTraceRequestSchema.parse(params || {});
+        this.telemetryManager.trackTrace(req.name, req.attributes || {});
+        return { success: true };
+      });
+      this.ipcManager.registerMethodHandler('telemetry.flush', async (params) => {
+        const { TelemetryFlushRequestSchema } = await import('./telemetry/schemas.js');
+        TelemetryFlushRequestSchema.parse(params || {});
+        const batch = await this.telemetryManager.flush();
+        return { batch };
+      });
+      this.ipcManager.registerMethodHandler('telemetry.getMetrics', async (params) => {
+        const { TelemetryGetMetricsRequestSchema } = await import('./telemetry/schemas.js');
+        TelemetryGetMetricsRequestSchema.parse(params || {});
+        return { metrics: this.telemetryManager.getHealthMetrics() };
+      });
+      this.ipcManager.registerMethodHandler('telemetry.exportDiagnosticBundle', async (params) => {
+        const { TelemetryExportDiagnosticBundleRequestSchema } = await import('./telemetry/schemas.js');
+        const req = TelemetryExportDiagnosticBundleRequestSchema.parse(params || {});
+        const bundle = await this.telemetryManager.exportDiagnosticBundle(req.outputPath);
+        return { bundle };
+      });
     }
 
     if (typeof this.controlPlaneClient.registerCommandHandler === 'function') {
