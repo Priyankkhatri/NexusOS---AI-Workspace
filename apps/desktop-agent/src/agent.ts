@@ -419,6 +419,28 @@ export class DesktopAgent {
       isDangerous: true,
       requiredScope: 'notification:write',
     });
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'device.queryInfo',
+      category: 'runtime',
+      description: 'Query device hardware and software capabilities summary',
+      isDangerous: false,
+      requiredScope: 'device:read',
+    });
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'device.getPosture',
+      category: 'runtime',
+      description: 'Query device security posture, OS consent status, and power state',
+      isDangerous: false,
+      requiredScope: 'device:read',
+    });
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'device.execute',
+      category: 'runtime',
+      description: 'Execute an authorized device runtime operation under valid lease authority',
+      isDangerous: true,
+      requiredScope: 'device:write',
+    });
+
 
     this.modelRuntimeManager = new ModelRuntimeManager(this.leaseBoundary, '.nexus-local-ai');
     const redactionFilter = new RedactionFilter(new SecretRedactionRegistry());
