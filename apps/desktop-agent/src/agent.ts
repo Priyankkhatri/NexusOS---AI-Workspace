@@ -377,6 +377,48 @@ export class DesktopAgent {
       isDangerous: true,
       requiredScope: 'telemetry:read',
     });
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'notification.dispatch',
+      category: 'runtime',
+      description: 'Submit a structured notification for delivery through policy gate',
+      isDangerous: false,
+      requiredScope: 'notification:write',
+    });
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'notification.listPending',
+      category: 'runtime',
+      description: 'Retrieve pending unread notifications from the notification queue',
+      isDangerous: false,
+      requiredScope: 'notification:read',
+    });
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'notification.markRead',
+      category: 'runtime',
+      description: 'Mark a specific notification as read',
+      isDangerous: false,
+      requiredScope: 'notification:write',
+    });
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'notification.executeAction',
+      category: 'runtime',
+      description: 'Execute a notification action with mandatory per-call revalidation',
+      isDangerous: true,
+      requiredScope: 'notification:write',
+    });
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'notification.getMetrics',
+      category: 'runtime',
+      description: 'Retrieve notification queue health and delivery metrics',
+      isDangerous: false,
+      requiredScope: 'notification:read',
+    });
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'notification.setLockScreen',
+      category: 'runtime',
+      description: 'Activate lock-screen privacy mode — retroactively redacts pending queue items',
+      isDangerous: true,
+      requiredScope: 'notification:write',
+    });
 
     this.modelRuntimeManager = new ModelRuntimeManager(this.leaseBoundary, '.nexus-local-ai');
     const redactionFilter = new RedactionFilter(new SecretRedactionRegistry());
@@ -489,6 +531,20 @@ export class DesktopAgent {
       version: '1.0.0',
       isExecutable: true,
       supportedActions: ['getRecord', 'setRecord', 'deleteRecord', 'getStatus'],
+    });
+    this.runtimeRegistry.registerRuntime({
+      runtimeId: 'notification-manager',
+      category: RuntimeCategory.NOTIFICATION,
+      version: '1.0.0',
+      isExecutable: true,
+      supportedActions: [
+        'dispatch',
+        'listPending',
+        'markRead',
+        'executeAction',
+        'getMetrics',
+        'setLockScreen',
+      ],
     });
 
     this.logger = new AgentLogger(baseLogger);
@@ -770,6 +826,101 @@ export class DesktopAgent {
         const bundle = await this.telemetryManager.exportDiagnosticBundle(req.outputPath);
         return { bundle };
       });
+      this.ipcManager.registerMethodHandler('notification.dispatch', async (params) => {
+        const { NotificationDispatchRequestSchema } = await import('./notifications/schemas.js');
+        const req = NotificationDispatchRequestSchema.parse(params || {});
+        // Fail-closed: reject dispatch during terminal lifecycle states
+        const state = this.lifecycle.getState();
+        if (
+          state === AgentLifecycleState.STOPPING ||
+          state === AgentLifecycleState.STOPPED ||
+          state === AgentLifecycleState.FAILED
+        ) {
+          throw new Error(`notification.dispatch denied: agent lifecycle state is '${state}'.`);
+        }
+        const item = this.notificationManager.notify({
+          category: req.category,
+          priority: req.priority,
+          title: req.title,
+          message: req.message,
+          taskId: req.taskId,
+          correlationId: req.correlationId,
+          coalesceKey: req.coalesceKey,
+          actions: req.actions,
+          ttlSeconds: req.ttlSeconds,
+          metadata: req.metadata,
+        });
+        // All notification responses MUST be sanitized via the policy gate
+        const sanitized = this.notificationManager.policyGate.sanitizeAndRedact(item);
+        this.telemetryManager.trackTrace('notification_dispatch_ipc', {
+          notificationId: sanitized.id,
+          category: sanitized.category,
+          priority: sanitized.priority,
+        });
+        return { item: sanitized };
+      });
+      this.ipcManager.registerMethodHandler('notification.listPending', async (params) => {
+        const { NotificationListPendingRequestSchema } = await import('./notifications/schemas.js');
+        const req = NotificationListPendingRequestSchema.parse(params || {});
+        const maxCount = req.maxCount ?? 50;
+        const pending = this.notificationManager.queue.popPending(maxCount);
+        // Sanitize every item in the response
+        const sanitized = pending.map((item) =>
+          this.notificationManager.policyGate.sanitizeAndRedact(item),
+        );
+        return { items: sanitized };
+      });
+      this.ipcManager.registerMethodHandler('notification.markRead', async (params) => {
+        const { NotificationMarkReadRequestSchema } = await import('./notifications/schemas.js');
+        const req = NotificationMarkReadRequestSchema.parse(params || {});
+        const marked = this.notificationManager.queue.markRead(req.notificationId);
+        return { success: marked };
+      });
+      this.ipcManager.registerMethodHandler('notification.executeAction', async (params) => {
+        const { NotificationExecuteActionRequestSchema } = await import(
+          './notifications/schemas.js'
+        );
+        const req = NotificationExecuteActionRequestSchema.parse(params || {});
+        // Fail-closed: require non-empty authToken — Zod already enforces min(1)
+        // executeNotificationAction internally calls policyGate.validateActionExecution()
+        // which enforces TOCTOU revalidation (expiry check, context binding, auth token)
+        const result = this.notificationManager.executeNotificationAction(
+          req.notificationId,
+          req.actionId,
+          req.authToken,
+          req.expectedTaskId,
+          req.expectedCorrelationId,
+        );
+        if (!result.success) {
+          this.telemetryManager.trackTrace('notification_action_denied', {
+            notificationId: req.notificationId,
+            actionId: req.actionId,
+            reason: result.reason,
+          });
+        } else {
+          this.telemetryManager.trackTrace('notification_action_executed', {
+            notificationId: req.notificationId,
+            actionId: req.actionId,
+          });
+        }
+        return result;
+      });
+      this.ipcManager.registerMethodHandler('notification.getMetrics', async (params) => {
+        const { NotificationGetMetricsRequestSchema } = await import('./notifications/schemas.js');
+        NotificationGetMetricsRequestSchema.parse(params || {});
+        return { metrics: this.notificationManager.getHealthMetrics() };
+      });
+      this.ipcManager.registerMethodHandler('notification.setLockScreen', async (params) => {
+        const { NotificationSetLockScreenRequestSchema } = await import(
+          './notifications/schemas.js'
+        );
+        const req = NotificationSetLockScreenRequestSchema.parse(params || {});
+        this.notificationManager.setLockScreenActive(req.isActive);
+        this.telemetryManager.trackTrace('notification_lock_screen_state_change', {
+          isActive: req.isActive,
+        });
+        return { success: true, isActive: req.isActive };
+      });
     }
 
     if (typeof this.controlPlaneClient.registerCommandHandler === 'function') {
@@ -862,6 +1013,15 @@ export class DesktopAgent {
     this.updateManager.shutdown();
     await this.modelRuntimeManager.shutdown();
     await this.stateManager.stop();
+    // Purge stale expired notification queue items on shutdown.
+    // NotificationManager has no open handles or timers; it uses lazy TTL expiry.
+    // Calling purgeExpired() here ensures the disk-persisted queue file is cleaned
+    // of expired entries without destructively dropping unread CRITICAL notifications.
+    try {
+      this.notificationManager.queue.purgeExpired();
+    } catch {
+      // Suppress notification cleanup errors during shutdown
+    }
     try {
       await this.telemetryManager.flush();
     } catch {
