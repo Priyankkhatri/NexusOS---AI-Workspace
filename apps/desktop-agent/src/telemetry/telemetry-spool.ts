@@ -144,7 +144,14 @@ export class TelemetrySpool implements ITelemetrySpool {
         }
       }
     } catch {
-      // Ignore corrupted spool file on disk
+      // Isolate corrupted spool file to prevent infinite crash loop
+      try {
+        if (fs.existsSync(this.spoolFilePath)) {
+          fs.renameSync(this.spoolFilePath, `${this.spoolFilePath}.corrupted.${Date.now()}`);
+        }
+      } catch {
+        // Suppress secondary cleanup failure
+      }
     }
   }
 }
