@@ -59,3 +59,29 @@ export const DeviceRuntimeConfigSchema = z.object({
   operationTimeoutMs: z.number().int().min(100).max(60000).default(5000),
   maxConcurrentOperations: z.number().int().min(1).max(100).default(10),
 });
+
+// ─── IPC Request Schemas ────────────────────────────────────────────────────
+
+/**
+ * device.queryInfo — retrieve sanitized device hardware/software capabilities.
+ */
+export const DeviceQueryInfoIPCRequestSchema = z.object({
+  tenantId: z.string().optional(),
+});
+
+/**
+ * device.getPosture — retrieve device security posture, OS consent, and power state.
+ */
+export const DeviceGetPostureIPCRequestSchema = z.object({
+  tenantId: z.string().optional(),
+});
+
+/**
+ * device.execute — execute an authorized device runtime operation (clipboard, posture, notification).
+ * Enforces strict discriminated union request validation and optional tenant isolation context.
+ */
+export const DeviceExecuteIPCRequestSchema = z.object({
+  request: DeviceOperationRequestSchema,
+  tenantId: z.string().optional(),
+});
+
