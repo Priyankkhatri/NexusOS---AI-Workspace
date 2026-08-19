@@ -27,9 +27,14 @@ describe('Task 03Z — Adversarial Security Regression Suite (03Z-SEC-01 to 03Z-
 
   it('03Z-SEC-01: Log injection attack sanitization', async () => {
     let output = '';
-    const logger = new StructuredLogger('SecComp', new RedactionFilter(), new BackpressureController(), (msg) => {
-      output = msg;
-    });
+    const logger = new StructuredLogger(
+      'SecComp',
+      new RedactionFilter(),
+      new BackpressureController(),
+      (msg) => {
+        output = msg;
+      },
+    );
 
     const malformedMessage = 'User login\n\r"extra_injected_json": true,\n"admin": true';
     logger.info(malformedMessage);
@@ -44,9 +49,14 @@ describe('Task 03Z — Adversarial Security Regression Suite (03Z-SEC-01 to 03Z-
 
   it('03Z-SEC-02: Secret leakage in telemetry and stack traces', async () => {
     let output = '';
-    const logger = new StructuredLogger('SecComp', new RedactionFilter(), new BackpressureController(), (msg) => {
-      output = msg;
-    });
+    const logger = new StructuredLogger(
+      'SecComp',
+      new RedactionFilter(),
+      new BackpressureController(),
+      (msg) => {
+        output = msg;
+      },
+    );
 
     const err = new Error('Connection failed with api_key: secret_key_123456');
     logger.error('Error occurred', err, { password: 'myPassword99', token: 'Bearer xyz' });
@@ -131,7 +141,8 @@ describe('Task 03Z — Adversarial Security Regression Suite (03Z-SEC-01 to 03Z-
 
   it('03Z-SEC-06: Diagnostic path traversal attempt rejection', async () => {
     const tm = new TelemetryManager('sec-agent-1');
-    const forbiddenPath = process.platform === 'win32' ? 'C:\\Windows\\System32\\ForbiddenDir' : '/etc/forbidden_dir';
+    const forbiddenPath =
+      process.platform === 'win32' ? 'C:\\Windows\\System32\\ForbiddenDir' : '/etc/forbidden_dir';
 
     await assert.rejects(async () => {
       await tm.exportDiagnosticBundle(forbiddenPath);
@@ -174,7 +185,12 @@ describe('Task 03Z — Adversarial Security Regression Suite (03Z-SEC-01 to 03Z-
   });
 
   it('03Z-SEC-10: Shutdown flush guarantees remaining spool persistence', async () => {
-    const tm = new TelemetryManager('sec-agent-1', undefined, undefined, new TelemetrySpool(new BackpressureController(), new RedactionFilter(), 10, tmpDir));
+    const tm = new TelemetryManager(
+      'sec-agent-1',
+      undefined,
+      undefined,
+      new TelemetrySpool(new BackpressureController(), new RedactionFilter(), 10, tmpDir),
+    );
     tm.trackMetric('shutdown_metric', 42);
 
     const batch = await tm.flush();

@@ -39,14 +39,15 @@ describe('Task 03Z — Local Telemetry IPC & Integration Tests', () => {
         agentVersion: '1.0.0',
         enrolledAt: new Date().toISOString(),
       }),
-      verifyHardwareAttestation: async () => ({ valid: true, status: 'PASSED', reason: 'OK' } as any),
+      verifyHardwareAttestation: async () =>
+        ({ valid: true, status: 'PASSED', reason: 'OK' }) as any,
     };
 
     const controlPlaneClient: ControlPlaneClient = {
       start: async () => {},
       registerAgent: async () => ({ accepted: true, controlPlaneVersion: '1.0.0' }),
       sendHeartbeat: async () => true,
-      relayEvent: async () => ({ success: true } as any),
+      relayEvent: async () => ({ success: true }) as any,
       getConnectionState: () => 'CONNECTED' as any,
       disconnect: async () => {},
     };

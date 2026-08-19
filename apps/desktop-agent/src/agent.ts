@@ -430,8 +430,7 @@ export class DesktopAgent {
     this.stateManager =
       customStateManager ||
       new StateManager(undefined, undefined, undefined, () => this.lifecycle.getState());
-    this.telemetryManager =
-      customTelemetryManager || new TelemetryManager(this.config.deviceId);
+    this.telemetryManager = customTelemetryManager || new TelemetryManager(this.config.deviceId);
 
     this.runtimeRegistry.registerRuntime({
       runtimeId: 'telemetry-manager',
@@ -764,7 +763,9 @@ export class DesktopAgent {
         return { metrics: this.telemetryManager.getHealthMetrics() };
       });
       this.ipcManager.registerMethodHandler('telemetry.exportDiagnosticBundle', async (params) => {
-        const { TelemetryExportDiagnosticBundleRequestSchema } = await import('./telemetry/schemas.js');
+        const { TelemetryExportDiagnosticBundleRequestSchema } = await import(
+          './telemetry/schemas.js'
+        );
         const req = TelemetryExportDiagnosticBundleRequestSchema.parse(params || {});
         const bundle = await this.telemetryManager.exportDiagnosticBundle(req.outputPath);
         return { bundle };

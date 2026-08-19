@@ -146,7 +146,9 @@ export class TelemetryManager implements ITelemetryManager {
       const allowedRoots = [process.cwd(), os.tmpdir()];
       const validation = pathService.validatePath(filePath, allowedRoots);
       if (!validation.valid) {
-        throw new Error(`[SECURITY_ERROR] Path security validation failed for diagnostic export: ${validation.error?.message || 'Path outside allowed scope'}`);
+        throw new Error(
+          `[SECURITY_ERROR] Path security validation failed for diagnostic export: ${validation.error?.message || 'Path outside allowed scope'}`,
+        );
       }
 
       if (!fs.existsSync(normalizedDir)) {

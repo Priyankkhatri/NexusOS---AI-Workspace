@@ -27,9 +27,14 @@ describe('Task 03Z — Telemetry Host Unit Tests', () => {
   describe('StructuredLogger & RedactionFilter', () => {
     it('formats log records and redacts bearer tokens and passwords', async () => {
       let loggedOutput = '';
-      const logger = new StructuredLogger('TestComponent', new RedactionFilter(), new BackpressureController(), (msg) => {
-        loggedOutput = msg;
-      });
+      const logger = new StructuredLogger(
+        'TestComponent',
+        new RedactionFilter(),
+        new BackpressureController(),
+        (msg) => {
+          loggedOutput = msg;
+        },
+      );
 
       logger.info('User login successful', { token: 'Bearer eyJhbGciOiJIUzI1NiJ9.secret' });
       await new Promise((r) => setImmediate(r));
@@ -44,9 +49,14 @@ describe('Task 03Z — Telemetry Host Unit Tests', () => {
 
     it('attaches correlation context (correlationId, taskId, stepId)', async () => {
       let loggedOutput = '';
-      const logger = new StructuredLogger('TestComponent', new RedactionFilter(), new BackpressureController(), (msg) => {
-        loggedOutput = msg;
-      });
+      const logger = new StructuredLogger(
+        'TestComponent',
+        new RedactionFilter(),
+        new BackpressureController(),
+        (msg) => {
+          loggedOutput = msg;
+        },
+      );
 
       logger.setCorrelationContext('cid-123', 'task-456', 'step-789');
       logger.warn('Warning event');
@@ -60,9 +70,14 @@ describe('Task 03Z — Telemetry Host Unit Tests', () => {
 
     it('redacts error message and stack trace in logger.error', async () => {
       let loggedOutput = '';
-      const logger = new StructuredLogger('TestComponent', new RedactionFilter(), new BackpressureController(), (msg) => {
-        loggedOutput = msg;
-      });
+      const logger = new StructuredLogger(
+        'TestComponent',
+        new RedactionFilter(),
+        new BackpressureController(),
+        (msg) => {
+          loggedOutput = msg;
+        },
+      );
 
       const err = new Error('Database password: superSecret123 failed');
       logger.error('Database connection error', err);
