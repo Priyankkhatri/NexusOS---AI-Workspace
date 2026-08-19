@@ -40,6 +40,7 @@ import {
 } from './health/index.js';
 import { ConfigurationManager } from './config/configuration-manager.js';
 import { StateManager } from './state/state-manager.js';
+import { TelemetryManager } from './telemetry/telemetry-manager.js';
 
 export class DesktopAgent {
   public readonly lifecycle: AgentLifecycleManager;
@@ -65,6 +66,7 @@ export class DesktopAgent {
   public readonly crashRecoveryManager: CrashRecoveryManager;
   public readonly configurationManager: ConfigurationManager;
   public readonly stateManager: StateManager;
+  public readonly telemetryManager: TelemetryManager;
   private readonly logger: AgentLogger;
 
   private identity?: AgentIdentity;
@@ -94,6 +96,7 @@ export class DesktopAgent {
     customReadinessGate?: ReadinessGate,
     customConfigurationManager?: ConfigurationManager,
     customStateManager?: StateManager,
+    customTelemetryManager?: TelemetryManager,
   ) {
     this.lifecycle = new AgentLifecycleManager();
     this.capabilityRegistry = new CapabilityRegistry();
@@ -339,6 +342,41 @@ export class DesktopAgent {
       isDangerous: false,
       requiredScope: 'state:read',
     });
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'telemetry.trackMetric',
+      category: 'runtime',
+      description: 'Records performance metrics and telemetry items',
+      isDangerous: false,
+      requiredScope: 'telemetry:write',
+    });
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'telemetry.trackTrace',
+      category: 'runtime',
+      description: 'Records telemetry trace events',
+      isDangerous: false,
+      requiredScope: 'telemetry:write',
+    });
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'telemetry.flush',
+      category: 'runtime',
+      description: 'Flushes spooled telemetry records into a signed batch',
+      isDangerous: true,
+      requiredScope: 'telemetry:write',
+    });
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'telemetry.getMetrics',
+      category: 'runtime',
+      description: 'Retrieves telemetry spool health and usage metrics',
+      isDangerous: false,
+      requiredScope: 'telemetry:read',
+    });
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'telemetry.exportDiagnosticBundle',
+      category: 'runtime',
+      description: 'Exports sanitized diagnostic bundle to disk',
+      isDangerous: true,
+      requiredScope: 'telemetry:read',
+    });
 
     this.modelRuntimeManager = new ModelRuntimeManager(this.leaseBoundary, '.nexus-local-ai');
     const redactionFilter = new RedactionFilter(new SecretRedactionRegistry());
@@ -392,7 +430,22 @@ export class DesktopAgent {
     this.stateManager =
       customStateManager ||
       new StateManager(undefined, undefined, undefined, () => this.lifecycle.getState());
+    this.telemetryManager =
+      customTelemetryManager || new TelemetryManager(this.config.deviceId);
 
+    this.runtimeRegistry.registerRuntime({
+      runtimeId: 'telemetry-manager',
+      category: RuntimeCategory.TELEMETRY,
+      version: '1.0.0',
+      isExecutable: true,
+      supportedActions: [
+        'trackMetric',
+        'trackTrace',
+        'flush',
+        'getMetrics',
+        'exportDiagnosticBundle',
+      ],
+    });
     this.runtimeRegistry.registerRuntime({
       runtimeId: 'vault-client',
       category: RuntimeCategory.VAULT,
