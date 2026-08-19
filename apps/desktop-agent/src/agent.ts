@@ -583,8 +583,30 @@ export class DesktopAgent {
 
     if (this.ipcManager) {
       this.ipcManager.registerMethodHandler('device.execute', async (params) => {
-        return this.deviceRuntime.execute(params as unknown as DeviceOperationRequest);
+        const { DeviceExecuteIPCRequestSchema } = await import('./runtimes/device/schemas.js');
+        const req = DeviceExecuteIPCRequestSchema.parse(params || {});
+        const state = this.lifecycle.getState();
+        if (
+          state === AgentLifecycleState.STOPPING ||
+          state === AgentLifecycleState.STOPPED ||
+          state === AgentLifecycleState.FAILED
+        ) {
+          throw new Error(`device.execute denied: agent lifecycle state is '${state}'.`);
+        }
+        const result = await this.deviceRuntime.execute(req.request as DeviceOperationRequest);
+        if (!result.success) {
+          this.telemetryManager.trackTrace('device_execute_denied', {
+            operationName: req.request?.operationName,
+            reason: result.error?.message,
+          });
+        } else {
+          this.telemetryManager.trackTrace('device_execute_success', {
+            operationName: req.request?.operationName,
+          });
+        }
+        return result;
       });
+
       this.ipcManager.registerMethodHandler('task.execute', async (params) => {
         return this.taskScheduler.scheduleTask(params as unknown as TaskExecutionRequest);
       });
