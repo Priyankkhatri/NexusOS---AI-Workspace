@@ -73,6 +73,16 @@ export class DeviceRuntime {
     return this.activeOperationsCount;
   }
 
+  public shutdown(): void {
+    this.activeOperationsCount = 0;
+    try {
+      this.clipboardAdapter.clear().catch(() => {});
+    } catch {
+      // Suppress cleanup errors during shutdown
+    }
+  }
+
+
   public async execute(rawRequest: DeviceOperationRequest): Promise<DeviceOperationResult> {
     const executedAt = new Date().toISOString();
 

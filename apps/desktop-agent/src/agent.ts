@@ -1093,7 +1093,9 @@ export class DesktopAgent {
     this.taskScheduler.shutdown();
     this.workflowEngine.shutdown();
     this.clipboardRuntime.shutdown();
+    this.deviceRuntime.shutdown();
     this.ideAdapter.reset();
+
     this.trayController.shutdown();
     this.approvalHost.shutdown();
     this.vaultClient.shutdown();
