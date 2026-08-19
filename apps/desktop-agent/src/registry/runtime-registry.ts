@@ -16,6 +16,7 @@ export enum RuntimeCategory {
   CONFIG = 'CONFIG',
   STATE = 'STATE',
   TELEMETRY = 'TELEMETRY',
+  NOTIFICATION = 'NOTIFICATION',
 }
 
 export interface ToolRuntimeDescriptor {
