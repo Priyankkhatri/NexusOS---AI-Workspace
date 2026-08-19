@@ -953,7 +953,40 @@ export class DesktopAgent {
         });
         return { success: true, isActive: req.isActive };
       });
+      this.ipcManager.registerMethodHandler('device.queryInfo', async (params) => {
+        const { DeviceQueryInfoIPCRequestSchema } = await import('./runtimes/device/schemas.js');
+        DeviceQueryInfoIPCRequestSchema.parse(params || {});
+        const state = this.lifecycle.getState();
+        if (
+          state === AgentLifecycleState.STOPPING ||
+          state === AgentLifecycleState.STOPPED ||
+          state === AgentLifecycleState.FAILED
+        ) {
+          throw new Error(`device.queryInfo denied: agent lifecycle state is '${state}'.`);
+        }
+        const info = await this.deviceRuntime['capabilitiesAdapter'].queryInfo();
+        const sanitizedInfo = new RedactionFilter().redactObject(info);
+        this.telemetryManager.trackTrace('device_query_info_ipc', { platform: info.platform });
+        return { info: sanitizedInfo };
+      });
+      this.ipcManager.registerMethodHandler('device.getPosture', async (params) => {
+        const { DeviceGetPostureIPCRequestSchema } = await import('./runtimes/device/schemas.js');
+        DeviceGetPostureIPCRequestSchema.parse(params || {});
+        const state = this.lifecycle.getState();
+        if (
+          state === AgentLifecycleState.STOPPING ||
+          state === AgentLifecycleState.STOPPED ||
+          state === AgentLifecycleState.FAILED
+        ) {
+          throw new Error(`device.getPosture denied: agent lifecycle state is '${state}'.`);
+        }
+        const posture = await this.deviceRuntime['capabilitiesAdapter'].getPosture();
+        const sanitizedPosture = new RedactionFilter().redactObject(posture);
+        this.telemetryManager.trackTrace('device_get_posture_ipc', { platform: posture.platform });
+        return { posture: sanitizedPosture };
+      });
     }
+
 
     if (typeof this.controlPlaneClient.registerCommandHandler === 'function') {
       this.controlPlaneClient.registerCommandHandler(async (envelope) => {
