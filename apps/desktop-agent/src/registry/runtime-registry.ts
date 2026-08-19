@@ -4,6 +4,7 @@ export enum RuntimeCategory {
   BROWSER = 'BROWSER',
   PLUGIN = 'PLUGIN',
   CLIPBOARD = 'CLIPBOARD',
+  /** Task 041: Device Runtime & Hardware Posture Adapter */
   DEVICE = 'DEVICE',
   CAMERA = 'CAMERA',
   MICROPHONE = 'MICROPHONE',
