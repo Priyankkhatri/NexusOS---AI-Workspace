@@ -135,16 +135,18 @@ export class TelemetryManager implements ITelemetryManager {
     if (targetDir) {
       const fs = await import('node:fs');
       const path = await import('node:path');
+      const os = await import('node:os');
       const { PathSecurityService } = await import('../runtimes/filesystem/path-security.js');
       const pathService = new PathSecurityService();
 
       const normalizedDir = pathService.normalizePath(targetDir);
       const filePath = path.join(normalizedDir, `diagnostic-bundle-${bundleId}.json`);
 
-      const rootDir = path.dirname(normalizedDir);
-      const validation = pathService.validatePath(filePath, [normalizedDir, rootDir]);
-      if (!validation.valid && validation.error) {
-        throw new Error(`[SECURITY_ERROR] Path security validation failed for diagnostic export: ${validation.error.message}`);
+      // Enforce path confinement within process working directory or temporary directory
+      const allowedRoots = [process.cwd(), os.tmpdir()];
+      const validation = pathService.validatePath(filePath, allowedRoots);
+      if (!validation.valid) {
+        throw new Error(`[SECURITY_ERROR] Path security validation failed for diagnostic export: ${validation.error?.message || 'Path outside allowed scope'}`);
       }
 
       if (!fs.existsSync(normalizedDir)) {
