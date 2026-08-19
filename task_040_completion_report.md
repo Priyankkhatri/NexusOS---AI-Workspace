@@ -19,18 +19,22 @@ Task 040 has been **FULLY IMPLEMENTED**, **TESTED**, and **VERIFIED GREEN** both
 ### COMPONENTS IMPLEMENTED & INTEGRATED
 
 1. **IPC Request Schemas** ([`apps/desktop-agent/src/notifications/schemas.ts`](file:///c:/Users/priya/Desktop/Nexus%20AI/apps/desktop-agent/src/notifications/schemas.ts))
+
    - Defined 6 Zod IPC request schemas: `NotificationDispatchRequestSchema`, `NotificationListPendingRequestSchema`, `NotificationMarkReadRequestSchema`, `NotificationExecuteActionRequestSchema`, `NotificationGetMetricsRequestSchema`, `NotificationSetLockScreenRequestSchema`.
    - `NotificationExecuteActionRequestSchema` enforces non-empty `authToken` (min length 1) to prevent ambient authorization bypasses.
 
 2. **Runtime Category & Registry Authorization**
+
    - Added `RuntimeCategory.NOTIFICATION = 'NOTIFICATION'` in `src/registry/runtime-registry.ts`.
    - Authorized `RuntimeCategory.NOTIFICATION` in `PluginExecutionPolicy` (`src/runtimes/plugin/policy.ts`).
    - Registered `notification-manager` runtime in `RuntimeRegistry` with supported actions: `dispatch`, `listPending`, `markRead`, `executeAction`, `getMetrics`, `setLockScreen`.
 
 3. **Capability Registrations** ([`apps/desktop-agent/src/agent.ts`](file:///c:/Users/priya/Desktop/Nexus%20AI/apps/desktop-agent/src/agent.ts))
+
    - Registered 6 notification capabilities: `notification.dispatch`, `notification.listPending`, `notification.markRead`, `notification.executeAction` (marked `isDangerous: true`), `notification.getMetrics`, `notification.setLockScreen` (`isDangerous: true`).
 
 4. **IPC Method Handlers & Policy Gate Sanitization** ([`apps/desktop-agent/src/agent.ts`](file:///c:/Users/priya/Desktop/Nexus%20AI/apps/desktop-agent/src/agent.ts))
+
    - Registered 6 authorized IPC handlers: `notification.dispatch`, `notification.listPending`, `notification.markRead`, `notification.executeAction`, `notification.getMetrics`, `notification.setLockScreen`.
    - Every handler validates input with Zod, respects lifecycle state (denies dispatch during `STOPPING`, `STOPPED`, `FAILED`), and sanitizes every notification response via `policyGate.sanitizeAndRedact()`.
    - Enforces TOCTOU revalidation for `notification.executeAction` via `policyGate.validateActionExecution()` (requires non-empty `authToken`, checks expiry, matches `taskId`/`correlationId`).
@@ -42,20 +46,20 @@ Task 040 has been **FULLY IMPLEMENTED**, **TESTED**, and **VERIFIED GREEN** both
 
 ### SECURITY REGRESSION RESULTS (`040-SEC-01` → `040-SEC-12`)
 
-| Test ID      | Security Scenario Description                       | Defense Mechanism Verified                                 | Test Result |
-| :----------- | :-------------------------------------------------- | :--------------------------------------------------------- | :---------- |
-| `040-SEC-01` | Action execution without auth token denied          | Mandatory `authToken` requirement in `policyGate` & Zod    | **PASS**    |
-| `040-SEC-02` | Secret pattern in notification message redacted     | `RedactionFilter` string/object sanitization               | **PASS**    |
-| `040-SEC-03` | Lock-screen activation retroactively redacts items | Retroactive queue redaction on lock-screen state change    | **PASS**    |
-| `040-SEC-04` | CRITICAL notifications cannot be evicted from queue| Evicts LOW/NORMAL first under capacity pressure            | **PASS**    |
-| `040-SEC-05` | Action revalidation required at execution time      | Mandatory per-call `validateActionExecution` check        | **PASS**    |
-| `040-SEC-06` | Expired notification action rejected                | TTL timestamp check in `policyGate`                       | **PASS**    |
-| `040-SEC-07` | Mismatched taskId/correlationId action denied       | Context binding validation against item metadata          | **PASS**    |
-| `040-SEC-08` | Coalescing preserves original CRITICAL priority     | Priority weight check prevents priority downgrade          | **PASS**    |
-| `040-SEC-09` | Malformed/missing IPC dispatch fields rejected      | Strict Zod schema parameter validation                     | **PASS**    |
-| `040-SEC-10` | Notification dispatch denied during shutdown        | Agent lifecycle state assertion (`STOPPING/STOPPED/FAILED`)| **PASS**    |
-| `040-SEC-11` | Action IPC response re-sanitized before return     | Clean `{ success, reason }` response envelope returned    | **PASS**    |
-| `040-SEC-12` | Lock-screen state persists across multiple IPC calls| Persistent lock-screen privacy flag across IPC reads       | **PASS**    |
+| Test ID      | Security Scenario Description                        | Defense Mechanism Verified                                  | Test Result |
+| :----------- | :--------------------------------------------------- | :---------------------------------------------------------- | :---------- |
+| `040-SEC-01` | Action execution without auth token denied           | Mandatory `authToken` requirement in `policyGate` & Zod     | **PASS**    |
+| `040-SEC-02` | Secret pattern in notification message redacted      | `RedactionFilter` string/object sanitization                | **PASS**    |
+| `040-SEC-03` | Lock-screen activation retroactively redacts items   | Retroactive queue redaction on lock-screen state change     | **PASS**    |
+| `040-SEC-04` | CRITICAL notifications cannot be evicted from queue  | Evicts LOW/NORMAL first under capacity pressure             | **PASS**    |
+| `040-SEC-05` | Action revalidation required at execution time       | Mandatory per-call `validateActionExecution` check          | **PASS**    |
+| `040-SEC-06` | Expired notification action rejected                 | TTL timestamp check in `policyGate`                         | **PASS**    |
+| `040-SEC-07` | Mismatched taskId/correlationId action denied        | Context binding validation against item metadata            | **PASS**    |
+| `040-SEC-08` | Coalescing preserves original CRITICAL priority      | Priority weight check prevents priority downgrade           | **PASS**    |
+| `040-SEC-09` | Malformed/missing IPC dispatch fields rejected       | Strict Zod schema parameter validation                      | **PASS**    |
+| `040-SEC-10` | Notification dispatch denied during shutdown         | Agent lifecycle state assertion (`STOPPING/STOPPED/FAILED`) | **PASS**    |
+| `040-SEC-11` | Action IPC response re-sanitized before return       | Clean `{ success, reason }` response envelope returned      | **PASS**    |
+| `040-SEC-12` | Lock-screen state persists across multiple IPC calls | Persistent lock-screen privacy flag across IPC reads        | **PASS**    |
 
 ---
 
