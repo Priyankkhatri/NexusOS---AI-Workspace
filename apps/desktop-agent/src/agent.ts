@@ -861,6 +861,11 @@ export class DesktopAgent {
     this.updateManager.shutdown();
     await this.modelRuntimeManager.shutdown();
     await this.stateManager.stop();
+    try {
+      await this.telemetryManager.flush();
+    } catch {
+      // Suppress telemetry flush errors during shutdown
+    }
 
     try {
       if (this.ipcManager) {
