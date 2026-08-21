@@ -1508,6 +1508,97 @@ export class DesktopAgent {
           throw new Error(`terminal.executeCommand failed: ${msg}`);
         }
       });
+      this.ipcManager.registerMethodHandler('terminal.killProcess', async (params) => {
+        const { TerminalKillProcessIPCRequestSchema } = await import(
+          './runtimes/terminal/schemas.js'
+        );
+        const req = TerminalKillProcessIPCRequestSchema.parse(params || {});
+        const state = this.lifecycle.getState();
+        if (
+          state === AgentLifecycleState.STOPPING ||
+          state === AgentLifecycleState.STOPPED ||
+          state === AgentLifecycleState.FAILED
+        ) {
+          throw new Error(`terminal.killProcess denied: agent lifecycle state is '${state}'.`);
+        }
+        if (!new PluginExecutionPolicy().isRuntimeCategoryAuthorized(RuntimeCategory.TERMINAL)) {
+          throw new Error(
+            'terminal.killProcess denied: TERMINAL category not authorized by policy.',
+          );
+        }
+        const leaseDecision = await this.leaseBoundary.validateLease(req.leaseHeader);
+        if (!leaseDecision.valid) {
+          throw new Error(
+            `terminal.killProcess denied: lease validation failed (${leaseDecision.reason}).`,
+          );
+        }
+        const scopes = req.leaseHeader.scopes || [];
+        if (!scopes.some((s) => s.includes('write') || s.includes('admin') || s === '*')) {
+          throw new Error(
+            'terminal.killProcess denied: required write scope is missing from execution lease.',
+          );
+        }
+        try {
+          const res = await this.terminalRuntime.killProcess(
+            { processToken: req.processToken },
+            {
+              lease: req.leaseHeader,
+              allowedRoots: [process.cwd()],
+            },
+          );
+          this.telemetryManager.trackTrace('terminal_kill_process_ipc', {
+            processToken: req.processToken,
+          });
+          return new RedactionFilter().redactObject(
+            res.result as unknown as Record<string, unknown>,
+          );
+        } catch (err) {
+          const msg = new RedactionFilter().redactString(
+            err instanceof Error ? err.message : String(err),
+          );
+          throw new Error(`terminal.killProcess failed: ${msg}`);
+        }
+      });
+      this.ipcManager.registerMethodHandler('terminal.listProcesses', async (params) => {
+        const { TerminalListProcessesIPCRequestSchema } = await import(
+          './runtimes/terminal/schemas.js'
+        );
+        const req = TerminalListProcessesIPCRequestSchema.parse(params || {});
+        const state = this.lifecycle.getState();
+        if (
+          state === AgentLifecycleState.STOPPING ||
+          state === AgentLifecycleState.STOPPED ||
+          state === AgentLifecycleState.FAILED
+        ) {
+          throw new Error(`terminal.listProcesses denied: agent lifecycle state is '${state}'.`);
+        }
+        if (!new PluginExecutionPolicy().isRuntimeCategoryAuthorized(RuntimeCategory.TERMINAL)) {
+          throw new Error(
+            'terminal.listProcesses denied: TERMINAL category not authorized by policy.',
+          );
+        }
+        const leaseDecision = await this.leaseBoundary.validateLease(req.leaseHeader);
+        if (!leaseDecision.valid) {
+          throw new Error(
+            `terminal.listProcesses denied: lease validation failed (${leaseDecision.reason}).`,
+          );
+        }
+        try {
+          const res = await this.terminalRuntime.listProcesses({
+            lease: req.leaseHeader,
+            allowedRoots: [process.cwd()],
+          });
+          this.telemetryManager.trackTrace('terminal_list_processes_ipc', {});
+          return new RedactionFilter().redactObject(
+            res.result as unknown as Record<string, unknown>,
+          );
+        } catch (err) {
+          const msg = new RedactionFilter().redactString(
+            err instanceof Error ? err.message : String(err),
+          );
+          throw new Error(`terminal.listProcesses failed: ${msg}`);
+        }
+      });
     }
 
     if (typeof this.controlPlaneClient.registerCommandHandler === 'function') {
