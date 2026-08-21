@@ -802,4 +802,9 @@ export class FilesystemRuntime {
 
     return { result, event };
   }
+
+  public shutdown(): void {
+    this.snapshotManager.clearAllSnapshots();
+    this.logger?.info('FilesystemRuntime: Cleaned up active snapshots and shutdown gracefully.');
+  }
 }

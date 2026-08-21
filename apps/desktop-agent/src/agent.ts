@@ -1438,6 +1438,7 @@ export class DesktopAgent {
     this.workflowEngine.shutdown();
     this.clipboardRuntime.shutdown();
     this.deviceRuntime.shutdown();
+    this.filesystemRuntime.shutdown();
     this.ideAdapter.reset();
 
     this.trayController.shutdown();
