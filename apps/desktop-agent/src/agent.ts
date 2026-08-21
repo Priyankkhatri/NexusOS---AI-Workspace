@@ -20,6 +20,7 @@ import {
   SnapshotManager,
 } from './runtimes/filesystem/index.js';
 import { TerminalRuntime, ProcessSupervisor } from './runtimes/terminal/index.js';
+import { BrowserRuntime } from './runtimes/browser/index.js';
 import { AgentOrchestrator } from './orchestrator/agent-orchestrator.js';
 import { RuntimeRouter } from './orchestrator/runtime-router.js';
 import { TaskExecutionRequest } from './orchestrator/types.js';
@@ -58,6 +59,7 @@ export class DesktopAgent {
   public readonly deviceRuntime: DeviceRuntime;
   public readonly filesystemRuntime: FilesystemRuntime;
   public readonly terminalRuntime: TerminalRuntime;
+  public readonly browserRuntime: BrowserRuntime;
   public readonly orchestrator: AgentOrchestrator;
   public readonly taskScheduler: TaskScheduler;
   public readonly workflowEngine: WorkflowEngine;
@@ -107,6 +109,7 @@ export class DesktopAgent {
     customTelemetryManager?: TelemetryManager,
     customFilesystemRuntime?: FilesystemRuntime,
     customTerminalRuntime?: TerminalRuntime,
+    customBrowserRuntime?: BrowserRuntime,
   ) {
     this.lifecycle = new AgentLifecycleManager();
     this.capabilityRegistry = new CapabilityRegistry();
@@ -520,6 +523,70 @@ export class DesktopAgent {
       isDangerous: false,
       requiredScope: 'terminal:read',
     });
+    /** Task 044: Browser Runtime & Domain Security Adapter */
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'browser.createSession',
+      category: 'runtime',
+      description: 'Create an isolated browser session bound to task and workspace',
+      isDangerous: true,
+      requiredScope: 'browser:write',
+    });
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'browser.navigate',
+      category: 'runtime',
+      description: 'Navigate browser session to an allowed domain URL',
+      isDangerous: true,
+      requiredScope: 'browser:write',
+    });
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'browser.extractContent',
+      category: 'runtime',
+      description: 'Extract structured page content within DOM size limits',
+      isDangerous: false,
+      requiredScope: 'browser:read',
+    });
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'browser.interactForm',
+      category: 'runtime',
+      description: 'Interact with page element (click/fill); pauses for sensitive/auth forms',
+      isDangerous: true,
+      requiredScope: 'browser:write',
+    });
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'browser.captureScreenshot',
+      category: 'runtime',
+      description: 'Capture page screenshot to authorized filesystem path',
+      isDangerous: false,
+      requiredScope: 'browser:read',
+    });
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'browser.downloadFile',
+      category: 'runtime',
+      description: 'Download file from allowed domain to authorized destination path',
+      isDangerous: true,
+      requiredScope: 'browser:write',
+    });
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'browser.uploadFile',
+      category: 'runtime',
+      description: 'Upload file from authorized source path to page',
+      isDangerous: true,
+      requiredScope: 'browser:write',
+    });
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'browser.clearSession',
+      category: 'runtime',
+      description: 'Clear browser session and delete profile directory',
+      isDangerous: true,
+      requiredScope: 'browser:write',
+    });
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'browser.listSessions',
+      category: 'runtime',
+      description: 'List active managed browser sessions',
+      isDangerous: false,
+      requiredScope: 'browser:read',
+    });
 
     this.modelRuntimeManager = new ModelRuntimeManager(this.leaseBoundary, '.nexus-local-ai');
     const redactionFilter = new RedactionFilter(new SecretRedactionRegistry());
@@ -678,6 +745,13 @@ export class DesktopAgent {
       );
 
     this.runtimeRegistry.registerRuntime(this.terminalRuntime.getDescriptor());
+
+    /** Task 044: Browser Runtime & Domain Security Adapter */
+    this.browserRuntime =
+      customBrowserRuntime ||
+      new BrowserRuntime(this.leaseBoundary, undefined, undefined, undefined, this.logger);
+
+    this.runtimeRegistry.registerRuntime(this.browserRuntime.getDescriptor());
 
     if (this.ipcManager) {
       this.ipcManager.registerMethodHandler('device.execute', async (params) => {
@@ -1601,6 +1675,521 @@ export class DesktopAgent {
           throw new Error(`terminal.listProcesses failed: ${msg}`);
         }
       });
+
+      /** Task 044: Browser Runtime IPC Handlers */
+
+      // -----------------------------------------------------------------------
+      // browser.createSession
+      // -----------------------------------------------------------------------
+      this.ipcManager.registerMethodHandler('browser.createSession', async (params) => {
+        const { BrowserCreateSessionIPCRequestSchema } = await import(
+          './runtimes/browser/schemas.js'
+        );
+        const req = BrowserCreateSessionIPCRequestSchema.parse(params || {});
+        const state = this.lifecycle.getState();
+        if (
+          state === AgentLifecycleState.STOPPING ||
+          state === AgentLifecycleState.STOPPED ||
+          state === AgentLifecycleState.FAILED
+        ) {
+          throw new Error(`browser.createSession denied: agent lifecycle state is '${state}'.`);
+        }
+        if (!new PluginExecutionPolicy().isRuntimeCategoryAuthorized(RuntimeCategory.BROWSER)) {
+          throw new Error(
+            'browser.createSession denied: BROWSER category not authorized by policy.',
+          );
+        }
+        const leaseDecision = await this.leaseBoundary.validateLease(req.leaseHeader);
+        if (!leaseDecision.valid) {
+          throw new Error(
+            `browser.createSession denied: lease validation failed (${leaseDecision.reason}).`,
+          );
+        }
+        const scopes = req.leaseHeader.scopes || [];
+        if (!scopes.some((s) => s.includes('write') || s.includes('admin') || s === '*')) {
+          throw new Error(
+            'browser.createSession denied: required browser:write scope is missing from execution lease.',
+          );
+        }
+        const limits = this.browserRuntime.sessionManager.listSessions().length;
+        const maxSessions = req.limits?.maxConcurrentSessions ?? 3;
+        if (limits >= maxSessions) {
+          throw new Error(
+            `browser.createSession denied: concurrent session limit (${maxSessions}) reached.`,
+          );
+        }
+        try {
+          const session = this.browserRuntime.sessionManager.createSession(
+            req.taskId,
+            req.workspaceId,
+            req.storageDir,
+          );
+          this.telemetryManager.trackTrace('browser_create_session_ipc', {
+            sessionId: session.sessionId,
+            taskId: req.taskId,
+          });
+          return new RedactionFilter().redactObject({
+            sessionId: session.sessionId,
+            profilePath: session.profilePath,
+            createdAt: session.createdAt,
+          } as unknown as Record<string, unknown>);
+        } catch (err) {
+          const msg = new RedactionFilter().redactString(
+            err instanceof Error ? err.message : String(err),
+          );
+          throw new Error(`browser.createSession failed: ${msg}`);
+        }
+      });
+
+      // -----------------------------------------------------------------------
+      // browser.navigate
+      // -----------------------------------------------------------------------
+      this.ipcManager.registerMethodHandler('browser.navigate', async (params) => {
+        const { BrowserNavigateIPCRequestSchema } = await import('./runtimes/browser/schemas.js');
+        const req = BrowserNavigateIPCRequestSchema.parse(params || {});
+        const state = this.lifecycle.getState();
+        if (
+          state === AgentLifecycleState.STOPPING ||
+          state === AgentLifecycleState.STOPPED ||
+          state === AgentLifecycleState.FAILED
+        ) {
+          throw new Error(`browser.navigate denied: agent lifecycle state is '${state}'.`);
+        }
+        if (!new PluginExecutionPolicy().isRuntimeCategoryAuthorized(RuntimeCategory.BROWSER)) {
+          throw new Error('browser.navigate denied: BROWSER category not authorized by policy.');
+        }
+        const leaseDecision = await this.leaseBoundary.validateLease(req.leaseHeader);
+        if (!leaseDecision.valid) {
+          throw new Error(
+            `browser.navigate denied: lease validation failed (${leaseDecision.reason}).`,
+          );
+        }
+        const scopes = req.leaseHeader.scopes || [];
+        if (!scopes.some((s) => s.includes('write') || s.includes('admin') || s === '*')) {
+          throw new Error(
+            'browser.navigate denied: required browser:write scope is missing from execution lease.',
+          );
+        }
+        try {
+          const { result, event } = await this.browserRuntime.navigate(
+            {
+              sessionId: req.sessionId,
+              url: req.url,
+              allowedDomains: req.allowedDomains,
+            },
+            {
+              lease: req.leaseHeader,
+              allowedRoots: req.allowedRoots || [process.cwd()],
+            },
+          );
+          this.telemetryManager.trackTrace('browser_navigate_ipc', {
+            sessionId: req.sessionId,
+            url: req.url,
+          });
+          void event;
+          return new RedactionFilter().redactObject(result as unknown as Record<string, unknown>);
+        } catch (err) {
+          const msg = new RedactionFilter().redactString(
+            err instanceof Error ? err.message : String(err),
+          );
+          throw new Error(`browser.navigate failed: ${msg}`);
+        }
+      });
+
+      // -----------------------------------------------------------------------
+      // browser.extractContent
+      // -----------------------------------------------------------------------
+      this.ipcManager.registerMethodHandler('browser.extractContent', async (params) => {
+        const { BrowserExtractContentIPCRequestSchema } = await import(
+          './runtimes/browser/schemas.js'
+        );
+        const req = BrowserExtractContentIPCRequestSchema.parse(params || {});
+        const state = this.lifecycle.getState();
+        if (
+          state === AgentLifecycleState.STOPPING ||
+          state === AgentLifecycleState.STOPPED ||
+          state === AgentLifecycleState.FAILED
+        ) {
+          throw new Error(`browser.extractContent denied: agent lifecycle state is '${state}'.`);
+        }
+        if (!new PluginExecutionPolicy().isRuntimeCategoryAuthorized(RuntimeCategory.BROWSER)) {
+          throw new Error(
+            'browser.extractContent denied: BROWSER category not authorized by policy.',
+          );
+        }
+        const leaseDecision = await this.leaseBoundary.validateLease(req.leaseHeader);
+        if (!leaseDecision.valid) {
+          throw new Error(
+            `browser.extractContent denied: lease validation failed (${leaseDecision.reason}).`,
+          );
+        }
+        const scopes = req.leaseHeader.scopes || [];
+        if (
+          !scopes.some(
+            (s) => s.includes('read') || s.includes('write') || s.includes('admin') || s === '*',
+          )
+        ) {
+          throw new Error(
+            'browser.extractContent denied: required browser:read scope is missing from execution lease.',
+          );
+        }
+        try {
+          const { result, event } = await this.browserRuntime.extractContent(
+            {
+              sessionId: req.sessionId,
+              selector: req.selector,
+              maxSizeBytes: req.maxSizeBytes,
+            },
+            {
+              lease: req.leaseHeader,
+              allowedRoots: req.allowedRoots || [process.cwd()],
+            },
+          );
+          this.telemetryManager.trackTrace('browser_extract_content_ipc', {
+            sessionId: req.sessionId,
+          });
+          void event;
+          return new RedactionFilter().redactObject(result as unknown as Record<string, unknown>);
+        } catch (err) {
+          const msg = new RedactionFilter().redactString(
+            err instanceof Error ? err.message : String(err),
+          );
+          throw new Error(`browser.extractContent failed: ${msg}`);
+        }
+      });
+
+      // -----------------------------------------------------------------------
+      // browser.interactForm
+      // -----------------------------------------------------------------------
+      this.ipcManager.registerMethodHandler('browser.interactForm', async (params) => {
+        const { BrowserInteractFormIPCRequestSchema } = await import(
+          './runtimes/browser/schemas.js'
+        );
+        const req = BrowserInteractFormIPCRequestSchema.parse(params || {});
+        const state = this.lifecycle.getState();
+        if (
+          state === AgentLifecycleState.STOPPING ||
+          state === AgentLifecycleState.STOPPED ||
+          state === AgentLifecycleState.FAILED
+        ) {
+          throw new Error(`browser.interactForm denied: agent lifecycle state is '${state}'.`);
+        }
+        if (!new PluginExecutionPolicy().isRuntimeCategoryAuthorized(RuntimeCategory.BROWSER)) {
+          throw new Error(
+            'browser.interactForm denied: BROWSER category not authorized by policy.',
+          );
+        }
+        const leaseDecision = await this.leaseBoundary.validateLease(req.leaseHeader);
+        if (!leaseDecision.valid) {
+          throw new Error(
+            `browser.interactForm denied: lease validation failed (${leaseDecision.reason}).`,
+          );
+        }
+        const scopes = req.leaseHeader.scopes || [];
+        if (!scopes.some((s) => s.includes('write') || s.includes('admin') || s === '*')) {
+          throw new Error(
+            'browser.interactForm denied: required browser:write scope is missing from execution lease.',
+          );
+        }
+        try {
+          const { result, event } = await this.browserRuntime.interactForm(
+            {
+              sessionId: req.sessionId,
+              selector: req.selector,
+              actionType: req.actionType,
+              value: req.value,
+              isSensitiveForm: req.isSensitiveForm,
+            },
+            {
+              lease: req.leaseHeader,
+              allowedRoots: req.allowedRoots || [process.cwd()],
+            },
+          );
+          this.telemetryManager.trackTrace('browser_interact_form_ipc', {
+            sessionId: req.sessionId,
+            selector: req.selector,
+          });
+          void event;
+          return new RedactionFilter().redactObject(result as unknown as Record<string, unknown>);
+        } catch (err) {
+          const msg = new RedactionFilter().redactString(
+            err instanceof Error ? err.message : String(err),
+          );
+          throw new Error(`browser.interactForm failed: ${msg}`);
+        }
+      });
+
+      // -----------------------------------------------------------------------
+      // browser.captureScreenshot
+      // -----------------------------------------------------------------------
+      this.ipcManager.registerMethodHandler('browser.captureScreenshot', async (params) => {
+        const { BrowserCaptureScreenshotIPCRequestSchema } = await import(
+          './runtimes/browser/schemas.js'
+        );
+        const req = BrowserCaptureScreenshotIPCRequestSchema.parse(params || {});
+        const state = this.lifecycle.getState();
+        if (
+          state === AgentLifecycleState.STOPPING ||
+          state === AgentLifecycleState.STOPPED ||
+          state === AgentLifecycleState.FAILED
+        ) {
+          throw new Error(`browser.captureScreenshot denied: agent lifecycle state is '${state}'.`);
+        }
+        if (!new PluginExecutionPolicy().isRuntimeCategoryAuthorized(RuntimeCategory.BROWSER)) {
+          throw new Error(
+            'browser.captureScreenshot denied: BROWSER category not authorized by policy.',
+          );
+        }
+        const leaseDecision = await this.leaseBoundary.validateLease(req.leaseHeader);
+        if (!leaseDecision.valid) {
+          throw new Error(
+            `browser.captureScreenshot denied: lease validation failed (${leaseDecision.reason}).`,
+          );
+        }
+        const scopes = req.leaseHeader.scopes || [];
+        if (
+          !scopes.some(
+            (s) => s.includes('read') || s.includes('write') || s.includes('admin') || s === '*',
+          )
+        ) {
+          throw new Error(
+            'browser.captureScreenshot denied: required browser:read scope is missing from execution lease.',
+          );
+        }
+        try {
+          const { result, event } = await this.browserRuntime.captureScreenshot(
+            {
+              sessionId: req.sessionId,
+              destinationPath: req.destinationPath,
+              format: req.format,
+            },
+            {
+              lease: req.leaseHeader,
+              allowedRoots: req.allowedRoots,
+            },
+          );
+          this.telemetryManager.trackTrace('browser_capture_screenshot_ipc', {
+            sessionId: req.sessionId,
+          });
+          void event;
+          return new RedactionFilter().redactObject(result as unknown as Record<string, unknown>);
+        } catch (err) {
+          const msg = new RedactionFilter().redactString(
+            err instanceof Error ? err.message : String(err),
+          );
+          throw new Error(`browser.captureScreenshot failed: ${msg}`);
+        }
+      });
+
+      // -----------------------------------------------------------------------
+      // browser.downloadFile
+      // -----------------------------------------------------------------------
+      this.ipcManager.registerMethodHandler('browser.downloadFile', async (params) => {
+        const { BrowserDownloadFileIPCRequestSchema } = await import(
+          './runtimes/browser/schemas.js'
+        );
+        const req = BrowserDownloadFileIPCRequestSchema.parse(params || {});
+        const state = this.lifecycle.getState();
+        if (
+          state === AgentLifecycleState.STOPPING ||
+          state === AgentLifecycleState.STOPPED ||
+          state === AgentLifecycleState.FAILED
+        ) {
+          throw new Error(`browser.downloadFile denied: agent lifecycle state is '${state}'.`);
+        }
+        if (!new PluginExecutionPolicy().isRuntimeCategoryAuthorized(RuntimeCategory.BROWSER)) {
+          throw new Error(
+            'browser.downloadFile denied: BROWSER category not authorized by policy.',
+          );
+        }
+        const leaseDecision = await this.leaseBoundary.validateLease(req.leaseHeader);
+        if (!leaseDecision.valid) {
+          throw new Error(
+            `browser.downloadFile denied: lease validation failed (${leaseDecision.reason}).`,
+          );
+        }
+        const scopes = req.leaseHeader.scopes || [];
+        if (!scopes.some((s) => s.includes('write') || s.includes('admin') || s === '*')) {
+          throw new Error(
+            'browser.downloadFile denied: required browser:write scope is missing from execution lease.',
+          );
+        }
+        try {
+          const { result, event } = await this.browserRuntime.downloadFile(
+            {
+              sessionId: req.sessionId,
+              downloadUrl: req.downloadUrl,
+              redirectUrl: req.redirectUrl,
+              destinationPath: req.destinationPath,
+              allowedDomains: req.allowedDomains,
+            },
+            {
+              lease: req.leaseHeader,
+              allowedRoots: req.allowedRoots,
+            },
+          );
+          this.telemetryManager.trackTrace('browser_download_file_ipc', {
+            sessionId: req.sessionId,
+            downloadUrl: req.downloadUrl,
+          });
+          void event;
+          return new RedactionFilter().redactObject(result as unknown as Record<string, unknown>);
+        } catch (err) {
+          const msg = new RedactionFilter().redactString(
+            err instanceof Error ? err.message : String(err),
+          );
+          throw new Error(`browser.downloadFile failed: ${msg}`);
+        }
+      });
+
+      // -----------------------------------------------------------------------
+      // browser.uploadFile
+      // -----------------------------------------------------------------------
+      this.ipcManager.registerMethodHandler('browser.uploadFile', async (params) => {
+        const { BrowserUploadFileIPCRequestSchema } = await import('./runtimes/browser/schemas.js');
+        const req = BrowserUploadFileIPCRequestSchema.parse(params || {});
+        const state = this.lifecycle.getState();
+        if (
+          state === AgentLifecycleState.STOPPING ||
+          state === AgentLifecycleState.STOPPED ||
+          state === AgentLifecycleState.FAILED
+        ) {
+          throw new Error(`browser.uploadFile denied: agent lifecycle state is '${state}'.`);
+        }
+        if (!new PluginExecutionPolicy().isRuntimeCategoryAuthorized(RuntimeCategory.BROWSER)) {
+          throw new Error('browser.uploadFile denied: BROWSER category not authorized by policy.');
+        }
+        const leaseDecision = await this.leaseBoundary.validateLease(req.leaseHeader);
+        if (!leaseDecision.valid) {
+          throw new Error(
+            `browser.uploadFile denied: lease validation failed (${leaseDecision.reason}).`,
+          );
+        }
+        const scopes = req.leaseHeader.scopes || [];
+        if (!scopes.some((s) => s.includes('write') || s.includes('admin') || s === '*')) {
+          throw new Error(
+            'browser.uploadFile denied: required browser:write scope is missing from execution lease.',
+          );
+        }
+        try {
+          const { result, event } = await this.browserRuntime.uploadFile(
+            {
+              sessionId: req.sessionId,
+              selector: req.selector,
+              sourceFilePath: req.sourceFilePath,
+            },
+            {
+              lease: req.leaseHeader,
+              allowedRoots: req.allowedRoots,
+            },
+          );
+          this.telemetryManager.trackTrace('browser_upload_file_ipc', {
+            sessionId: req.sessionId,
+            selector: req.selector,
+          });
+          void event;
+          return new RedactionFilter().redactObject(result as unknown as Record<string, unknown>);
+        } catch (err) {
+          const msg = new RedactionFilter().redactString(
+            err instanceof Error ? err.message : String(err),
+          );
+          throw new Error(`browser.uploadFile failed: ${msg}`);
+        }
+      });
+
+      // -----------------------------------------------------------------------
+      // browser.clearSession
+      // -----------------------------------------------------------------------
+      this.ipcManager.registerMethodHandler('browser.clearSession', async (params) => {
+        const { BrowserClearSessionIPCRequestSchema } = await import(
+          './runtimes/browser/schemas.js'
+        );
+        const req = BrowserClearSessionIPCRequestSchema.parse(params || {});
+        const state = this.lifecycle.getState();
+        if (
+          state === AgentLifecycleState.STOPPING ||
+          state === AgentLifecycleState.STOPPED ||
+          state === AgentLifecycleState.FAILED
+        ) {
+          throw new Error(`browser.clearSession denied: agent lifecycle state is '${state}'.`);
+        }
+        if (!new PluginExecutionPolicy().isRuntimeCategoryAuthorized(RuntimeCategory.BROWSER)) {
+          throw new Error(
+            'browser.clearSession denied: BROWSER category not authorized by policy.',
+          );
+        }
+        const leaseDecision = await this.leaseBoundary.validateLease(req.leaseHeader);
+        if (!leaseDecision.valid) {
+          throw new Error(
+            `browser.clearSession denied: lease validation failed (${leaseDecision.reason}).`,
+          );
+        }
+        const scopes = req.leaseHeader.scopes || [];
+        if (!scopes.some((s) => s.includes('write') || s.includes('admin') || s === '*')) {
+          throw new Error(
+            'browser.clearSession denied: required browser:write scope is missing from execution lease.',
+          );
+        }
+        try {
+          const { result, event } = await this.browserRuntime.clearSession(
+            { sessionId: req.sessionId },
+            { lease: req.leaseHeader, allowedRoots: [process.cwd()] },
+          );
+          this.telemetryManager.trackTrace('browser_clear_session_ipc', {
+            sessionId: req.sessionId,
+          });
+          void event;
+          return new RedactionFilter().redactObject(result as unknown as Record<string, unknown>);
+        } catch (err) {
+          const msg = new RedactionFilter().redactString(
+            err instanceof Error ? err.message : String(err),
+          );
+          throw new Error(`browser.clearSession failed: ${msg}`);
+        }
+      });
+
+      // -----------------------------------------------------------------------
+      // browser.listSessions
+      // -----------------------------------------------------------------------
+      this.ipcManager.registerMethodHandler('browser.listSessions', async (params) => {
+        const { BrowserListSessionsIPCRequestSchema } = await import(
+          './runtimes/browser/schemas.js'
+        );
+        const req = BrowserListSessionsIPCRequestSchema.parse(params || {});
+        const state = this.lifecycle.getState();
+        if (
+          state === AgentLifecycleState.STOPPING ||
+          state === AgentLifecycleState.STOPPED ||
+          state === AgentLifecycleState.FAILED
+        ) {
+          throw new Error(`browser.listSessions denied: agent lifecycle state is '${state}'.`);
+        }
+        if (!new PluginExecutionPolicy().isRuntimeCategoryAuthorized(RuntimeCategory.BROWSER)) {
+          throw new Error(
+            'browser.listSessions denied: BROWSER category not authorized by policy.',
+          );
+        }
+        const leaseDecision = await this.leaseBoundary.validateLease(req.leaseHeader);
+        if (!leaseDecision.valid) {
+          throw new Error(
+            `browser.listSessions denied: lease validation failed (${leaseDecision.reason}).`,
+          );
+        }
+        try {
+          const sessions = this.browserRuntime.sessionManager.listSessions();
+          this.telemetryManager.trackTrace('browser_list_sessions_ipc', {
+            count: sessions.length,
+          });
+          return new RedactionFilter().redactObject({
+            sessions,
+          } as unknown as Record<string, unknown>);
+        } catch (err) {
+          const msg = new RedactionFilter().redactString(
+            err instanceof Error ? err.message : String(err),
+          );
+          throw new Error(`browser.listSessions failed: ${msg}`);
+        }
+      });
     }
 
     if (typeof this.controlPlaneClient.registerCommandHandler === 'function') {
@@ -1689,6 +2278,7 @@ export class DesktopAgent {
     this.deviceRuntime.shutdown();
     this.filesystemRuntime.shutdown();
     this.terminalRuntime.shutdown();
+    this.browserRuntime.shutdown();
     this.ideAdapter.reset();
 
     this.trayController.shutdown();
