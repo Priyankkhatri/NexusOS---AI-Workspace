@@ -337,6 +337,19 @@ export class BrowserRuntime {
   }
 
   /**
+   * Shuts down the browser runtime by cleaning up all active browser sessions
+   * and their profile directories. Safe to call multiple times.
+   */
+  public shutdown(): void {
+    try {
+      this.sessionManager.cleanupAbandonedSessions(0);
+    } catch {
+      // Suppress cleanup errors during shutdown to not block agent stop
+    }
+    this.logger?.info('BrowserRuntime shutdown: all sessions cleared.', {});
+  }
+
+  /**
    * Clears browser session state and profiles.
    */
   public async clearSession(
