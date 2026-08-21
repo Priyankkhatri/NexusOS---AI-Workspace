@@ -1070,6 +1070,111 @@ export class DesktopAgent {
         this.telemetryManager.trackTrace('device_get_posture_ipc', { platform: posture.platform });
         return { posture: sanitizedPosture };
       });
+      this.ipcManager.registerMethodHandler('filesystem.readFile', async (params) => {
+        const { FilesystemReadFileIPCRequestSchema } = await import('./runtimes/filesystem/schemas.js');
+        const req = FilesystemReadFileIPCRequestSchema.parse(params || {});
+        const state = this.lifecycle.getState();
+        if (
+          state === AgentLifecycleState.STOPPING ||
+          state === AgentLifecycleState.STOPPED ||
+          state === AgentLifecycleState.FAILED
+        ) {
+          throw new Error(`filesystem.readFile denied: agent lifecycle state is '${state}'.`);
+        }
+        if (!new PluginExecutionPolicy().isRuntimeCategoryAuthorized(RuntimeCategory.FILESYSTEM)) {
+          throw new Error('filesystem.readFile denied: FILESYSTEM category not authorized by policy.');
+        }
+        const leaseDecision = await this.leaseBoundary.validateLease(req.leaseHeader);
+        if (!leaseDecision.valid) {
+          throw new Error(`filesystem.readFile denied: lease validation failed (${leaseDecision.reason}).`);
+        }
+        try {
+          const res = await this.filesystemRuntime.readFile(
+            { path: req.path, encoding: req.encoding },
+            {
+              lease: req.leaseHeader,
+              allowedRoots: req.allowedRoots || [process.cwd()],
+              limits: req.limits,
+            },
+          );
+          this.telemetryManager.trackTrace('filesystem_read_file_ipc', { path: req.path });
+          return res.result;
+        } catch (err) {
+          const msg = new RedactionFilter().redactString(err instanceof Error ? err.message : String(err));
+          throw new Error(`filesystem.readFile failed: ${msg}`);
+        }
+      });
+      this.ipcManager.registerMethodHandler('filesystem.listDirectory', async (params) => {
+        const { FilesystemListDirectoryIPCRequestSchema } = await import(
+          './runtimes/filesystem/schemas.js'
+        );
+        const req = FilesystemListDirectoryIPCRequestSchema.parse(params || {});
+        const state = this.lifecycle.getState();
+        if (
+          state === AgentLifecycleState.STOPPING ||
+          state === AgentLifecycleState.STOPPED ||
+          state === AgentLifecycleState.FAILED
+        ) {
+          throw new Error(`filesystem.listDirectory denied: agent lifecycle state is '${state}'.`);
+        }
+        if (!new PluginExecutionPolicy().isRuntimeCategoryAuthorized(RuntimeCategory.FILESYSTEM)) {
+          throw new Error('filesystem.listDirectory denied: FILESYSTEM category not authorized by policy.');
+        }
+        const leaseDecision = await this.leaseBoundary.validateLease(req.leaseHeader);
+        if (!leaseDecision.valid) {
+          throw new Error(`filesystem.listDirectory denied: lease validation failed (${leaseDecision.reason}).`);
+        }
+        try {
+          const res = await this.filesystemRuntime.listDirectory(
+            { path: req.path, recursive: req.recursive, maxEntries: req.maxEntries },
+            {
+              lease: req.leaseHeader,
+              allowedRoots: req.allowedRoots || [process.cwd()],
+              limits: req.limits,
+            },
+          );
+          this.telemetryManager.trackTrace('filesystem_list_directory_ipc', { path: req.path });
+          return res.result;
+        } catch (err) {
+          const msg = new RedactionFilter().redactString(err instanceof Error ? err.message : String(err));
+          throw new Error(`filesystem.listDirectory failed: ${msg}`);
+        }
+      });
+      this.ipcManager.registerMethodHandler('filesystem.statFile', async (params) => {
+        const { FilesystemStatFileIPCRequestSchema } = await import(
+          './runtimes/filesystem/schemas.js'
+        );
+        const req = FilesystemStatFileIPCRequestSchema.parse(params || {});
+        const state = this.lifecycle.getState();
+        if (
+          state === AgentLifecycleState.STOPPING ||
+          state === AgentLifecycleState.STOPPED ||
+          state === AgentLifecycleState.FAILED
+        ) {
+          throw new Error(`filesystem.statFile denied: agent lifecycle state is '${state}'.`);
+        }
+        if (!new PluginExecutionPolicy().isRuntimeCategoryAuthorized(RuntimeCategory.FILESYSTEM)) {
+          throw new Error('filesystem.statFile denied: FILESYSTEM category not authorized by policy.');
+        }
+        const leaseDecision = await this.leaseBoundary.validateLease(req.leaseHeader);
+        if (!leaseDecision.valid) {
+          throw new Error(`filesystem.statFile denied: lease validation failed (${leaseDecision.reason}).`);
+        }
+        try {
+          const res = await this.filesystemRuntime.statFile(
+            { path: req.path },
+            {
+              lease: req.leaseHeader,
+              allowedRoots: req.allowedRoots || [process.cwd()],
+            },
+          );
+          this.telemetryManager.trackTrace('filesystem_stat_file_ipc', { path: req.path });
+          return res.result;
+        } catch (err) {
+          const msg = new RedactionFilter().redactString(err instanceof Error ? err.message : String(err));
+          throw new Error(`filesystem.statFile failed: ${msg}`);
+        }
+      });
     }
 
     if (typeof this.controlPlaneClient.registerCommandHandler === 'function') {
