@@ -7,7 +7,12 @@ export const TerminalExecuteCommandIPCRequestSchema = z.object({
   cwd: z.string().min(1, 'Working directory (cwd) is required'),
   env: z.record(z.string()).optional(),
   timeoutMs: z.number().int().positive().max(300_000).optional(),
-  maxOutputSizeBytes: z.number().int().positive().max(10 * 1024 * 1024).optional(),
+  maxOutputSizeBytes: z
+    .number()
+    .int()
+    .positive()
+    .max(10 * 1024 * 1024)
+    .optional(),
   allowedRoots: z.array(z.string()).min(1).optional(),
   leaseHeader: ExecutionLeaseHeaderSchema,
 });
@@ -24,9 +29,5 @@ export const TerminalListProcessesIPCRequestSchema = z.object({
 export type TerminalExecuteCommandIPCRequest = z.infer<
   typeof TerminalExecuteCommandIPCRequestSchema
 >;
-export type TerminalKillProcessIPCRequest = z.infer<
-  typeof TerminalKillProcessIPCRequestSchema
->;
-export type TerminalListProcessesIPCRequest = z.infer<
-  typeof TerminalListProcessesIPCRequestSchema
->;
+export type TerminalKillProcessIPCRequest = z.infer<typeof TerminalKillProcessIPCRequestSchema>;
+export type TerminalListProcessesIPCRequest = z.infer<typeof TerminalListProcessesIPCRequestSchema>;

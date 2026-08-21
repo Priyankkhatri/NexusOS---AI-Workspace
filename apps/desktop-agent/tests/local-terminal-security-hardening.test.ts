@@ -202,12 +202,7 @@ describe('Task 043 — Adversarial Security Hardening Tests (043-SEC-01 to 043-S
     const lease = createValidLease();
     const canonicalTmp = fs.realpathSync(tmpDir);
 
-    const res = await callRuntimeExecute(
-      'powershell',
-      ['-c', 'whoami'],
-      canonicalTmp,
-      lease,
-    );
+    const res = await callRuntimeExecute('powershell', ['-c', 'whoami'], canonicalTmp, lease);
 
     assert.equal(res.result.success, false);
     assert.equal(res.result.error?.code, 'UNAUTHORIZED_SHELL_EXECUTION');
@@ -217,12 +212,7 @@ describe('Task 043 — Adversarial Security Hardening Tests (043-SEC-01 to 043-S
     const lease = createValidLease();
     const canonicalTmp = fs.realpathSync(tmpDir);
 
-    const res = await callRuntimeExecute(
-      'cmd',
-      ['/c', 'dir'],
-      canonicalTmp,
-      lease,
-    );
+    const res = await callRuntimeExecute('cmd', ['/c', 'dir'], canonicalTmp, lease);
 
     assert.equal(res.result.success, false);
     assert.equal(res.result.error?.code, 'UNAUTHORIZED_SHELL_EXECUTION');
@@ -232,13 +222,9 @@ describe('Task 043 — Adversarial Security Hardening Tests (043-SEC-01 to 043-S
     const lease = createValidLease();
     const escapedPath = path.join(tmpDir, '..', '..');
 
-    const res = await callRuntimeExecute(
-      'node',
-      ['-v'],
-      escapedPath,
-      lease,
-      [fs.realpathSync(tmpDir)],
-    );
+    const res = await callRuntimeExecute('node', ['-v'], escapedPath, lease, [
+      fs.realpathSync(tmpDir),
+    ]);
 
     assert.equal(res.result.success, false);
     assert.ok(
@@ -250,16 +236,11 @@ describe('Task 043 — Adversarial Security Hardening Tests (043-SEC-01 to 043-S
 
   it('043-SEC-06: Deny absolute path escaping to system root (C:\\)', async () => {
     const lease = createValidLease();
-    const systemRoot =
-      process.platform === 'win32' ? 'C:\\' : '/';
+    const systemRoot = process.platform === 'win32' ? 'C:\\' : '/';
 
-    const res = await callRuntimeExecute(
-      'node',
-      ['-v'],
-      systemRoot,
-      lease,
-      [fs.realpathSync(tmpDir)],
-    );
+    const res = await callRuntimeExecute('node', ['-v'], systemRoot, lease, [
+      fs.realpathSync(tmpDir),
+    ]);
 
     assert.equal(res.result.success, false);
     assert.ok(
@@ -278,7 +259,7 @@ describe('Task 043 — Adversarial Security Hardening Tests (043-SEC-01 to 043-S
 
     assert.equal(res.result.success, false);
     assert.equal(res.result.error?.code, 'MISSING_CAPABILITY_SCOPE');
-    assert.ok(res.result.error?.message?.includes("term:execute"));
+    assert.ok(res.result.error?.message?.includes('term:execute'));
   });
 
   it('043-SEC-08: Deny terminal.executeCommand via IPC handler when write scope is absent', async () => {
@@ -355,9 +336,7 @@ describe('Task 043 — Adversarial Security Hardening Tests (043-SEC-01 to 043-S
 
     // Execute node -e "process.env" to attempt env leak; env sanitizer must strip SECRET_TOKEN
     // We verify env sanitization by checking ProcessSupervisor.sanitizeEnvironment directly
-    const { ProcessSupervisor } = await import(
-      '../src/runtimes/terminal/process-supervisor.js'
-    );
+    const { ProcessSupervisor } = await import('../src/runtimes/terminal/process-supervisor.js');
     const supervisor = new ProcessSupervisor();
     const sensitiveEnv = {
       SECRET_TOKEN: 'super-secret-value',
