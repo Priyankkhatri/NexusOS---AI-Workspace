@@ -14,6 +14,11 @@ import { PluginExecutionPolicy } from './runtimes/plugin/policy.js';
 import { IPCManager } from './ipc/ipc-manager.js';
 import { MemoryCacheManager } from './memory/memory-cache-manager.js';
 import { DeviceRuntime, DeviceOperationRequest } from './runtimes/device/index.js';
+import {
+  FilesystemRuntime,
+  PathSecurityService,
+  SnapshotManager,
+} from './runtimes/filesystem/index.js';
 import { AgentOrchestrator } from './orchestrator/agent-orchestrator.js';
 import { RuntimeRouter } from './orchestrator/runtime-router.js';
 import { TaskExecutionRequest } from './orchestrator/types.js';
@@ -50,6 +55,7 @@ export class DesktopAgent {
   public readonly ipcManager?: IPCManager;
   public readonly memoryCacheManager: MemoryCacheManager;
   public readonly deviceRuntime: DeviceRuntime;
+  public readonly filesystemRuntime: FilesystemRuntime;
   public readonly orchestrator: AgentOrchestrator;
   public readonly taskScheduler: TaskScheduler;
   public readonly workflowEngine: WorkflowEngine;
@@ -97,6 +103,7 @@ export class DesktopAgent {
     customConfigurationManager?: ConfigurationManager,
     customStateManager?: StateManager,
     customTelemetryManager?: TelemetryManager,
+    customFilesystemRuntime?: FilesystemRuntime,
   ) {
     this.lifecycle = new AgentLifecycleManager();
     this.capabilityRegistry = new CapabilityRegistry();
@@ -623,6 +630,17 @@ export class DesktopAgent {
       isExecutable: true,
       supportedActions: ['queryInfo', 'getPosture', 'executeOperation'],
     });
+
+    this.filesystemRuntime =
+      customFilesystemRuntime ||
+      new FilesystemRuntime(
+        this.leaseBoundary,
+        new PathSecurityService(),
+        new SnapshotManager(),
+        this.logger,
+      );
+
+    this.runtimeRegistry.registerRuntime(this.filesystemRuntime.getDescriptor());
 
     this.logger = new AgentLogger(baseLogger);
 
