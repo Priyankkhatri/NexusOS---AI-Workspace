@@ -1549,9 +1549,10 @@ export class DesktopAgent {
           this.telemetryManager.trackTrace('terminal_kill_process_ipc', {
             processToken: req.processToken,
           });
-          return new RedactionFilter().redactObject(
-            res.result as unknown as Record<string, unknown>,
-          );
+          return new RedactionFilter().redactObject({ success: res.success } as unknown as Record<
+            string,
+            unknown
+          >);
         } catch (err) {
           const msg = new RedactionFilter().redactString(
             err instanceof Error ? err.message : String(err),
@@ -1589,9 +1590,10 @@ export class DesktopAgent {
             allowedRoots: [process.cwd()],
           });
           this.telemetryManager.trackTrace('terminal_list_processes_ipc', {});
-          return new RedactionFilter().redactObject(
-            res.result as unknown as Record<string, unknown>,
-          );
+          return new RedactionFilter().redactObject({ processes: res } as unknown as Record<
+            string,
+            unknown
+          >);
         } catch (err) {
           const msg = new RedactionFilter().redactString(
             err instanceof Error ? err.message : String(err),

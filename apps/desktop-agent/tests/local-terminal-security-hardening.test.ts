@@ -331,11 +331,7 @@ describe('Task 043 — Adversarial Security Hardening Tests (043-SEC-01 to 043-S
   });
 
   it('043-SEC-12: Deny sensitive environment key injection (SECRET_TOKEN leak attempt)', async () => {
-    const lease = createValidLease();
-    const canonicalTmp = fs.realpathSync(tmpDir);
-
-    // Execute node -e "process.env" to attempt env leak; env sanitizer must strip SECRET_TOKEN
-    // We verify env sanitization by checking ProcessSupervisor.sanitizeEnvironment directly
+    // Verify env sanitization by checking ProcessSupervisor.sanitizeEnvironment directly
     const { ProcessSupervisor } = await import('../src/runtimes/terminal/process-supervisor.js');
     const supervisor = new ProcessSupervisor();
     const sensitiveEnv = {

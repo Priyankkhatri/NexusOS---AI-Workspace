@@ -1,4 +1,5 @@
 # Task 043 — Terminal Runtime & Process Supervisor Adapter — Host Integration
+
 ## Completion Report
 
 **Date:** 2026-08-21
@@ -16,12 +17,12 @@ Task 043 wired the pre-existing `TerminalRuntime` core and `ProcessSupervisor` i
 
 ## 2. Authoritative References
 
-| Reference | Section | Title |
-|---|---|---|
-| Desktop Agent EDD | Section 3.6 | Terminal Execution Runtime Architecture |
-| PRD | Section 5.6 / DEV-001 | Command Execution Security & Process Supervision |
-| Task 042 Completion Report | — | Filesystem Runtime Baseline |
-| `task_043_discovery_report.md` | — | Task 043 Discovery Baseline |
+| Reference                      | Section               | Title                                            |
+| ------------------------------ | --------------------- | ------------------------------------------------ |
+| Desktop Agent EDD              | Section 3.6           | Terminal Execution Runtime Architecture          |
+| PRD                            | Section 5.6 / DEV-001 | Command Execution Security & Process Supervision |
+| Task 042 Completion Report     | —                     | Filesystem Runtime Baseline                      |
+| `task_043_discovery_report.md` | —                     | Task 043 Discovery Baseline                      |
 
 ---
 
@@ -31,30 +32,30 @@ Task 043 wired the pre-existing `TerminalRuntime` core and `ProcessSupervisor` i
 
 **File:** `apps/desktop-agent/src/runtimes/terminal/schemas.ts`
 
-| Schema | Purpose |
-|---|---|
+| Schema                                   | Purpose                                            |
+| ---------------------------------------- | -------------------------------------------------- |
 | `TerminalExecuteCommandIPCRequestSchema` | Validates `terminal.executeCommand` IPC parameters |
-| `TerminalKillProcessIPCRequestSchema` | Validates `terminal.killProcess` IPC parameters |
-| `TerminalListProcessesIPCRequestSchema` | Validates `terminal.listProcesses` IPC parameters |
+| `TerminalKillProcessIPCRequestSchema`    | Validates `terminal.killProcess` IPC parameters    |
+| `TerminalListProcessesIPCRequestSchema`  | Validates `terminal.listProcesses` IPC parameters  |
 
 All schemas require `leaseHeader: ExecutionLeaseHeader` and are exported via `apps/desktop-agent/src/runtimes/terminal/index.ts`.
 
 ### 3.2 Policy & Registry Authorizations
 
-| File | Change |
-|---|---|
-| `apps/desktop-agent/src/runtimes/plugin/policy.ts` | Annotated `RuntimeCategory.TERMINAL` authorization |
+| File                                                  | Change                                                       |
+| ----------------------------------------------------- | ------------------------------------------------------------ |
+| `apps/desktop-agent/src/runtimes/plugin/policy.ts`    | Annotated `RuntimeCategory.TERMINAL` authorization           |
 | `apps/desktop-agent/src/registry/runtime-registry.ts` | Annotated `RuntimeCategory.TERMINAL` descriptor registration |
 
 ### 3.3 Capability Descriptors (CapabilityRegistry)
 
 Registered in `apps/desktop-agent/src/agent.ts`:
 
-| Capability ID | Scope | isDangerous |
-|---|---|---|
-| `terminal.executeCommand` | `terminal:write` | `true` |
-| `terminal.killProcess` | `terminal:write` | `true` |
-| `terminal.listProcesses` | `terminal:read` | `false` |
+| Capability ID             | Scope            | isDangerous |
+| ------------------------- | ---------------- | ----------- |
+| `terminal.executeCommand` | `terminal:write` | `true`      |
+| `terminal.killProcess`    | `terminal:write` | `true`      |
+| `terminal.listProcesses`  | `terminal:read`  | `false`     |
 
 ### 3.4 DesktopAgent Composition Root (agent.ts)
 
@@ -69,11 +70,11 @@ Registered in `apps/desktop-agent/src/agent.ts`:
 
 Registered in `apps/desktop-agent/src/agent.ts`:
 
-| Method | Security Controls |
-|---|---|
+| Method                    | Security Controls                                                                                                                                |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `terminal.executeCommand` | Lifecycle check → Policy authorization → Lease validation → Write scope check → Zod parse → `TerminalRuntime.executeCommand()` → RedactionFilter |
-| `terminal.killProcess` | Lifecycle check → Policy authorization → Lease validation → Write scope check → Zod parse → `TerminalRuntime.killProcess()` → RedactionFilter |
-| `terminal.listProcesses` | Lifecycle check → Policy authorization → Lease validation → Zod parse → `TerminalRuntime.listProcesses()` → RedactionFilter |
+| `terminal.killProcess`    | Lifecycle check → Policy authorization → Lease validation → Write scope check → Zod parse → `TerminalRuntime.killProcess()` → RedactionFilter    |
+| `terminal.listProcesses`  | Lifecycle check → Policy authorization → Lease validation → Zod parse → `TerminalRuntime.listProcesses()` → RedactionFilter                      |
 
 ### 3.6 ProcessSupervisor Shutdown (`killAll`)
 
@@ -95,55 +96,55 @@ Added `public shutdown(): void` which delegates to `this.processSupervisor.killA
 
 **File:** `apps/desktop-agent/tests/local-terminal-ipc.test.ts`
 
-| Test Case | Description |
-|---|---|
-| 1 | `terminalRuntime` exposed as `TerminalRuntime` instance |
-| 2 | `rt:terminal-v1` registered in `RuntimeRegistry` with category `TERMINAL` |
-| 3 | Capability descriptors registered in `CapabilityRegistry` |
-| 4 | `terminal.executeCommand` executes `node -v` via IPC |
-| 5 | `terminal.listProcesses` returns process list via IPC |
-| 6 | `terminal.killProcess` responds for unknown process token |
-| 7 | Reject malformed IPC payload (missing `cwd`) |
-| 8 | Reject expired execution lease |
-| 9 | Reject terminal operations during `STOPPING` lifecycle state |
+| Test Case | Description                                                               |
+| --------- | ------------------------------------------------------------------------- |
+| 1         | `terminalRuntime` exposed as `TerminalRuntime` instance                   |
+| 2         | `rt:terminal-v1` registered in `RuntimeRegistry` with category `TERMINAL` |
+| 3         | Capability descriptors registered in `CapabilityRegistry`                 |
+| 4         | `terminal.executeCommand` executes `node -v` via IPC                      |
+| 5         | `terminal.listProcesses` returns process list via IPC                     |
+| 6         | `terminal.killProcess` responds for unknown process token                 |
+| 7         | Reject malformed IPC payload (missing `cwd`)                              |
+| 8         | Reject expired execution lease                                            |
+| 9         | Reject terminal operations during `STOPPING` lifecycle state              |
 
 ### 4.2 Adversarial Security Regression Tests
 
 **File:** `apps/desktop-agent/tests/local-terminal-security-hardening.test.ts`
 
-| Case ID | Description |
-|---|---|
-| 043-SEC-01 | Deny command not in permitted allowlist (`curl`) |
-| 043-SEC-02 | Deny `powershell -Command` shell-string execution |
-| 043-SEC-03 | Deny `powershell -c` shell-string shorthand |
-| 043-SEC-04 | Deny `cmd /c` shell-string execution |
-| 043-SEC-05 | Deny path traversal outside `allowedRoots` (`../..`) |
-| 043-SEC-06 | Deny absolute path escaping to system root |
-| 043-SEC-07 | Deny execution with missing `term:execute` capability scope |
-| 043-SEC-08 | Deny `terminal.executeCommand` IPC without write scope |
-| 043-SEC-09 | Deny `terminal.killProcess` IPC without write scope |
-| 043-SEC-10 | Deny IPC call during `STOPPING` lifecycle state |
-| 043-SEC-11 | Deny `powershell -EncodedCommand` (Base64 bypass attempt) |
+| Case ID    | Description                                                              |
+| ---------- | ------------------------------------------------------------------------ |
+| 043-SEC-01 | Deny command not in permitted allowlist (`curl`)                         |
+| 043-SEC-02 | Deny `powershell -Command` shell-string execution                        |
+| 043-SEC-03 | Deny `powershell -c` shell-string shorthand                              |
+| 043-SEC-04 | Deny `cmd /c` shell-string execution                                     |
+| 043-SEC-05 | Deny path traversal outside `allowedRoots` (`../..`)                     |
+| 043-SEC-06 | Deny absolute path escaping to system root                               |
+| 043-SEC-07 | Deny execution with missing `term:execute` capability scope              |
+| 043-SEC-08 | Deny `terminal.executeCommand` IPC without write scope                   |
+| 043-SEC-09 | Deny `terminal.killProcess` IPC without write scope                      |
+| 043-SEC-10 | Deny IPC call during `STOPPING` lifecycle state                          |
+| 043-SEC-11 | Deny `powershell -EncodedCommand` (Base64 bypass attempt)                |
 | 043-SEC-12 | Deny sensitive env key injection (`SECRET_TOKEN`, `API_KEY`, `password`) |
 
 ---
 
 ## 5. Commit History
 
-| Commit | Message |
-|---|---|
-| `0c948c4` | `feat(desktop-agent): define Task 043 Terminal Runtime IPC request and response Zod schemas` |
-| `ee6fa7f` | `feat(desktop-agent): authorize TERMINAL runtime category in PluginExecutionPolicy` |
-| `5f7b9c5` | `feat(desktop-agent): register rt:terminal-v1 descriptor in RuntimeRegistry` |
-| `6b879ea` | `feat(desktop-agent): register Terminal capability descriptors in CapabilityRegistry` |
-| `3f1dbef` | `feat(desktop-agent): wire TerminalRuntime into DesktopAgent composition root` |
-| `085ee03` | `feat(desktop-agent): register authorized terminal execution IPC handler` |
-| `aa8e70e` | `feat(desktop-agent): register authorized terminal kill and list IPC handlers` |
-| `a16e1d0` | `fix(desktop-agent): harden TerminalRuntime lifecycle and process supervisor shutdown boundary` |
-| `4cf09d4` | `test(desktop-agent): add Terminal IPC integration and lifecycle test suite` |
+| Commit    | Message                                                                                              |
+| --------- | ---------------------------------------------------------------------------------------------------- |
+| `0c948c4` | `feat(desktop-agent): define Task 043 Terminal Runtime IPC request and response Zod schemas`         |
+| `ee6fa7f` | `feat(desktop-agent): authorize TERMINAL runtime category in PluginExecutionPolicy`                  |
+| `5f7b9c5` | `feat(desktop-agent): register rt:terminal-v1 descriptor in RuntimeRegistry`                         |
+| `6b879ea` | `feat(desktop-agent): register Terminal capability descriptors in CapabilityRegistry`                |
+| `3f1dbef` | `feat(desktop-agent): wire TerminalRuntime into DesktopAgent composition root`                       |
+| `085ee03` | `feat(desktop-agent): register authorized terminal execution IPC handler`                            |
+| `aa8e70e` | `feat(desktop-agent): register authorized terminal kill and list IPC handlers`                       |
+| `a16e1d0` | `fix(desktop-agent): harden TerminalRuntime lifecycle and process supervisor shutdown boundary`      |
+| `4cf09d4` | `test(desktop-agent): add Terminal IPC integration and lifecycle test suite`                         |
 | `275fad5` | `test(desktop-agent): add Task 043 adversarial security regression suite (043-SEC-01 to 043-SEC-12)` |
-| `193e663` | `style(desktop-agent): apply Prettier formatting to Task 043 sources and tests` |
-| _(this)_ | `docs(desktop-agent): create Task 043 completion report` |
+| `193e663` | `style(desktop-agent): apply Prettier formatting to Task 043 sources and tests`                      |
+| _(this)_  | `docs(desktop-agent): create Task 043 completion report`                                             |
 
 ---
 
@@ -200,4 +201,4 @@ IPC Caller
 
 **Task 044 — Browser Runtime Host Integration: NOT STARTED.**
 
-Per user directive: *"Do NOT start Task 044."*
+Per user directive: _"Do NOT start Task 044."_
