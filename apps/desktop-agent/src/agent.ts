@@ -19,6 +19,7 @@ import {
   PathSecurityService,
   SnapshotManager,
 } from './runtimes/filesystem/index.js';
+import { TerminalRuntime, ProcessSupervisor } from './runtimes/terminal/index.js';
 import { AgentOrchestrator } from './orchestrator/agent-orchestrator.js';
 import { RuntimeRouter } from './orchestrator/runtime-router.js';
 import { TaskExecutionRequest } from './orchestrator/types.js';
@@ -56,6 +57,7 @@ export class DesktopAgent {
   public readonly memoryCacheManager: MemoryCacheManager;
   public readonly deviceRuntime: DeviceRuntime;
   public readonly filesystemRuntime: FilesystemRuntime;
+  public readonly terminalRuntime: TerminalRuntime;
   public readonly orchestrator: AgentOrchestrator;
   public readonly taskScheduler: TaskScheduler;
   public readonly workflowEngine: WorkflowEngine;
@@ -104,6 +106,7 @@ export class DesktopAgent {
     customStateManager?: StateManager,
     customTelemetryManager?: TelemetryManager,
     customFilesystemRuntime?: FilesystemRuntime,
+    customTerminalRuntime?: TerminalRuntime,
   ) {
     this.lifecycle = new AgentLifecycleManager();
     this.capabilityRegistry = new CapabilityRegistry();
@@ -664,6 +667,17 @@ export class DesktopAgent {
       );
 
     this.runtimeRegistry.registerRuntime(this.filesystemRuntime.getDescriptor());
+
+    this.terminalRuntime =
+      customTerminalRuntime ||
+      new TerminalRuntime(
+        this.leaseBoundary,
+        new ProcessSupervisor(),
+        new PathSecurityService(),
+        this.logger,
+      );
+
+    this.runtimeRegistry.registerRuntime(this.terminalRuntime.getDescriptor());
 
     if (this.ipcManager) {
       this.ipcManager.registerMethodHandler('device.execute', async (params) => {
