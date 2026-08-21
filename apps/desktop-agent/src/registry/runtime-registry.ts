@@ -1,6 +1,7 @@
 export enum RuntimeCategory {
   /** Task 042: Filesystem Runtime & Path Security Adapter */
   FILESYSTEM = 'FILESYSTEM',
+  /** Task 043: Terminal Runtime & Process Supervisor Adapter */
   TERMINAL = 'TERMINAL',
   BROWSER = 'BROWSER',
   PLUGIN = 'PLUGIN',
