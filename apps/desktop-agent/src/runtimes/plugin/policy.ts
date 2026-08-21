@@ -19,6 +19,7 @@ export class PluginExecutionPolicy implements RuntimeExecutionPolicy {
     return (
       category === RuntimeCategory.PLUGIN ||
       category === RuntimeCategory.BROWSER ||
+      /** Task 043: Terminal Runtime & Process Supervisor Adapter */
       category === RuntimeCategory.TERMINAL ||
       category === RuntimeCategory.FILESYSTEM ||
       category === RuntimeCategory.CLIPBOARD ||
