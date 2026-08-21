@@ -440,6 +440,55 @@ export class DesktopAgent {
       isDangerous: true,
       requiredScope: 'device:write',
     });
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'filesystem.readFile',
+      category: 'runtime',
+      description: 'Read file contents within authorized filesystem scopes',
+      isDangerous: false,
+      requiredScope: 'filesystem:read',
+    });
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'filesystem.writeFile',
+      category: 'runtime',
+      description: 'Write file contents within authorized filesystem scopes',
+      isDangerous: true,
+      requiredScope: 'filesystem:write',
+    });
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'filesystem.listDirectory',
+      category: 'runtime',
+      description: 'List directory entries within authorized filesystem scopes',
+      isDangerous: false,
+      requiredScope: 'filesystem:read',
+    });
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'filesystem.statFile',
+      category: 'runtime',
+      description: 'Inspect file status and metadata within authorized filesystem scopes',
+      isDangerous: false,
+      requiredScope: 'filesystem:read',
+    });
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'filesystem.copyFile',
+      category: 'runtime',
+      description: 'Copy file to destination within authorized filesystem scopes',
+      isDangerous: false,
+      requiredScope: 'filesystem:write',
+    });
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'filesystem.moveFile',
+      category: 'runtime',
+      description: 'Move file to destination within authorized filesystem scopes',
+      isDangerous: false,
+      requiredScope: 'filesystem:write',
+    });
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'filesystem.deleteFile',
+      category: 'runtime',
+      description: 'Delete file within authorized filesystem scopes',
+      isDangerous: true,
+      requiredScope: 'filesystem:write',
+    });
 
     this.modelRuntimeManager = new ModelRuntimeManager(this.leaseBoundary, '.nexus-local-ai');
     const redactionFilter = new RedactionFilter(new SecretRedactionRegistry());
