@@ -68,20 +68,10 @@ describe('Task 042 — Local Filesystem IPC & Host Integration Tests', () => {
     return {
       lease_id: crypto.randomUUID(),
       task_id: taskId,
-      step_id: crypto.randomUUID(),
       agent_id: 'test-agent-id',
       tenant_id: tenantId,
       issued_at: new Date().toISOString(),
       expires_at: new Date(Date.now() + 60000).toISOString(),
-      capabilities: [
-        'filesystem.readFile',
-        'filesystem.writeFile',
-        'filesystem.listDirectory',
-        'filesystem.statFile',
-        'filesystem.copyFile',
-        'filesystem.moveFile',
-        'filesystem.deleteFile',
-      ],
       scopes,
       nonce: crypto.randomUUID(),
       signature: 'valid-test-signature',
@@ -93,7 +83,10 @@ describe('Task 042 — Local Filesystem IPC & Host Integration Tests', () => {
     if (!handler) {
       throw new Error(`Handler '${method}' not found`);
     }
-    return handler(params);
+    return handler(params as any, {
+      caller: { authenticated: true },
+      correlationId: crypto.randomUUID(),
+    });
   }
 
   beforeEach(async () => {
@@ -101,33 +94,46 @@ describe('Task 042 — Local Filesystem IPC & Host Integration Tests', () => {
 
     const config: DesktopAgentConfig = {
       deviceId: 'dev_test_042',
-      tenantId: 'tenant_test_042',
-      controlPlaneUrl: 'https://localhost:8080',
+      agentVersion: '1.0.0',
+      environment: 'development',
       heartbeatIntervalMs: 60000,
-      logLevel: 'error',
+      controlPlaneUrl: 'https://localhost:8443',
+      logLevel: 'info',
+      stateStoragePath: tmpDir,
+      maxConcurrentLeases: 5,
     };
 
-    const identityProvider = {
+    const identityProvider: AgentIdentityProvider = {
       getIdentity: async () => ({
+        agentId: 'test-agent-042',
         deviceId: 'dev_test_042',
         pairedTenantId: 'tenant_test_042',
-        agentVersion: '0.1.0',
-        platform: 'win32',
+        deviceFingerprint: 'fingerprint-042',
+        agentVersion: '1.0.0',
+        enrolledAt: new Date().toISOString(),
       }),
-    } as unknown as AgentIdentityProvider;
+      verifyHardwareAttestation: async () =>
+        ({ valid: true, status: 'PASSED', reason: 'OK' }) as any,
+    };
 
-    const controlPlaneClient = {
+    const controlPlaneClient: ControlPlaneClient = {
       start: async () => {},
-      registerAgent: async () => ({ accepted: true }),
+      registerAgent: async () => ({ accepted: true, controlPlaneVersion: '1.0.0' }),
       sendHeartbeat: async () => true,
-      relayEvent: async () => ({ success: true, ackedSequence: 1 }),
-      getConnectionState: () => 'CONNECTED_ACTIVE',
+      relayEvent: async () => ({ success: true }) as any,
+      getConnectionState: () => 'CONNECTED' as any,
       disconnect: async () => {},
-    } as unknown as ControlPlaneClient;
+    };
 
-    const leaseBoundary = new ExecutionLeaseBoundary(new StubAllowPolicyEvaluator());
+    const leaseBoundary = new ExecutionLeaseBoundary(new StubAllowPolicyEvaluator() as any);
     const stateStore = new InMemoryLocalStateStore();
-    const logger = new Logger({ level: 'error' });
+    const baseLogger: Logger = {
+      debug: () => {},
+      info: () => {},
+      warn: () => {},
+      error: () => {},
+      fatal: () => {},
+    } as unknown as Logger;
 
     agent = new DesktopAgent(
       config,
@@ -135,7 +141,7 @@ describe('Task 042 — Local Filesystem IPC & Host Integration Tests', () => {
       controlPlaneClient,
       leaseBoundary,
       stateStore,
-      logger,
+      baseLogger,
     );
 
     await agent.start();

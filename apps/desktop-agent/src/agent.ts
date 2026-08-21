@@ -631,6 +631,8 @@ export class DesktopAgent {
       supportedActions: ['queryInfo', 'getPosture', 'executeOperation'],
     });
 
+    this.logger = new AgentLogger(baseLogger);
+
     this.filesystemRuntime =
       customFilesystemRuntime ||
       new FilesystemRuntime(
@@ -641,8 +643,6 @@ export class DesktopAgent {
       );
 
     this.runtimeRegistry.registerRuntime(this.filesystemRuntime.getDescriptor());
-
-    this.logger = new AgentLogger(baseLogger);
 
     if (this.ipcManager) {
       this.ipcManager.registerMethodHandler('device.execute', async (params) => {
