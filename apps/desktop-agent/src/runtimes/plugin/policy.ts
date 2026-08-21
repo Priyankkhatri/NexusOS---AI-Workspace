@@ -15,21 +15,25 @@ import {
  * Keeps remaining runtime categories (CAMERA, MICROPHONE, LOCAL_AI) strictly fail-closed.
  */
 export class PluginExecutionPolicy implements RuntimeExecutionPolicy {
-  allowExecutableRegistration(descriptor: ToolRuntimeDescriptor): boolean {
+  public isRuntimeCategoryAuthorized(category: RuntimeCategory): boolean {
     return (
-      descriptor.category === RuntimeCategory.PLUGIN ||
-      descriptor.category === RuntimeCategory.BROWSER ||
-      descriptor.category === RuntimeCategory.TERMINAL ||
-      descriptor.category === RuntimeCategory.FILESYSTEM ||
-      descriptor.category === RuntimeCategory.CLIPBOARD ||
-      descriptor.category === RuntimeCategory.DEVICE ||
-      descriptor.category === RuntimeCategory.VAULT ||
-      descriptor.category === RuntimeCategory.UPDATER ||
-      descriptor.category === RuntimeCategory.HEALTH ||
-      descriptor.category === RuntimeCategory.CONFIG ||
-      descriptor.category === RuntimeCategory.STATE ||
-      descriptor.category === RuntimeCategory.TELEMETRY ||
-      descriptor.category === RuntimeCategory.NOTIFICATION
+      category === RuntimeCategory.PLUGIN ||
+      category === RuntimeCategory.BROWSER ||
+      category === RuntimeCategory.TERMINAL ||
+      category === RuntimeCategory.FILESYSTEM ||
+      category === RuntimeCategory.CLIPBOARD ||
+      category === RuntimeCategory.DEVICE ||
+      category === RuntimeCategory.VAULT ||
+      category === RuntimeCategory.UPDATER ||
+      category === RuntimeCategory.HEALTH ||
+      category === RuntimeCategory.CONFIG ||
+      category === RuntimeCategory.STATE ||
+      category === RuntimeCategory.TELEMETRY ||
+      category === RuntimeCategory.NOTIFICATION
     );
+  }
+
+  allowExecutableRegistration(descriptor: ToolRuntimeDescriptor): boolean {
+    return this.isRuntimeCategoryAuthorized(descriptor.category);
   }
 }
