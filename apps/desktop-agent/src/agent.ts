@@ -1449,6 +1449,65 @@ export class DesktopAgent {
           throw new Error(`filesystem.deleteFile failed: ${msg}`);
         }
       });
+      this.ipcManager.registerMethodHandler('terminal.executeCommand', async (params) => {
+        const { TerminalExecuteCommandIPCRequestSchema } = await import(
+          './runtimes/terminal/schemas.js'
+        );
+        const req = TerminalExecuteCommandIPCRequestSchema.parse(params || {});
+        const state = this.lifecycle.getState();
+        if (
+          state === AgentLifecycleState.STOPPING ||
+          state === AgentLifecycleState.STOPPED ||
+          state === AgentLifecycleState.FAILED
+        ) {
+          throw new Error(`terminal.executeCommand denied: agent lifecycle state is '${state}'.`);
+        }
+        if (!new PluginExecutionPolicy().isRuntimeCategoryAuthorized(RuntimeCategory.TERMINAL)) {
+          throw new Error(
+            'terminal.executeCommand denied: TERMINAL category not authorized by policy.',
+          );
+        }
+        const leaseDecision = await this.leaseBoundary.validateLease(req.leaseHeader);
+        if (!leaseDecision.valid) {
+          throw new Error(
+            `terminal.executeCommand denied: lease validation failed (${leaseDecision.reason}).`,
+          );
+        }
+        const scopes = req.leaseHeader.scopes || [];
+        if (!scopes.some((s) => s.includes('write') || s.includes('admin') || s === '*')) {
+          throw new Error(
+            'terminal.executeCommand denied: required write scope is missing from execution lease.',
+          );
+        }
+        try {
+          const res = await this.terminalRuntime.executeCommand(
+            {
+              command: req.command,
+              args: req.args,
+              cwd: req.cwd,
+              env: req.env,
+              timeoutMs: req.timeoutMs,
+              maxOutputSizeBytes: req.maxOutputSizeBytes,
+            },
+            {
+              lease: req.leaseHeader,
+              allowedRoots: req.allowedRoots || [process.cwd()],
+            },
+          );
+          this.telemetryManager.trackTrace('terminal_execute_command_ipc', {
+            command: req.command,
+            cwd: req.cwd,
+          });
+          return new RedactionFilter().redactObject(
+            res.result as unknown as Record<string, unknown>,
+          );
+        } catch (err) {
+          const msg = new RedactionFilter().redactString(
+            err instanceof Error ? err.message : String(err),
+          );
+          throw new Error(`terminal.executeCommand failed: ${msg}`);
+        }
+      });
     }
 
     if (typeof this.controlPlaneClient.registerCommandHandler === 'function') {
