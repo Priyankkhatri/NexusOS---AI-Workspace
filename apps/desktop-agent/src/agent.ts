@@ -1071,7 +1071,9 @@ export class DesktopAgent {
         return { posture: sanitizedPosture };
       });
       this.ipcManager.registerMethodHandler('filesystem.readFile', async (params) => {
-        const { FilesystemReadFileIPCRequestSchema } = await import('./runtimes/filesystem/schemas.js');
+        const { FilesystemReadFileIPCRequestSchema } = await import(
+          './runtimes/filesystem/schemas.js'
+        );
         const req = FilesystemReadFileIPCRequestSchema.parse(params || {});
         const state = this.lifecycle.getState();
         if (
@@ -1082,11 +1084,15 @@ export class DesktopAgent {
           throw new Error(`filesystem.readFile denied: agent lifecycle state is '${state}'.`);
         }
         if (!new PluginExecutionPolicy().isRuntimeCategoryAuthorized(RuntimeCategory.FILESYSTEM)) {
-          throw new Error('filesystem.readFile denied: FILESYSTEM category not authorized by policy.');
+          throw new Error(
+            'filesystem.readFile denied: FILESYSTEM category not authorized by policy.',
+          );
         }
         const leaseDecision = await this.leaseBoundary.validateLease(req.leaseHeader);
         if (!leaseDecision.valid) {
-          throw new Error(`filesystem.readFile denied: lease validation failed (${leaseDecision.reason}).`);
+          throw new Error(
+            `filesystem.readFile denied: lease validation failed (${leaseDecision.reason}).`,
+          );
         }
         try {
           const res = await this.filesystemRuntime.readFile(
@@ -1098,9 +1104,13 @@ export class DesktopAgent {
             },
           );
           this.telemetryManager.trackTrace('filesystem_read_file_ipc', { path: req.path });
-          return res.result;
+          return new RedactionFilter().redactObject(
+            res.result as unknown as Record<string, unknown>,
+          );
         } catch (err) {
-          const msg = new RedactionFilter().redactString(err instanceof Error ? err.message : String(err));
+          const msg = new RedactionFilter().redactString(
+            err instanceof Error ? err.message : String(err),
+          );
           throw new Error(`filesystem.readFile failed: ${msg}`);
         }
       });
@@ -1118,11 +1128,15 @@ export class DesktopAgent {
           throw new Error(`filesystem.listDirectory denied: agent lifecycle state is '${state}'.`);
         }
         if (!new PluginExecutionPolicy().isRuntimeCategoryAuthorized(RuntimeCategory.FILESYSTEM)) {
-          throw new Error('filesystem.listDirectory denied: FILESYSTEM category not authorized by policy.');
+          throw new Error(
+            'filesystem.listDirectory denied: FILESYSTEM category not authorized by policy.',
+          );
         }
         const leaseDecision = await this.leaseBoundary.validateLease(req.leaseHeader);
         if (!leaseDecision.valid) {
-          throw new Error(`filesystem.listDirectory denied: lease validation failed (${leaseDecision.reason}).`);
+          throw new Error(
+            `filesystem.listDirectory denied: lease validation failed (${leaseDecision.reason}).`,
+          );
         }
         try {
           const res = await this.filesystemRuntime.listDirectory(
@@ -1134,9 +1148,13 @@ export class DesktopAgent {
             },
           );
           this.telemetryManager.trackTrace('filesystem_list_directory_ipc', { path: req.path });
-          return res.result;
+          return new RedactionFilter().redactObject(
+            res.result as unknown as Record<string, unknown>,
+          );
         } catch (err) {
-          const msg = new RedactionFilter().redactString(err instanceof Error ? err.message : String(err));
+          const msg = new RedactionFilter().redactString(
+            err instanceof Error ? err.message : String(err),
+          );
           throw new Error(`filesystem.listDirectory failed: ${msg}`);
         }
       });
@@ -1154,11 +1172,15 @@ export class DesktopAgent {
           throw new Error(`filesystem.statFile denied: agent lifecycle state is '${state}'.`);
         }
         if (!new PluginExecutionPolicy().isRuntimeCategoryAuthorized(RuntimeCategory.FILESYSTEM)) {
-          throw new Error('filesystem.statFile denied: FILESYSTEM category not authorized by policy.');
+          throw new Error(
+            'filesystem.statFile denied: FILESYSTEM category not authorized by policy.',
+          );
         }
         const leaseDecision = await this.leaseBoundary.validateLease(req.leaseHeader);
         if (!leaseDecision.valid) {
-          throw new Error(`filesystem.statFile denied: lease validation failed (${leaseDecision.reason}).`);
+          throw new Error(
+            `filesystem.statFile denied: lease validation failed (${leaseDecision.reason}).`,
+          );
         }
         try {
           const res = await this.filesystemRuntime.statFile(
@@ -1169,9 +1191,13 @@ export class DesktopAgent {
             },
           );
           this.telemetryManager.trackTrace('filesystem_stat_file_ipc', { path: req.path });
-          return res.result;
+          return new RedactionFilter().redactObject(
+            res.result as unknown as Record<string, unknown>,
+          );
         } catch (err) {
-          const msg = new RedactionFilter().redactString(err instanceof Error ? err.message : String(err));
+          const msg = new RedactionFilter().redactString(
+            err instanceof Error ? err.message : String(err),
+          );
           throw new Error(`filesystem.statFile failed: ${msg}`);
         }
       });
@@ -1189,15 +1215,21 @@ export class DesktopAgent {
           throw new Error(`filesystem.writeFile denied: agent lifecycle state is '${state}'.`);
         }
         if (!new PluginExecutionPolicy().isRuntimeCategoryAuthorized(RuntimeCategory.FILESYSTEM)) {
-          throw new Error('filesystem.writeFile denied: FILESYSTEM category not authorized by policy.');
+          throw new Error(
+            'filesystem.writeFile denied: FILESYSTEM category not authorized by policy.',
+          );
         }
         const leaseDecision = await this.leaseBoundary.validateLease(req.leaseHeader);
         if (!leaseDecision.valid) {
-          throw new Error(`filesystem.writeFile denied: lease validation failed (${leaseDecision.reason}).`);
+          throw new Error(
+            `filesystem.writeFile denied: lease validation failed (${leaseDecision.reason}).`,
+          );
         }
         const scopes = req.leaseHeader.scopes || [];
         if (!scopes.some((s) => s.includes('write') || s.includes('admin') || s === '*')) {
-          throw new Error('filesystem.writeFile denied: required write scope is missing from execution lease.');
+          throw new Error(
+            'filesystem.writeFile denied: required write scope is missing from execution lease.',
+          );
         }
         try {
           const res = await this.filesystemRuntime.writeFile(
@@ -1215,9 +1247,13 @@ export class DesktopAgent {
             },
           );
           this.telemetryManager.trackTrace('filesystem_write_file_ipc', { path: req.path });
-          return res.result;
+          return new RedactionFilter().redactObject(
+            res.result as unknown as Record<string, unknown>,
+          );
         } catch (err) {
-          const msg = new RedactionFilter().redactString(err instanceof Error ? err.message : String(err));
+          const msg = new RedactionFilter().redactString(
+            err instanceof Error ? err.message : String(err),
+          );
           throw new Error(`filesystem.writeFile failed: ${msg}`);
         }
       });
@@ -1235,11 +1271,15 @@ export class DesktopAgent {
           throw new Error(`filesystem.copyFile denied: agent lifecycle state is '${state}'.`);
         }
         if (!new PluginExecutionPolicy().isRuntimeCategoryAuthorized(RuntimeCategory.FILESYSTEM)) {
-          throw new Error('filesystem.copyFile denied: FILESYSTEM category not authorized by policy.');
+          throw new Error(
+            'filesystem.copyFile denied: FILESYSTEM category not authorized by policy.',
+          );
         }
         const leaseDecision = await this.leaseBoundary.validateLease(req.leaseHeader);
         if (!leaseDecision.valid) {
-          throw new Error(`filesystem.copyFile denied: lease validation failed (${leaseDecision.reason}).`);
+          throw new Error(
+            `filesystem.copyFile denied: lease validation failed (${leaseDecision.reason}).`,
+          );
         }
         try {
           const res = await this.filesystemRuntime.copyFile(
@@ -1259,9 +1299,13 @@ export class DesktopAgent {
             source: req.sourcePath,
             destination: req.destinationPath,
           });
-          return res.result;
+          return new RedactionFilter().redactObject(
+            res.result as unknown as Record<string, unknown>,
+          );
         } catch (err) {
-          const msg = new RedactionFilter().redactString(err instanceof Error ? err.message : String(err));
+          const msg = new RedactionFilter().redactString(
+            err instanceof Error ? err.message : String(err),
+          );
           throw new Error(`filesystem.copyFile failed: ${msg}`);
         }
       });
@@ -1279,11 +1323,15 @@ export class DesktopAgent {
           throw new Error(`filesystem.moveFile denied: agent lifecycle state is '${state}'.`);
         }
         if (!new PluginExecutionPolicy().isRuntimeCategoryAuthorized(RuntimeCategory.FILESYSTEM)) {
-          throw new Error('filesystem.moveFile denied: FILESYSTEM category not authorized by policy.');
+          throw new Error(
+            'filesystem.moveFile denied: FILESYSTEM category not authorized by policy.',
+          );
         }
         const leaseDecision = await this.leaseBoundary.validateLease(req.leaseHeader);
         if (!leaseDecision.valid) {
-          throw new Error(`filesystem.moveFile denied: lease validation failed (${leaseDecision.reason}).`);
+          throw new Error(
+            `filesystem.moveFile denied: lease validation failed (${leaseDecision.reason}).`,
+          );
         }
         try {
           const res = await this.filesystemRuntime.moveFile(
@@ -1303,9 +1351,13 @@ export class DesktopAgent {
             source: req.sourcePath,
             destination: req.destinationPath,
           });
-          return res.result;
+          return new RedactionFilter().redactObject(
+            res.result as unknown as Record<string, unknown>,
+          );
         } catch (err) {
-          const msg = new RedactionFilter().redactString(err instanceof Error ? err.message : String(err));
+          const msg = new RedactionFilter().redactString(
+            err instanceof Error ? err.message : String(err),
+          );
           throw new Error(`filesystem.moveFile failed: ${msg}`);
         }
       });
@@ -1323,15 +1375,21 @@ export class DesktopAgent {
           throw new Error(`filesystem.deleteFile denied: agent lifecycle state is '${state}'.`);
         }
         if (!new PluginExecutionPolicy().isRuntimeCategoryAuthorized(RuntimeCategory.FILESYSTEM)) {
-          throw new Error('filesystem.deleteFile denied: FILESYSTEM category not authorized by policy.');
+          throw new Error(
+            'filesystem.deleteFile denied: FILESYSTEM category not authorized by policy.',
+          );
         }
         const leaseDecision = await this.leaseBoundary.validateLease(req.leaseHeader);
         if (!leaseDecision.valid) {
-          throw new Error(`filesystem.deleteFile denied: lease validation failed (${leaseDecision.reason}).`);
+          throw new Error(
+            `filesystem.deleteFile denied: lease validation failed (${leaseDecision.reason}).`,
+          );
         }
         const scopes = req.leaseHeader.scopes || [];
         if (!scopes.some((s) => s.includes('write') || s.includes('admin') || s === '*')) {
-          throw new Error('filesystem.deleteFile denied: required write scope is missing from execution lease.');
+          throw new Error(
+            'filesystem.deleteFile denied: required write scope is missing from execution lease.',
+          );
         }
         try {
           const res = await this.filesystemRuntime.deleteFile(
@@ -1346,9 +1404,13 @@ export class DesktopAgent {
             },
           );
           this.telemetryManager.trackTrace('filesystem_delete_file_ipc', { path: req.path });
-          return res.result;
+          return new RedactionFilter().redactObject(
+            res.result as unknown as Record<string, unknown>,
+          );
         } catch (err) {
-          const msg = new RedactionFilter().redactString(err instanceof Error ? err.message : String(err));
+          const msg = new RedactionFilter().redactString(
+            err instanceof Error ? err.message : String(err),
+          );
           throw new Error(`filesystem.deleteFile failed: ${msg}`);
         }
       });

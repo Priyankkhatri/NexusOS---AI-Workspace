@@ -90,6 +90,7 @@ export class SnapshotManager {
         fs.unlinkSync(snapshot.backupPath);
       } catch {
         // Ignore cleanup errors
+      }
     }
     this.snapshots.delete(snapshotId);
   }
