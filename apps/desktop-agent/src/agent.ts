@@ -1175,6 +1175,183 @@ export class DesktopAgent {
           throw new Error(`filesystem.statFile failed: ${msg}`);
         }
       });
+      this.ipcManager.registerMethodHandler('filesystem.writeFile', async (params) => {
+        const { FilesystemWriteFileIPCRequestSchema } = await import(
+          './runtimes/filesystem/schemas.js'
+        );
+        const req = FilesystemWriteFileIPCRequestSchema.parse(params || {});
+        const state = this.lifecycle.getState();
+        if (
+          state === AgentLifecycleState.STOPPING ||
+          state === AgentLifecycleState.STOPPED ||
+          state === AgentLifecycleState.FAILED
+        ) {
+          throw new Error(`filesystem.writeFile denied: agent lifecycle state is '${state}'.`);
+        }
+        if (!new PluginExecutionPolicy().isRuntimeCategoryAuthorized(RuntimeCategory.FILESYSTEM)) {
+          throw new Error('filesystem.writeFile denied: FILESYSTEM category not authorized by policy.');
+        }
+        const leaseDecision = await this.leaseBoundary.validateLease(req.leaseHeader);
+        if (!leaseDecision.valid) {
+          throw new Error(`filesystem.writeFile denied: lease validation failed (${leaseDecision.reason}).`);
+        }
+        const scopes = req.leaseHeader.scopes || [];
+        if (!scopes.some((s) => s.includes('write') || s.includes('admin') || s === '*')) {
+          throw new Error('filesystem.writeFile denied: required write scope is missing from execution lease.');
+        }
+        try {
+          const res = await this.filesystemRuntime.writeFile(
+            {
+              path: req.path,
+              content: req.content,
+              encoding: req.encoding,
+              preconditions: req.preconditions,
+              overwrite: req.overwrite,
+            },
+            {
+              lease: req.leaseHeader,
+              allowedRoots: req.allowedRoots || [process.cwd()],
+              limits: req.limits,
+            },
+          );
+          this.telemetryManager.trackTrace('filesystem_write_file_ipc', { path: req.path });
+          return res.result;
+        } catch (err) {
+          const msg = new RedactionFilter().redactString(err instanceof Error ? err.message : String(err));
+          throw new Error(`filesystem.writeFile failed: ${msg}`);
+        }
+      });
+      this.ipcManager.registerMethodHandler('filesystem.copyFile', async (params) => {
+        const { FilesystemCopyFileIPCRequestSchema } = await import(
+          './runtimes/filesystem/schemas.js'
+        );
+        const req = FilesystemCopyFileIPCRequestSchema.parse(params || {});
+        const state = this.lifecycle.getState();
+        if (
+          state === AgentLifecycleState.STOPPING ||
+          state === AgentLifecycleState.STOPPED ||
+          state === AgentLifecycleState.FAILED
+        ) {
+          throw new Error(`filesystem.copyFile denied: agent lifecycle state is '${state}'.`);
+        }
+        if (!new PluginExecutionPolicy().isRuntimeCategoryAuthorized(RuntimeCategory.FILESYSTEM)) {
+          throw new Error('filesystem.copyFile denied: FILESYSTEM category not authorized by policy.');
+        }
+        const leaseDecision = await this.leaseBoundary.validateLease(req.leaseHeader);
+        if (!leaseDecision.valid) {
+          throw new Error(`filesystem.copyFile denied: lease validation failed (${leaseDecision.reason}).`);
+        }
+        try {
+          const res = await this.filesystemRuntime.copyFile(
+            {
+              sourcePath: req.sourcePath,
+              destinationPath: req.destinationPath,
+              preconditions: req.preconditions,
+              overwrite: req.overwrite,
+            },
+            {
+              lease: req.leaseHeader,
+              allowedRoots: req.allowedRoots || [process.cwd()],
+              limits: req.limits,
+            },
+          );
+          this.telemetryManager.trackTrace('filesystem_copy_file_ipc', {
+            source: req.sourcePath,
+            destination: req.destinationPath,
+          });
+          return res.result;
+        } catch (err) {
+          const msg = new RedactionFilter().redactString(err instanceof Error ? err.message : String(err));
+          throw new Error(`filesystem.copyFile failed: ${msg}`);
+        }
+      });
+      this.ipcManager.registerMethodHandler('filesystem.moveFile', async (params) => {
+        const { FilesystemMoveFileIPCRequestSchema } = await import(
+          './runtimes/filesystem/schemas.js'
+        );
+        const req = FilesystemMoveFileIPCRequestSchema.parse(params || {});
+        const state = this.lifecycle.getState();
+        if (
+          state === AgentLifecycleState.STOPPING ||
+          state === AgentLifecycleState.STOPPED ||
+          state === AgentLifecycleState.FAILED
+        ) {
+          throw new Error(`filesystem.moveFile denied: agent lifecycle state is '${state}'.`);
+        }
+        if (!new PluginExecutionPolicy().isRuntimeCategoryAuthorized(RuntimeCategory.FILESYSTEM)) {
+          throw new Error('filesystem.moveFile denied: FILESYSTEM category not authorized by policy.');
+        }
+        const leaseDecision = await this.leaseBoundary.validateLease(req.leaseHeader);
+        if (!leaseDecision.valid) {
+          throw new Error(`filesystem.moveFile denied: lease validation failed (${leaseDecision.reason}).`);
+        }
+        try {
+          const res = await this.filesystemRuntime.moveFile(
+            {
+              sourcePath: req.sourcePath,
+              destinationPath: req.destinationPath,
+              preconditions: req.preconditions,
+              overwrite: req.overwrite,
+            },
+            {
+              lease: req.leaseHeader,
+              allowedRoots: req.allowedRoots || [process.cwd()],
+              limits: req.limits,
+            },
+          );
+          this.telemetryManager.trackTrace('filesystem_move_file_ipc', {
+            source: req.sourcePath,
+            destination: req.destinationPath,
+          });
+          return res.result;
+        } catch (err) {
+          const msg = new RedactionFilter().redactString(err instanceof Error ? err.message : String(err));
+          throw new Error(`filesystem.moveFile failed: ${msg}`);
+        }
+      });
+      this.ipcManager.registerMethodHandler('filesystem.deleteFile', async (params) => {
+        const { FilesystemDeleteFileIPCRequestSchema } = await import(
+          './runtimes/filesystem/schemas.js'
+        );
+        const req = FilesystemDeleteFileIPCRequestSchema.parse(params || {});
+        const state = this.lifecycle.getState();
+        if (
+          state === AgentLifecycleState.STOPPING ||
+          state === AgentLifecycleState.STOPPED ||
+          state === AgentLifecycleState.FAILED
+        ) {
+          throw new Error(`filesystem.deleteFile denied: agent lifecycle state is '${state}'.`);
+        }
+        if (!new PluginExecutionPolicy().isRuntimeCategoryAuthorized(RuntimeCategory.FILESYSTEM)) {
+          throw new Error('filesystem.deleteFile denied: FILESYSTEM category not authorized by policy.');
+        }
+        const leaseDecision = await this.leaseBoundary.validateLease(req.leaseHeader);
+        if (!leaseDecision.valid) {
+          throw new Error(`filesystem.deleteFile denied: lease validation failed (${leaseDecision.reason}).`);
+        }
+        const scopes = req.leaseHeader.scopes || [];
+        if (!scopes.some((s) => s.includes('write') || s.includes('admin') || s === '*')) {
+          throw new Error('filesystem.deleteFile denied: required write scope is missing from execution lease.');
+        }
+        try {
+          const res = await this.filesystemRuntime.deleteFile(
+            {
+              path: req.path,
+              preconditions: req.preconditions,
+              permanent: req.permanent,
+            },
+            {
+              lease: req.leaseHeader,
+              allowedRoots: req.allowedRoots || [process.cwd()],
+            },
+          );
+          this.telemetryManager.trackTrace('filesystem_delete_file_ipc', { path: req.path });
+          return res.result;
+        } catch (err) {
+          const msg = new RedactionFilter().redactString(err instanceof Error ? err.message : String(err));
+          throw new Error(`filesystem.deleteFile failed: ${msg}`);
+        }
+      });
     }
 
     if (typeof this.controlPlaneClient.registerCommandHandler === 'function') {
