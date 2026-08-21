@@ -496,6 +496,27 @@ export class DesktopAgent {
       isDangerous: true,
       requiredScope: 'filesystem:write',
     });
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'terminal.executeCommand',
+      category: 'runtime',
+      description: 'Execute an approved tool command within a supervised child process',
+      isDangerous: true,
+      requiredScope: 'terminal:write',
+    });
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'terminal.killProcess',
+      category: 'runtime',
+      description: 'Kill an active managed child process',
+      isDangerous: true,
+      requiredScope: 'terminal:write',
+    });
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'terminal.listProcesses',
+      category: 'runtime',
+      description: 'List all managed active child processes',
+      isDangerous: false,
+      requiredScope: 'terminal:read',
+    });
 
     this.modelRuntimeManager = new ModelRuntimeManager(this.leaseBoundary, '.nexus-local-ai');
     const redactionFilter = new RedactionFilter(new SecretRedactionRegistry());
