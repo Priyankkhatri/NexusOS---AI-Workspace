@@ -44,6 +44,10 @@ export class TerminalRuntime {
     });
   }
 
+  public shutdown(): void {
+    this.processSupervisor.killAll();
+  }
+
   /**
    * Executes an approved tool command within a supervised child process after lease, policy,
    * command allowlist, and working-directory validation.

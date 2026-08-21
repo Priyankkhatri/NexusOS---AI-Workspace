@@ -208,6 +208,17 @@ export class ProcessSupervisor {
   }
 
   /**
+   * Kills all active managed child processes on shutdown.
+   */
+  public killAll(): void {
+    for (const [token, entry] of Array.from(this.activeProcesses.entries())) {
+      entry.info.status = 'KILLED';
+      this.terminateChild(entry.child);
+      this.activeProcesses.delete(token);
+    }
+  }
+
+  /**
    * Safely terminates child process tree.
    */
   private terminateChild(child: ChildProcess): void {

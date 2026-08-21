@@ -1686,6 +1686,7 @@ export class DesktopAgent {
     this.clipboardRuntime.shutdown();
     this.deviceRuntime.shutdown();
     this.filesystemRuntime.shutdown();
+    this.terminalRuntime.shutdown();
     this.ideAdapter.reset();
 
     this.trayController.shutdown();
