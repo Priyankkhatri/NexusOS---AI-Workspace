@@ -330,9 +330,9 @@ describe('Task 044 — Adversarial Security Regression Test Suite (044-SEC-01 to
   it('044-SEC-09: Rejects request with expired or invalid ExecutionLeaseHeader', async () => {
     const expiredLease: ExecutionLeaseHeader = {
       lease_id: crypto.randomUUID(),
-      task_id: 'sec_09',
+      task_id: crypto.randomUUID(),
       agent_id: 'test-agent-sec-id',
-      tenant_id: 'tenant_sec_09',
+      tenant_id: crypto.randomUUID(),
       issued_at: new Date(Date.now() - 120000).toISOString(),
       expires_at: new Date(Date.now() - 60000).toISOString(), // Expired 1 min ago
       scopes: ['browser:write'],
@@ -340,22 +340,20 @@ describe('Task 044 — Adversarial Security Regression Test Suite (044-SEC-01 to
       signature: 'valid-test-signature',
     };
 
-    const sessionRes = (await callIPCHandler('browser.createSession', {
-      taskId: 'sec_09',
-      workspaceId: 'ws_sec_09',
-      storageDir: tmpDir,
-      leaseHeader: expiredLease,
-    })) as { sessionId: string };
-
-    const navRes = (await callIPCHandler('browser.navigate', {
-      sessionId: sessionRes.sessionId,
-      url: 'https://example.com',
-      allowedDomains: ['example.com'],
-      leaseHeader: expiredLease,
-    })) as { success: boolean; error?: { code: string } };
-
-    assert.strictEqual(navRes.success, false);
-    assert.strictEqual(navRes.error?.code, 'LEASE_OR_POLICY_INVALID');
+    await assert.rejects(
+      async () => {
+        await callIPCHandler('browser.createSession', {
+          taskId: 'sec_09',
+          workspaceId: 'ws_sec_09',
+          storageDir: tmpDir,
+          leaseHeader: expiredLease,
+        });
+      },
+      (err: Error) => {
+        assert.ok(err.message.includes('lease validation failed'));
+        return true;
+      },
+    );
   });
 
   it('044-SEC-10: Fails closed when browser IPC submitted during STOPPING state', async () => {
@@ -376,6 +374,8 @@ describe('Task 044 — Adversarial Security Regression Test Suite (044-SEC-01 to
         return true;
       },
     );
+
+    agent.lifecycle['currentState'] = 'READY' as any;
   });
 
   it('044-SEC-11: Rejects navigation request using a cleared / stale session ID', async () => {
