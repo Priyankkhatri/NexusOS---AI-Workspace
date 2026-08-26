@@ -21,6 +21,7 @@ import {
 } from './runtimes/filesystem/index.js';
 import { TerminalRuntime, ProcessSupervisor } from './runtimes/terminal/index.js';
 import { BrowserRuntime } from './runtimes/browser/index.js';
+import { PluginRuntime } from './runtimes/plugin/index.js';
 import { AgentOrchestrator } from './orchestrator/agent-orchestrator.js';
 import { RuntimeRouter } from './orchestrator/runtime-router.js';
 import { TaskExecutionRequest } from './orchestrator/types.js';
@@ -60,6 +61,7 @@ export class DesktopAgent {
   public readonly filesystemRuntime: FilesystemRuntime;
   public readonly terminalRuntime: TerminalRuntime;
   public readonly browserRuntime: BrowserRuntime;
+  public readonly pluginRuntime: PluginRuntime;
   public readonly orchestrator: AgentOrchestrator;
   public readonly taskScheduler: TaskScheduler;
   public readonly workflowEngine: WorkflowEngine;
@@ -110,6 +112,7 @@ export class DesktopAgent {
     customFilesystemRuntime?: FilesystemRuntime,
     customTerminalRuntime?: TerminalRuntime,
     customBrowserRuntime?: BrowserRuntime,
+    customPluginRuntime?: PluginRuntime,
   ) {
     this.lifecycle = new AgentLifecycleManager();
     this.capabilityRegistry = new CapabilityRegistry();
@@ -587,6 +590,63 @@ export class DesktopAgent {
       isDangerous: false,
       requiredScope: 'browser:read',
     });
+    /** Task 045: Plugin Runtime & Host Manager Adapter */
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'plugin.verify',
+      category: 'runtime',
+      description: 'Verify plugin package signature, manifest schema, and trust level',
+      isDangerous: false,
+      requiredScope: 'plugin:verify',
+    });
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'plugin.install',
+      category: 'runtime',
+      description: 'Verify and install plugin package into the catalog',
+      isDangerous: true,
+      requiredScope: 'plugin:install',
+    });
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'plugin.activate',
+      category: 'runtime',
+      description: 'Activate installed plugin package for invocation',
+      isDangerous: true,
+      requiredScope: 'plugin:activate',
+    });
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'plugin.invoke',
+      category: 'runtime',
+      description: 'Invoke manifest-approved plugin capability within sandboxed host',
+      isDangerous: true,
+      requiredScope: 'plugin:invoke',
+    });
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'plugin.suspend',
+      category: 'runtime',
+      description: 'Suspend an active plugin',
+      isDangerous: true,
+      requiredScope: 'plugin:suspend',
+    });
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'plugin.quarantine',
+      category: 'runtime',
+      description: 'Quarantine a failing or suspicious plugin package',
+      isDangerous: true,
+      requiredScope: 'plugin:quarantine',
+    });
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'plugin.listEntries',
+      category: 'runtime',
+      description: 'List installed plugin catalog entries',
+      isDangerous: false,
+      requiredScope: 'plugin:read',
+    });
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'plugin.listQuarantined',
+      category: 'runtime',
+      description: 'List active quarantined plugin records',
+      isDangerous: false,
+      requiredScope: 'plugin:read',
+    });
 
     this.modelRuntimeManager = new ModelRuntimeManager(this.leaseBoundary, '.nexus-local-ai');
     const redactionFilter = new RedactionFilter(new SecretRedactionRegistry());
@@ -752,6 +812,20 @@ export class DesktopAgent {
       new BrowserRuntime(this.leaseBoundary, undefined, undefined, undefined, this.logger);
 
     this.runtimeRegistry.registerRuntime(this.browserRuntime.getDescriptor());
+
+    /** Task 045: Plugin Runtime & Host Manager Adapter */
+    this.pluginRuntime =
+      customPluginRuntime ||
+      new PluginRuntime(
+        this.leaseBoundary,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        this.logger,
+      );
+
+    this.runtimeRegistry.registerRuntime(this.pluginRuntime.getDescriptor());
 
     if (this.ipcManager) {
       this.ipcManager.registerMethodHandler('device.execute', async (params) => {
@@ -2190,6 +2264,430 @@ export class DesktopAgent {
           throw new Error(`browser.listSessions failed: ${msg}`);
         }
       });
+
+      /** Task 045: Plugin Runtime IPC Handlers */
+
+      // -----------------------------------------------------------------------
+      // plugin.verify
+      // -----------------------------------------------------------------------
+      this.ipcManager.registerMethodHandler('plugin.verify', async (params) => {
+        const { PluginVerifyPackageIPCRequestSchema } = await import(
+          './runtimes/plugin/schemas.js'
+        );
+        const req = PluginVerifyPackageIPCRequestSchema.parse(params || {});
+        const state = this.lifecycle.getState();
+        if (
+          state === AgentLifecycleState.STOPPING ||
+          state === AgentLifecycleState.STOPPED ||
+          state === AgentLifecycleState.FAILED
+        ) {
+          throw new Error(`plugin.verify denied: agent lifecycle state is '${state}'.`);
+        }
+        if (!new PluginExecutionPolicy().isRuntimeCategoryAuthorized(RuntimeCategory.PLUGIN)) {
+          throw new Error('plugin.verify denied: PLUGIN category not authorized by policy.');
+        }
+        const leaseDecision = await this.leaseBoundary.validateLease(req.leaseHeader);
+        if (!leaseDecision.valid) {
+          throw new Error(
+            `plugin.verify denied: lease validation failed (${leaseDecision.reason}).`,
+          );
+        }
+        try {
+          const { result, event } = await this.pluginRuntime.verifyPluginPackage(req.pkg, {
+            lease: req.leaseHeader,
+            allowedRoots: req.allowedRoots || [process.cwd()],
+            limits: req.limits,
+          });
+          this.telemetryManager.trackTrace('plugin_verify_ipc', {
+            pluginId: req.pkg?.manifest?.pluginId,
+          });
+          void event;
+          return new RedactionFilter().redactObject(result as unknown as Record<string, unknown>);
+        } catch (err) {
+          const msg = new RedactionFilter().redactString(
+            err instanceof Error ? err.message : String(err),
+          );
+          throw new Error(`plugin.verify failed: ${msg}`);
+        }
+      });
+
+      // -----------------------------------------------------------------------
+      // plugin.install
+      // -----------------------------------------------------------------------
+      this.ipcManager.registerMethodHandler('plugin.install', async (params) => {
+        const { PluginInstallIPCRequestSchema } = await import('./runtimes/plugin/schemas.js');
+        const req = PluginInstallIPCRequestSchema.parse(params || {});
+        const state = this.lifecycle.getState();
+        if (
+          state === AgentLifecycleState.STOPPING ||
+          state === AgentLifecycleState.STOPPED ||
+          state === AgentLifecycleState.FAILED
+        ) {
+          throw new Error(`plugin.install denied: agent lifecycle state is '${state}'.`);
+        }
+        if (!new PluginExecutionPolicy().isRuntimeCategoryAuthorized(RuntimeCategory.PLUGIN)) {
+          throw new Error('plugin.install denied: PLUGIN category not authorized by policy.');
+        }
+        const leaseDecision = await this.leaseBoundary.validateLease(req.leaseHeader);
+        if (!leaseDecision.valid) {
+          throw new Error(
+            `plugin.install denied: lease validation failed (${leaseDecision.reason}).`,
+          );
+        }
+        const scopes = req.leaseHeader.scopes || [];
+        if (
+          !scopes.some(
+            (s) =>
+              s.includes('write') ||
+              s.includes('admin') ||
+              s.includes('plugin:install') ||
+              s === '*',
+          )
+        ) {
+          throw new Error(
+            'plugin.install denied: required plugin:install or write scope is missing from execution lease.',
+          );
+        }
+        try {
+          const { result, event } = await this.pluginRuntime.installPlugin(req.pkg, {
+            lease: req.leaseHeader,
+            allowedRoots: req.allowedRoots || [process.cwd()],
+            limits: req.limits,
+          });
+          this.telemetryManager.trackTrace('plugin_install_ipc', {
+            pluginId: req.pkg?.manifest?.pluginId,
+          });
+          void event;
+          return new RedactionFilter().redactObject(result as unknown as Record<string, unknown>);
+        } catch (err) {
+          const msg = new RedactionFilter().redactString(
+            err instanceof Error ? err.message : String(err),
+          );
+          throw new Error(`plugin.install failed: ${msg}`);
+        }
+      });
+
+      // -----------------------------------------------------------------------
+      // plugin.activate
+      // -----------------------------------------------------------------------
+      this.ipcManager.registerMethodHandler('plugin.activate', async (params) => {
+        const { PluginActivateIPCRequestSchema } = await import('./runtimes/plugin/schemas.js');
+        const req = PluginActivateIPCRequestSchema.parse(params || {});
+        const state = this.lifecycle.getState();
+        if (
+          state === AgentLifecycleState.STOPPING ||
+          state === AgentLifecycleState.STOPPED ||
+          state === AgentLifecycleState.FAILED
+        ) {
+          throw new Error(`plugin.activate denied: agent lifecycle state is '${state}'.`);
+        }
+        if (!new PluginExecutionPolicy().isRuntimeCategoryAuthorized(RuntimeCategory.PLUGIN)) {
+          throw new Error('plugin.activate denied: PLUGIN category not authorized by policy.');
+        }
+        const leaseDecision = await this.leaseBoundary.validateLease(req.leaseHeader);
+        if (!leaseDecision.valid) {
+          throw new Error(
+            `plugin.activate denied: lease validation failed (${leaseDecision.reason}).`,
+          );
+        }
+        const scopes = req.leaseHeader.scopes || [];
+        if (
+          !scopes.some(
+            (s) =>
+              s.includes('write') ||
+              s.includes('admin') ||
+              s.includes('plugin:activate') ||
+              s === '*',
+          )
+        ) {
+          throw new Error(
+            'plugin.activate denied: required plugin:activate or write scope is missing from execution lease.',
+          );
+        }
+        try {
+          const { result, event } = await this.pluginRuntime.activatePlugin(req.pluginId, {
+            lease: req.leaseHeader,
+            allowedRoots: req.allowedRoots || [process.cwd()],
+            limits: req.limits,
+          });
+          this.telemetryManager.trackTrace('plugin_activate_ipc', {
+            pluginId: req.pluginId,
+          });
+          void event;
+          return new RedactionFilter().redactObject(result as unknown as Record<string, unknown>);
+        } catch (err) {
+          const msg = new RedactionFilter().redactString(
+            err instanceof Error ? err.message : String(err),
+          );
+          throw new Error(`plugin.activate failed: ${msg}`);
+        }
+      });
+
+      // -----------------------------------------------------------------------
+      // plugin.invoke
+      // -----------------------------------------------------------------------
+      this.ipcManager.registerMethodHandler('plugin.invoke', async (params) => {
+        const { PluginInvokeIPCRequestSchema } = await import('./runtimes/plugin/schemas.js');
+        const req = PluginInvokeIPCRequestSchema.parse(params || {});
+        const state = this.lifecycle.getState();
+        if (
+          state === AgentLifecycleState.STOPPING ||
+          state === AgentLifecycleState.STOPPED ||
+          state === AgentLifecycleState.FAILED
+        ) {
+          throw new Error(`plugin.invoke denied: agent lifecycle state is '${state}'.`);
+        }
+        if (!new PluginExecutionPolicy().isRuntimeCategoryAuthorized(RuntimeCategory.PLUGIN)) {
+          throw new Error('plugin.invoke denied: PLUGIN category not authorized by policy.');
+        }
+        const leaseDecision = await this.leaseBoundary.validateLease(req.leaseHeader);
+        if (!leaseDecision.valid) {
+          throw new Error(
+            `plugin.invoke denied: lease validation failed (${leaseDecision.reason}).`,
+          );
+        }
+        const scopes = req.leaseHeader.scopes || [];
+        if (
+          !scopes.some(
+            (s) =>
+              s.includes('write') ||
+              s.includes('admin') ||
+              s.includes('plugin:invoke') ||
+              s.includes(`plugin:${req.capability}`) ||
+              s === '*',
+          )
+        ) {
+          throw new Error(
+            'plugin.invoke denied: required plugin:invoke or capability scope is missing from execution lease.',
+          );
+        }
+        try {
+          const { result, event } = await this.pluginRuntime.invokePlugin(
+            {
+              pluginId: req.pluginId,
+              capability: req.capability,
+              action: req.action,
+              payload: req.payload,
+            },
+            {
+              lease: req.leaseHeader,
+              allowedRoots: req.allowedRoots || [process.cwd()],
+              limits: req.limits,
+            },
+          );
+          this.telemetryManager.trackTrace('plugin_invoke_ipc', {
+            pluginId: req.pluginId,
+            capability: req.capability,
+            action: req.action,
+          });
+          void event;
+          return new RedactionFilter().redactObject(result as unknown as Record<string, unknown>);
+        } catch (err) {
+          const msg = new RedactionFilter().redactString(
+            err instanceof Error ? err.message : String(err),
+          );
+          throw new Error(`plugin.invoke failed: ${msg}`);
+        }
+      });
+
+      // -----------------------------------------------------------------------
+      // plugin.suspend
+      // -----------------------------------------------------------------------
+      this.ipcManager.registerMethodHandler('plugin.suspend', async (params) => {
+        const { PluginSuspendIPCRequestSchema } = await import('./runtimes/plugin/schemas.js');
+        const req = PluginSuspendIPCRequestSchema.parse(params || {});
+        const state = this.lifecycle.getState();
+        if (
+          state === AgentLifecycleState.STOPPING ||
+          state === AgentLifecycleState.STOPPED ||
+          state === AgentLifecycleState.FAILED
+        ) {
+          throw new Error(`plugin.suspend denied: agent lifecycle state is '${state}'.`);
+        }
+        if (!new PluginExecutionPolicy().isRuntimeCategoryAuthorized(RuntimeCategory.PLUGIN)) {
+          throw new Error('plugin.suspend denied: PLUGIN category not authorized by policy.');
+        }
+        const leaseDecision = await this.leaseBoundary.validateLease(req.leaseHeader);
+        if (!leaseDecision.valid) {
+          throw new Error(
+            `plugin.suspend denied: lease validation failed (${leaseDecision.reason}).`,
+          );
+        }
+        const scopes = req.leaseHeader.scopes || [];
+        if (
+          !scopes.some(
+            (s) =>
+              s.includes('write') ||
+              s.includes('admin') ||
+              s.includes('plugin:suspend') ||
+              s === '*',
+          )
+        ) {
+          throw new Error(
+            'plugin.suspend denied: required plugin:suspend or write scope is missing from execution lease.',
+          );
+        }
+        try {
+          const { result, event } = await this.pluginRuntime.suspendPlugin(req.pluginId, {
+            lease: req.leaseHeader,
+            allowedRoots: req.allowedRoots || [process.cwd()],
+            limits: req.limits,
+          });
+          this.telemetryManager.trackTrace('plugin_suspend_ipc', {
+            pluginId: req.pluginId,
+          });
+          void event;
+          return new RedactionFilter().redactObject(result as unknown as Record<string, unknown>);
+        } catch (err) {
+          const msg = new RedactionFilter().redactString(
+            err instanceof Error ? err.message : String(err),
+          );
+          throw new Error(`plugin.suspend failed: ${msg}`);
+        }
+      });
+
+      // -----------------------------------------------------------------------
+      // plugin.quarantine
+      // -----------------------------------------------------------------------
+      this.ipcManager.registerMethodHandler('plugin.quarantine', async (params) => {
+        const { PluginQuarantineIPCRequestSchema } = await import('./runtimes/plugin/schemas.js');
+        const req = PluginQuarantineIPCRequestSchema.parse(params || {});
+        const state = this.lifecycle.getState();
+        if (
+          state === AgentLifecycleState.STOPPING ||
+          state === AgentLifecycleState.STOPPED ||
+          state === AgentLifecycleState.FAILED
+        ) {
+          throw new Error(`plugin.quarantine denied: agent lifecycle state is '${state}'.`);
+        }
+        if (!new PluginExecutionPolicy().isRuntimeCategoryAuthorized(RuntimeCategory.PLUGIN)) {
+          throw new Error('plugin.quarantine denied: PLUGIN category not authorized by policy.');
+        }
+        const leaseDecision = await this.leaseBoundary.validateLease(req.leaseHeader);
+        if (!leaseDecision.valid) {
+          throw new Error(
+            `plugin.quarantine denied: lease validation failed (${leaseDecision.reason}).`,
+          );
+        }
+        const scopes = req.leaseHeader.scopes || [];
+        if (
+          !scopes.some(
+            (s) =>
+              s.includes('write') ||
+              s.includes('admin') ||
+              s.includes('plugin:quarantine') ||
+              s === '*',
+          )
+        ) {
+          throw new Error(
+            'plugin.quarantine denied: required plugin:quarantine or write scope is missing from execution lease.',
+          );
+        }
+        try {
+          const { result, event } = await this.pluginRuntime.quarantinePlugin(
+            req.pluginId,
+            req.reason,
+            {
+              lease: req.leaseHeader,
+              allowedRoots: req.allowedRoots || [process.cwd()],
+              limits: req.limits,
+            },
+          );
+          this.telemetryManager.trackTrace('plugin_quarantine_ipc', {
+            pluginId: req.pluginId,
+            reason: req.reason,
+          });
+          void event;
+          return new RedactionFilter().redactObject(result as unknown as Record<string, unknown>);
+        } catch (err) {
+          const msg = new RedactionFilter().redactString(
+            err instanceof Error ? err.message : String(err),
+          );
+          throw new Error(`plugin.quarantine failed: ${msg}`);
+        }
+      });
+
+      // -----------------------------------------------------------------------
+      // plugin.listEntries
+      // -----------------------------------------------------------------------
+      this.ipcManager.registerMethodHandler('plugin.listEntries', async (params) => {
+        const { PluginListEntriesIPCRequestSchema } = await import('./runtimes/plugin/schemas.js');
+        const req = PluginListEntriesIPCRequestSchema.parse(params || {});
+        const state = this.lifecycle.getState();
+        if (
+          state === AgentLifecycleState.STOPPING ||
+          state === AgentLifecycleState.STOPPED ||
+          state === AgentLifecycleState.FAILED
+        ) {
+          throw new Error(`plugin.listEntries denied: agent lifecycle state is '${state}'.`);
+        }
+        if (!new PluginExecutionPolicy().isRuntimeCategoryAuthorized(RuntimeCategory.PLUGIN)) {
+          throw new Error('plugin.listEntries denied: PLUGIN category not authorized by policy.');
+        }
+        const leaseDecision = await this.leaseBoundary.validateLease(req.leaseHeader);
+        if (!leaseDecision.valid) {
+          throw new Error(
+            `plugin.listEntries denied: lease validation failed (${leaseDecision.reason}).`,
+          );
+        }
+        try {
+          const entries = this.pluginRuntime.catalog.listEntries();
+          this.telemetryManager.trackTrace('plugin_list_entries_ipc', {
+            count: entries.length,
+          });
+          return new RedactionFilter().redactObject({
+            entries,
+          } as unknown as Record<string, unknown>);
+        } catch (err) {
+          const msg = new RedactionFilter().redactString(
+            err instanceof Error ? err.message : String(err),
+          );
+          throw new Error(`plugin.listEntries failed: ${msg}`);
+        }
+      });
+
+      // -----------------------------------------------------------------------
+      // plugin.listQuarantined
+      // -----------------------------------------------------------------------
+      this.ipcManager.registerMethodHandler('plugin.listQuarantined', async (params) => {
+        const { PluginListQuarantinedIPCRequestSchema } = await import(
+          './runtimes/plugin/schemas.js'
+        );
+        const req = PluginListQuarantinedIPCRequestSchema.parse(params || {});
+        const state = this.lifecycle.getState();
+        if (
+          state === AgentLifecycleState.STOPPING ||
+          state === AgentLifecycleState.STOPPED ||
+          state === AgentLifecycleState.FAILED
+        ) {
+          throw new Error(`plugin.listQuarantined denied: agent lifecycle state is '${state}'.`);
+        }
+        if (!new PluginExecutionPolicy().isRuntimeCategoryAuthorized(RuntimeCategory.PLUGIN)) {
+          throw new Error(
+            'plugin.listQuarantined denied: PLUGIN category not authorized by policy.',
+          );
+        }
+        const leaseDecision = await this.leaseBoundary.validateLease(req.leaseHeader);
+        if (!leaseDecision.valid) {
+          throw new Error(
+            `plugin.listQuarantined denied: lease validation failed (${leaseDecision.reason}).`,
+          );
+        }
+        try {
+          const quarantined = this.pluginRuntime.quarantineStore.listQuarantined();
+          this.telemetryManager.trackTrace('plugin_list_quarantined_ipc', {
+            count: quarantined.length,
+          });
+          return new RedactionFilter().redactObject({
+            quarantined,
+          } as unknown as Record<string, unknown>);
+        } catch (err) {
+          const msg = new RedactionFilter().redactString(
+            err instanceof Error ? err.message : String(err),
+          );
+          throw new Error(`plugin.listQuarantined failed: ${msg}`);
+        }
+      });
     }
 
     if (typeof this.controlPlaneClient.registerCommandHandler === 'function') {
@@ -2279,6 +2777,7 @@ export class DesktopAgent {
     this.filesystemRuntime.shutdown();
     this.terminalRuntime.shutdown();
     this.browserRuntime.shutdown();
+    this.pluginRuntime.shutdown();
     this.ideAdapter.reset();
 
     this.trayController.shutdown();
