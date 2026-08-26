@@ -5,3 +5,4 @@ export * from './catalog.js';
 export * from './quarantine-store.js';
 export * from './policy-gateway.js';
 export * from './runtime.js';
+export * from './schemas.js';
