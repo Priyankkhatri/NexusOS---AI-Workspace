@@ -268,6 +268,15 @@ export class PluginRuntime {
   }
 
   /**
+   * Shuts down the plugin runtime by resetting active host allocations
+   * and releasing any runtime execution resources. Safe to call multiple times.
+   */
+  public shutdown(): void {
+    this.activeHostsCount = 0;
+    this.logger?.info('PluginRuntime shutdown: all active plugin host allocations reset.', {});
+  }
+
+  /**
    * Centralized protected operation boundary.
    */
   private async executeProtectedOperation<T>(
