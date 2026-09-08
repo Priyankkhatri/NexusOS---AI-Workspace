@@ -11,8 +11,8 @@ import {
  * RuntimeCategory.TERMINAL, RuntimeCategory.FILESYSTEM, RuntimeCategory.CLIPBOARD,
  * RuntimeCategory.DEVICE, RuntimeCategory.VAULT, RuntimeCategory.UPDATER,
  * RuntimeCategory.HEALTH, RuntimeCategory.CONFIG, RuntimeCategory.STATE,
- * RuntimeCategory.TELEMETRY, and RuntimeCategory.NOTIFICATION descriptors as executable.
- * Keeps remaining runtime categories (CAMERA, MICROPHONE, LOCAL_AI) strictly fail-closed.
+ * RuntimeCategory.TELEMETRY, RuntimeCategory.NOTIFICATION, and RuntimeCategory.LOCAL_AI descriptors as executable.
+ * Keeps remaining runtime categories (CAMERA, MICROPHONE) strictly fail-closed.
  */
 export class PluginExecutionPolicy implements RuntimeExecutionPolicy {
   public isRuntimeCategoryAuthorized(category: RuntimeCategory): boolean {
@@ -30,7 +30,9 @@ export class PluginExecutionPolicy implements RuntimeExecutionPolicy {
       category === RuntimeCategory.CONFIG ||
       category === RuntimeCategory.STATE ||
       category === RuntimeCategory.TELEMETRY ||
-      category === RuntimeCategory.NOTIFICATION
+      category === RuntimeCategory.NOTIFICATION ||
+      /** Task 046: Local AI Runtime & Hardware Acceleration Adapter */
+      category === RuntimeCategory.LOCAL_AI
     );
   }
 

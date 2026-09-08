@@ -28,7 +28,14 @@ import { TaskExecutionRequest } from './orchestrator/types.js';
 import { TaskScheduler } from './scheduler/task-scheduler.js';
 import { WorkflowEngine } from './workflow/workflow-engine.js';
 import { WorkflowDAG } from './workflow/types.js';
-import { ModelRuntimeManager } from './runtimes/local-ai/model-runtime-manager.js';
+import {
+  LocalAiRuntime,
+  ModelRuntimeManager,
+  LocalAiGenerateIPCRequestSchema,
+  LocalAiListModelsIPCRequestSchema,
+  LocalAiGetHardwareProfileIPCRequestSchema,
+  LocalAiUnloadModelIPCRequestSchema,
+} from './runtimes/local-ai/index.js';
 import { ClipboardRuntimeManager } from './runtimes/clipboard/clipboard-runtime.js';
 import { IDEIntegrationAdapter } from './adapters/ide/ide-adapter.js';
 import { TrayUIController } from './ui/tray-controller.js';
@@ -62,6 +69,7 @@ export class DesktopAgent {
   public readonly terminalRuntime: TerminalRuntime;
   public readonly browserRuntime: BrowserRuntime;
   public readonly pluginRuntime: PluginRuntime;
+  public readonly localAiRuntime: LocalAiRuntime;
   public readonly orchestrator: AgentOrchestrator;
   public readonly taskScheduler: TaskScheduler;
   public readonly workflowEngine: WorkflowEngine;
@@ -113,6 +121,7 @@ export class DesktopAgent {
     customTerminalRuntime?: TerminalRuntime,
     customBrowserRuntime?: BrowserRuntime,
     customPluginRuntime?: PluginRuntime,
+    customLocalAiRuntime?: LocalAiRuntime,
   ) {
     this.lifecycle = new AgentLifecycleManager();
     this.capabilityRegistry = new CapabilityRegistry();
@@ -648,6 +657,38 @@ export class DesktopAgent {
       requiredScope: 'plugin:read',
     });
 
+    /** Task 046: Local AI Capability Descriptors */
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'localAi.generate',
+      category: 'runtime',
+      description:
+        'Execute local model inference with token streaming and hardware admission control',
+      isDangerous: true,
+      requiredScope: 'ai:inference',
+    });
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'localAi.listModels',
+      category: 'runtime',
+      description: 'List cached and installed local AI model artifacts in model catalog',
+      isDangerous: false,
+      requiredScope: 'ai:read',
+    });
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'localAi.getHardwareProfile',
+      category: 'runtime',
+      description: 'Retrieve host hardware profile, GPU acceleration posture, and memory budgets',
+      isDangerous: false,
+      requiredScope: 'ai:read',
+    });
+    this.capabilityRegistry.registerCapability({
+      capabilityId: 'localAi.unloadModel',
+      category: 'runtime',
+      description:
+        'Unload an active local model from memory and release reserved accelerator resources',
+      isDangerous: true,
+      requiredScope: 'ai:write',
+    });
+
     this.modelRuntimeManager = new ModelRuntimeManager(this.leaseBoundary, '.nexus-local-ai');
     const redactionFilter = new RedactionFilter(new SecretRedactionRegistry());
     this.clipboardRuntime =
@@ -827,6 +868,18 @@ export class DesktopAgent {
 
     this.runtimeRegistry.registerRuntime(this.pluginRuntime.getDescriptor());
 
+    /** Task 046: Local AI Runtime & Hardware Acceleration Adapter */
+    this.localAiRuntime =
+      customLocalAiRuntime ||
+      new LocalAiRuntime(
+        this.leaseBoundary,
+        this.modelRuntimeManager,
+        '.nexus-local-ai',
+        this.logger,
+      );
+
+    this.runtimeRegistry.registerRuntime(this.localAiRuntime.getDescriptor());
+
     if (this.ipcManager) {
       this.ipcManager.registerMethodHandler('device.execute', async (params) => {
         const { DeviceExecuteIPCRequestSchema } = await import('./runtimes/device/schemas.js');
@@ -883,20 +936,6 @@ export class DesktopAgent {
         const { workflowId, tenantId } = params as { workflowId: string; tenantId?: string };
         return this.workflowEngine.getWorkflowStatus(workflowId, tenantId);
       });
-      this.ipcManager.registerMethodHandler('localAi.listModels', async () => {
-        return this.modelRuntimeManager['modelCacheManager'].listCatalog();
-      });
-      this.ipcManager.registerMethodHandler('localAi.getHardwareProfile', async () => {
-        return this.modelRuntimeManager['hardwareDetector'].getProfile();
-      });
-      this.ipcManager.registerMethodHandler('localAi.generate', async (params) => {
-        const req = params as unknown as import('./runtimes/local-ai/types.js').InferenceRequest;
-        const chunks = [];
-        for await (const chunk of this.modelRuntimeManager.executeInference(req)) {
-          chunks.push(chunk);
-        }
-        return { chunks };
-      });
       this.ipcManager.registerMethodHandler('clipboard.read', async (params) => {
         return this.clipboardRuntime.readClipboard(
           params as unknown as import('./runtimes/clipboard/types.js').ClipboardReadRequest,
@@ -924,11 +963,6 @@ export class DesktopAgent {
       this.ipcManager.registerMethodHandler('ide.getDiagnostics', async (params) => {
         const { filePath } = (params || {}) as { filePath?: string };
         return this.ideAdapter.getDiagnostics(filePath);
-      });
-      this.ipcManager.registerMethodHandler('localAi.unloadModel', async (params) => {
-        const { modelId } = params as { modelId: string };
-        await this.modelRuntimeManager.unloadModel(modelId);
-        return { success: true, modelId };
       });
       this.ipcManager.registerMethodHandler('tray.getStatus', async () => {
         return this.trayController.getStatus();
@@ -2688,6 +2722,212 @@ export class DesktopAgent {
           throw new Error(`plugin.listQuarantined failed: ${msg}`);
         }
       });
+
+      /** Task 046: Local AI Runtime IPC Handlers */
+      this.ipcManager.registerMethodHandler('localAi.generate', async (params) => {
+        const req = LocalAiGenerateIPCRequestSchema.parse(params || {});
+        const state = this.lifecycle.getState();
+        if (
+          state === AgentLifecycleState.STOPPING ||
+          state === AgentLifecycleState.STOPPED ||
+          state === AgentLifecycleState.FAILED
+        ) {
+          throw new Error(`localAi.generate denied: agent lifecycle state is '${state}'.`);
+        }
+        if (!new PluginExecutionPolicy().isRuntimeCategoryAuthorized(RuntimeCategory.LOCAL_AI)) {
+          throw new Error('localAi.generate denied: LOCAL_AI category not authorized by policy.');
+        }
+        if (req.tenantId !== req.leaseHeader.tenant_id) {
+          throw new Error(
+            `localAi.generate denied: tenant_id mismatch. Payload tenantId '${req.tenantId}' does not match lease tenant_id '${req.leaseHeader.tenant_id}'.`,
+          );
+        }
+        const leaseDecision = await this.leaseBoundary.validateLease(req.leaseHeader);
+        if (!leaseDecision.valid) {
+          throw new Error(
+            `localAi.generate denied: lease validation failed (${leaseDecision.reason}).`,
+          );
+        }
+        const leaseScopes = Array.isArray(leaseDecision.lease?.scopes)
+          ? leaseDecision.lease.scopes
+          : [];
+        const hasScope =
+          leaseScopes.includes('*') ||
+          leaseScopes.includes('admin') ||
+          leaseScopes.includes('ai:write') ||
+          leaseScopes.includes('ai:inference');
+        if (!hasScope) {
+          throw new Error(
+            `localAi.generate denied: missing required 'ai:inference' or 'ai:write' scope (granted: ${JSON.stringify(leaseScopes)}).`,
+          );
+        }
+        try {
+          const chunks = [];
+          for await (const chunk of this.localAiRuntime.executeInference(req)) {
+            chunks.push(chunk);
+          }
+          this.telemetryManager.trackTrace('local_ai_generate_ipc', {
+            modelId: req.modelId,
+            provider: req.provider,
+            chunkCount: chunks.length,
+          });
+          return new RedactionFilter().redactObject({ chunks });
+        } catch (err) {
+          const msg = new RedactionFilter().redactString(
+            err instanceof Error ? err.message : String(err),
+          );
+          throw new Error(`localAi.generate failed: ${msg}`);
+        }
+      });
+
+      this.ipcManager.registerMethodHandler('localAi.listModels', async (params) => {
+        const req = LocalAiListModelsIPCRequestSchema.parse(params || {});
+        const state = this.lifecycle.getState();
+        if (
+          state === AgentLifecycleState.STOPPING ||
+          state === AgentLifecycleState.STOPPED ||
+          state === AgentLifecycleState.FAILED
+        ) {
+          throw new Error(`localAi.listModels denied: agent lifecycle state is '${state}'.`);
+        }
+        if (!new PluginExecutionPolicy().isRuntimeCategoryAuthorized(RuntimeCategory.LOCAL_AI)) {
+          throw new Error('localAi.listModels denied: LOCAL_AI category not authorized by policy.');
+        }
+        const leaseDecision = await this.leaseBoundary.validateLease(req.leaseHeader);
+        if (!leaseDecision.valid) {
+          throw new Error(
+            `localAi.listModels denied: lease validation failed (${leaseDecision.reason}).`,
+          );
+        }
+        const leaseScopes = Array.isArray(leaseDecision.lease?.scopes)
+          ? leaseDecision.lease.scopes
+          : [];
+        const hasScope =
+          leaseScopes.includes('*') ||
+          leaseScopes.includes('admin') ||
+          leaseScopes.includes('ai:read') ||
+          leaseScopes.includes('ai:inference') ||
+          leaseScopes.includes('ai:write');
+        if (!hasScope) {
+          throw new Error(
+            `localAi.listModels denied: missing required 'ai:read' scope (granted: ${JSON.stringify(leaseScopes)}).`,
+          );
+        }
+        try {
+          const models = this.localAiRuntime.listModels();
+          this.telemetryManager.trackTrace('local_ai_list_models_ipc', {
+            count: models.length,
+          });
+          return new RedactionFilter().redactObject({ models });
+        } catch (err) {
+          const msg = new RedactionFilter().redactString(
+            err instanceof Error ? err.message : String(err),
+          );
+          throw new Error(`localAi.listModels failed: ${msg}`);
+        }
+      });
+
+      this.ipcManager.registerMethodHandler('localAi.getHardwareProfile', async (params) => {
+        const req = LocalAiGetHardwareProfileIPCRequestSchema.parse(params || {});
+        const state = this.lifecycle.getState();
+        if (
+          state === AgentLifecycleState.STOPPING ||
+          state === AgentLifecycleState.STOPPED ||
+          state === AgentLifecycleState.FAILED
+        ) {
+          throw new Error(
+            `localAi.getHardwareProfile denied: agent lifecycle state is '${state}'.`,
+          );
+        }
+        if (!new PluginExecutionPolicy().isRuntimeCategoryAuthorized(RuntimeCategory.LOCAL_AI)) {
+          throw new Error(
+            'localAi.getHardwareProfile denied: LOCAL_AI category not authorized by policy.',
+          );
+        }
+        const leaseDecision = await this.leaseBoundary.validateLease(req.leaseHeader);
+        if (!leaseDecision.valid) {
+          throw new Error(
+            `localAi.getHardwareProfile denied: lease validation failed (${leaseDecision.reason}).`,
+          );
+        }
+        const leaseScopes = Array.isArray(leaseDecision.lease?.scopes)
+          ? leaseDecision.lease.scopes
+          : [];
+        const hasScope =
+          leaseScopes.includes('*') ||
+          leaseScopes.includes('admin') ||
+          leaseScopes.includes('ai:read') ||
+          leaseScopes.includes('ai:inference') ||
+          leaseScopes.includes('ai:write');
+        if (!hasScope) {
+          throw new Error(
+            `localAi.getHardwareProfile denied: missing required 'ai:read' scope (granted: ${JSON.stringify(leaseScopes)}).`,
+          );
+        }
+        try {
+          const profile = await this.localAiRuntime.getHardwareProfile();
+          this.telemetryManager.trackTrace('local_ai_get_hardware_profile_ipc', {
+            cpuArch: profile.cpuArch,
+            gpuCount: profile.gpuAdapters.length,
+          });
+          return new RedactionFilter().redactObject(profile as unknown as Record<string, unknown>);
+        } catch (err) {
+          const msg = new RedactionFilter().redactString(
+            err instanceof Error ? err.message : String(err),
+          );
+          throw new Error(`localAi.getHardwareProfile failed: ${msg}`);
+        }
+      });
+
+      this.ipcManager.registerMethodHandler('localAi.unloadModel', async (params) => {
+        const req = LocalAiUnloadModelIPCRequestSchema.parse(params || {});
+        const state = this.lifecycle.getState();
+        if (
+          state === AgentLifecycleState.STOPPING ||
+          state === AgentLifecycleState.STOPPED ||
+          state === AgentLifecycleState.FAILED
+        ) {
+          throw new Error(`localAi.unloadModel denied: agent lifecycle state is '${state}'.`);
+        }
+        if (!new PluginExecutionPolicy().isRuntimeCategoryAuthorized(RuntimeCategory.LOCAL_AI)) {
+          throw new Error(
+            'localAi.unloadModel denied: LOCAL_AI category not authorized by policy.',
+          );
+        }
+        const leaseDecision = await this.leaseBoundary.validateLease(req.leaseHeader);
+        if (!leaseDecision.valid) {
+          throw new Error(
+            `localAi.unloadModel denied: lease validation failed (${leaseDecision.reason}).`,
+          );
+        }
+        const leaseScopes = Array.isArray(leaseDecision.lease?.scopes)
+          ? leaseDecision.lease.scopes
+          : [];
+        const hasScope =
+          leaseScopes.includes('*') ||
+          leaseScopes.includes('admin') ||
+          leaseScopes.includes('ai:write');
+        if (!hasScope) {
+          throw new Error(
+            `localAi.unloadModel denied: missing required 'ai:write' scope (granted: ${JSON.stringify(leaseScopes)}).`,
+          );
+        }
+        try {
+          await this.localAiRuntime.unloadModel(req.modelId);
+          this.telemetryManager.trackTrace('local_ai_unload_model_ipc', {
+            modelId: req.modelId,
+          });
+          return new RedactionFilter().redactObject({
+            success: true,
+            modelId: req.modelId,
+          });
+        } catch (err) {
+          const msg = new RedactionFilter().redactString(
+            err instanceof Error ? err.message : String(err),
+          );
+          throw new Error(`localAi.unloadModel failed: ${msg}`);
+        }
+      });
     }
 
     if (typeof this.controlPlaneClient.registerCommandHandler === 'function') {
@@ -2750,7 +2990,7 @@ export class DesktopAgent {
       }
       await this.stateManager.start();
       await this.memoryCacheManager.start();
-      await this.modelRuntimeManager.initialize();
+      await this.localAiRuntime.initialize();
     } catch (err) {
       this.lifecycle.transitionTo(
         AgentLifecycleState.FAILED,
@@ -2784,7 +3024,7 @@ export class DesktopAgent {
     this.approvalHost.shutdown();
     this.vaultClient.shutdown();
     this.updateManager.shutdown();
-    await this.modelRuntimeManager.shutdown();
+    await this.localAiRuntime.shutdown();
     await this.stateManager.stop();
     // Purge stale expired notification queue items on shutdown.
     // NotificationManager has no open handles or timers; it uses lazy TTL expiry.

@@ -10,6 +10,8 @@ export class RuntimeRouter implements IRuntimeRouter {
     'plugin',
     'device',
     'memory',
+    'localai',
+    'local-ai',
   ]);
 
   constructor(
