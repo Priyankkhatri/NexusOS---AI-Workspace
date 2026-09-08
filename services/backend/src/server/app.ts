@@ -5,21 +5,71 @@ import { Logger } from '../observability/logger.js';
 import { extractRequestContext } from '../middleware/context.js';
 import { handleServerError } from '../middleware/error-handler.js';
 import { DatabaseBoundary } from '../database/boundary.js';
-import { NEXUSOS_CONTRACT_VERSION } from '@nexusos/contracts';
+import {
+  NEXUSOS_CONTRACT_VERSION,
+  createNexusOSError,
+  ErrorCategory,
+  serializeContract,
+  APIErrorResponseSchema,
+} from '@nexusos/contracts';
+import { TaskController } from '../tasks/controller.js';
+import { AuthenticatedContext } from '@nexusos/identity';
+
+export interface AuthenticatedIncomingMessage extends IncomingMessage {
+  authenticatedContext?: AuthenticatedContext;
+}
+
+export type RequestAuthenticator = (req: IncomingMessage, res: ServerResponse) => Promise<boolean>;
+
+export interface BackendAppOptions {
+  taskController?: TaskController;
+  authenticator?: RequestAuthenticator;
+}
 
 export class BackendApp {
   private server: Server | null = null;
   public readonly lifecycle: LifecycleManager;
   public readonly logger: Logger;
   public readonly database: DatabaseBoundary;
+  public readonly taskController?: TaskController;
+  private readonly authenticator?: RequestAuthenticator;
 
-  constructor(public readonly config: BackendConfig) {
+  constructor(
+    public readonly config: BackendConfig,
+    options?: BackendAppOptions,
+  ) {
     this.lifecycle = new LifecycleManager();
     this.logger = new Logger(config.logLevel);
     this.database = new DatabaseBoundary(config);
+    this.taskController = options?.taskController;
+    this.authenticator = options?.authenticator;
   }
 
-  public handleRequest(req: IncomingMessage, res: ServerResponse): void {
+  private async readJsonBody(req: IncomingMessage): Promise<unknown> {
+    return new Promise((resolve, reject) => {
+      let raw = '';
+      req.on('data', (chunk) => {
+        raw += chunk;
+        if (raw.length > 1e6) {
+          reject(new Error('Payload too large'));
+        }
+      });
+      req.on('end', () => {
+        if (!raw.trim()) {
+          resolve({});
+          return;
+        }
+        try {
+          resolve(JSON.parse(raw));
+        } catch {
+          reject(new Error('Invalid JSON payload'));
+        }
+      });
+      req.on('error', reject);
+    });
+  }
+
+  public async handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const context = extractRequestContext(req, res);
     const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
 
@@ -71,7 +121,139 @@ export class BackendApp {
         return;
       }
 
-      // 3. Unhandled endpoint (404)
+      // 3. Governed Task Intake & Lifecycle Endpoints (Milestone M6)
+      if (url.pathname.startsWith('/v1/tasks')) {
+        // Authenticate request before processing
+        if (this.authenticator) {
+          const isAuthed = await this.authenticator(req, res);
+          if (!isAuthed) {
+            return;
+          }
+        } else {
+          // Reject unauthenticated task intake when no authenticator configured
+          const err = createNexusOSError(
+            'UNAUTHENTICATED',
+            ErrorCategory.AUTHENTICATION,
+            'Authentication credentials are required for task intake.',
+            { requestId: context.requestId, correlationId: context.correlationId },
+          );
+          res.statusCode = 401;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(
+            serializeContract(APIErrorResponseSchema, {
+              success: false,
+              error: err,
+              meta: {
+                requestId: context.requestId,
+                correlationId: context.correlationId,
+                timestamp: context.timestamp,
+              },
+            }),
+          );
+          return;
+        }
+
+        if (!this.taskController) {
+          res.statusCode = 503;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(
+            JSON.stringify({
+              error: {
+                code: 'TASK_CONTROLLER_UNAVAILABLE',
+                message: 'TaskController is not configured.',
+                requestId: context.requestId,
+                correlationId: context.correlationId,
+              },
+            }),
+          );
+          return;
+        }
+
+        const authContext = (req as AuthenticatedIncomingMessage).authenticatedContext;
+        if (!authContext) {
+          const err = createNexusOSError(
+            'UNAUTHENTICATED',
+            ErrorCategory.AUTHENTICATION,
+            'Authentication credentials are required for task operations.',
+            { requestId: context.requestId, correlationId: context.correlationId },
+          );
+          res.statusCode = 401;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(
+            serializeContract(APIErrorResponseSchema, {
+              success: false,
+              error: err,
+              meta: {
+                requestId: context.requestId,
+                correlationId: context.correlationId,
+                timestamp: context.timestamp,
+              },
+            }),
+          );
+          return;
+        }
+
+        // 3a. POST /v1/tasks
+        if (req.method === 'POST' && url.pathname === '/v1/tasks') {
+          const body = await this.readJsonBody(req);
+          const result = await this.taskController.createTask(body, authContext);
+          res.statusCode = 201;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify(result));
+          return;
+        }
+
+        // 3b. GET /v1/tasks/:id
+        const getMatch = url.pathname.match(/^\/v1\/tasks\/([^/]+)$/);
+        if (req.method === 'GET' && getMatch) {
+          const taskId = decodeURIComponent(getMatch[1]);
+          const result = this.taskController.getTask(taskId, authContext);
+          if (!result) {
+            res.statusCode = 404;
+            res.setHeader('Content-Type', 'application/json');
+            res.end(
+              JSON.stringify({
+                error: {
+                  code: 'TASK_NOT_FOUND',
+                  message: `Task ${taskId} not found.`,
+                  requestId: context.requestId,
+                  correlationId: context.correlationId,
+                },
+              }),
+            );
+            return;
+          }
+          res.statusCode = 200;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify(result));
+          return;
+        }
+
+        // 3c. POST /v1/tasks/:id/cancel
+        const cancelMatch = url.pathname.match(/^\/v1\/tasks\/([^/]+)\/cancel$/);
+        if (req.method === 'POST' && cancelMatch) {
+          const taskId = decodeURIComponent(cancelMatch[1]);
+          const body = (await this.readJsonBody(req)) as { reason?: string } | undefined;
+          const result = await this.taskController.cancelTask(taskId, body?.reason, authContext);
+          res.statusCode = 200;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify(result));
+          return;
+        }
+
+        // 3d. POST /v1/tasks/:id/receipt
+        const receiptMatch = url.pathname.match(/^\/v1\/tasks\/([^/]+)\/receipt$/);
+        if (req.method === 'POST' && receiptMatch) {
+          const body = await this.readJsonBody(req);
+          const result = await this.taskController.settleReceipt(body);
+          res.statusCode = 200;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify(result));
+          return;
+        }
+      }
+
+      // 4. Unhandled endpoint (404)
       res.statusCode = 404;
       res.setHeader('Content-Type', 'application/json');
       res.end(
@@ -93,7 +275,9 @@ export class BackendApp {
     this.lifecycle.setState(ServiceLifecycleState.STARTING);
     await this.database.connect();
 
-    this.server = http.createServer((req, res) => this.handleRequest(req, res));
+    this.server = http.createServer((req, res) => {
+      void this.handleRequest(req, res);
+    });
 
     await new Promise<void>((resolve, reject) => {
       this.server?.listen(this.config.port, this.config.host, () => resolve());

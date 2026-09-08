@@ -24,11 +24,12 @@ export function handleServerError(
       code = 'MALFORMED_JSON_PAYLOAD';
       message = 'Request payload must be valid JSON';
     } else if (
+      error.name === 'ZodError' ||
       error.message.includes('[ValidationError]') ||
       error.message.includes('[BackendConfigError]')
     ) {
       category = ErrorCategory.VALIDATION;
-      code = 'VALIDATION_FAILED';
+      code = 'BAD_REQUEST';
       message = error.message;
     } else {
       message = isProduction ? 'An unexpected server error occurred' : error.message;

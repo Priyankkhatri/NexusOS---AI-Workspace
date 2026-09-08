@@ -11,6 +11,8 @@
   },
   "dependencies": {
     "@nexusos/contracts": "workspace:*",
+    "@nexusos/identity": "workspace:*",
+    "@nexusos/policy": "workspace:*",
     "zod": "3.24.2"
   },
   "devDependencies": {
