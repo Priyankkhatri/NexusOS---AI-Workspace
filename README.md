@@ -239,9 +239,9 @@ completion report, and a CI-verified green build.
 ```
 Branch:             main
 Working tree:       clean
-Tasks Completed:    03A–045
-Active Frontier:    Task 046 (NOT STARTED)
-Local Gates:        658 / 658 tests passing across 101 suites (100% quality gates passing)
+Tasks Completed:    03A–046
+Active Frontier:    Task 047 (NOT STARTED)
+Local Gates:        680 / 680 tests passing across 103 suites (100% quality gates passing)
 GitHub Actions CI:  Pending baseline run for current HEAD
 ```
 
@@ -313,7 +313,7 @@ pnpm run security
 The test suite uses Node.js built-in test runner (`node:test`) with `tsx` for ESM TypeScript
 execution. Tests run in a single-concurrency mode to avoid IPC port conflicts.
 
-**Current baseline (Tasks 03A–045):** **658 / 658 tests passing**
+**Current baseline (Tasks 03A–046):** **680 / 680 tests passing**
 
 Test coverage spans three layers per subsystem:
 
@@ -354,6 +354,7 @@ node --import tsx/esm --test apps/desktop-agent/tests/local-device-ipc.test.ts
 | Task 043 Completion Report | [`apps/desktop-agent/docs/task-043-completion-report.md`](apps/desktop-agent/docs/task-043-completion-report.md)                                                                                               |
 | Task 044 Completion Report | [`apps/desktop-agent/docs/task-044-completion-report.md`](apps/desktop-agent/docs/task-044-completion-report.md)                                                                                               |
 | Task 045 Completion Report | [`apps/desktop-agent/docs/task-045-completion-report.md`](apps/desktop-agent/docs/task-045-completion-report.md)                                                                                               |
+| Task 046 Completion Report | [`apps/desktop-agent/docs/task-046-completion-report.md`](apps/desktop-agent/docs/task-046-completion-report.md)                                                                                               |
 
 ---
 
