@@ -226,21 +226,23 @@ completion report, and a CI-verified green build.
 | 03Z     | Telemetry host integration · spool · HMAC integrity                        | ✅ Complete     |
 | **040** | **Notification Manager & Notification Policy Gate — Host Integration**     | ✅ **Complete** |
 | **041** | **Device Runtime & Hardware Posture Adapter — Host Integration**           | ✅ **Complete** |
-| **042** | _(next milestone — discovery pending)_                                     | 🔲 Not started  |
+| **042** | **Filesystem Runtime & Path Security Adapter — Host Integration**          | ✅ **Complete** |
+| **043** | **Terminal Runtime & Process Supervisor Adapter — Host Integration**       | ✅ **Complete** |
+| **044** | **Browser Runtime & Domain Security Adapter — Host Integration**           | ✅ **Complete** |
+| **045** | **Plugin Runtime & Host Manager Adapter — Host Integration**               | ✅ **Complete** |
+| **046** | _(next milestone — discovery pending)_                                     | 🔲 Not started  |
 
 ---
 
 ## Current Status
 
 ```
-Branch:       main
-HEAD:         0479021
-origin/main:  0479021 (synchronized)
-Working tree: clean
-CI run #124:  GREEN (all gates passing)
-Tests:        569 / 569 passing
-Task 041:     COMPLETE
-Task 042:     NOT STARTED
+Branch:             main
+Working tree:       clean
+Tasks Completed:    03A–045
+Active Frontier:    Task 046 (NOT STARTED)
+Local Gates:        658 / 658 tests passing across 101 suites (100% quality gates passing)
+GitHub Actions CI:  Pending baseline run for current HEAD
 ```
 
 GitHub Actions CI validates every push with the full quality gate pipeline:
@@ -311,7 +313,7 @@ pnpm run security
 The test suite uses Node.js built-in test runner (`node:test`) with `tsx` for ESM TypeScript
 execution. Tests run in a single-concurrency mode to avoid IPC port conflicts.
 
-**Current baseline (Task 041 / CI run #124):** **569 / 569 tests passing**
+**Current baseline (Tasks 03A–045):** **658 / 658 tests passing**
 
 Test coverage spans three layers per subsystem:
 
@@ -348,6 +350,10 @@ node --import tsx/esm --test apps/desktop-agent/tests/local-device-ipc.test.ts
 | Phase 0 Threat Model       | [`threat-models/TM-0001-phase0-baseline.md`](threat-models/TM-0001-phase0-baseline.md)                                                                                                                         |
 | ADR Index                  | [`adrs/0001-monorepo-foundation.md`](adrs/0001-monorepo-foundation.md)                                                                                                                                         |
 | Task 041 Completion Report | [`apps/desktop-agent/docs/task-041-completion-report.md`](apps/desktop-agent/docs/task-041-completion-report.md)                                                                                               |
+| Task 042 Completion Report | [`apps/desktop-agent/docs/task-042-completion-report.md`](apps/desktop-agent/docs/task-042-completion-report.md)                                                                                               |
+| Task 043 Completion Report | [`apps/desktop-agent/docs/task-043-completion-report.md`](apps/desktop-agent/docs/task-043-completion-report.md)                                                                                               |
+| Task 044 Completion Report | [`apps/desktop-agent/docs/task-044-completion-report.md`](apps/desktop-agent/docs/task-044-completion-report.md)                                                                                               |
+| Task 045 Completion Report | [`apps/desktop-agent/docs/task-045-completion-report.md`](apps/desktop-agent/docs/task-045-completion-report.md)                                                                                               |
 
 ---
 
