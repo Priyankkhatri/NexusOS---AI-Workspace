@@ -32,11 +32,11 @@ export class ModelRuntimeError extends Error {
 }
 
 export class ModelRuntimeManager {
-  private readonly hardwareDetector: HardwareDetector;
-  private readonly resourceGovernor: ResourceGovernor;
-  private readonly modelCacheManager: ModelCacheManager;
-  private readonly adapterFactory: ProviderAdapterFactory;
-  private readonly redactionFilter: RedactionFilter;
+  public readonly hardwareDetector: HardwareDetector;
+  public readonly resourceGovernor: ResourceGovernor;
+  public readonly modelCacheManager: ModelCacheManager;
+  public readonly adapterFactory: ProviderAdapterFactory;
+  public readonly redactionFilter: RedactionFilter;
   private isShutdown = false;
 
   private readonly loadedModelStates = new Map<string, ModelLifecycleState>();
