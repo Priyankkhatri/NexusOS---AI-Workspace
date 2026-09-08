@@ -313,7 +313,7 @@ pnpm run security
 The test suite uses Node.js built-in test runner (`node:test`) with `tsx` for ESM TypeScript
 execution. Tests run in a single-concurrency mode to avoid IPC port conflicts.
 
-**Current baseline (Tasks 03A–046):** **680 / 680 tests passing**
+**Current baseline (Sprint 0 Exit / Milestone M7):** **743 / 743 tests passing (111 suites)**
 
 Test coverage spans three layers per subsystem:
 
@@ -322,6 +322,7 @@ Test coverage spans three layers per subsystem:
 | **Unit tests**                 | Domain logic, boundary contracts, configuration, lifecycle                                                                                                |
 | **IPC integration tests**      | End-to-end IPC handler invocation through `DesktopAgent` composition root                                                                                 |
 | **Adversarial security tests** | 12-case hardening suites (SEC-01–SEC-12) per subsystem covering lease bypass, tenant escape, replay, malformed input, scope violation, and secret leakage |
+| **Hardening & DoD Audit**      | Automated verification of 25 Sprint 0 Definition of Done criteria (Blueprint Section 56)                                                                  |
 
 ```bash
 # Run the full suite
@@ -335,26 +336,25 @@ node --import tsx/esm --test apps/desktop-agent/tests/local-device-ipc.test.ts
 
 ## Documentation
 
-| Document                   | Path                                                                                                                                                                                                           |
-| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Documentation index        | [`docs/INDEX.md`](docs/INDEX.md)                                                                                                                                                                               |
-| Enterprise PRD             | [`docs/PRDs/NexusOS_Enterprise_PRD_for_AI_Desktop_Agent_and_Web_Platform.md`](docs/PRDs/NexusOS_Enterprise_PRD_for_AI_Desktop_Agent_and_Web_Platform.md)                                                       |
-| Architecture Bible         | [`docs/Architecture_and_Specs/NexusOS_Architecture_Bible_Pre_EDD_Foundation.md`](docs/Architecture_and_Specs/NexusOS_Architecture_Bible_Pre_EDD_Foundation.md)                                                 |
-| Desktop Agent EDD          | [`docs/EDDs/NexusOS_Desktop_Agent_Engineering_Design_Document_EDD.md`](docs/EDDs/NexusOS_Desktop_Agent_Engineering_Design_Document_EDD.md)                                                                     |
-| AI Runtime EDD             | [`docs/EDDs/NexusOS_AI_Runtime_Engineering_Design_Document_EDD.md`](docs/EDDs/NexusOS_AI_Runtime_Engineering_Design_Document_EDD.md)                                                                           |
-| Backend EDD                | [`docs/EDDs/NexusOS_Backend_Engineering_Design_Document_EDD.md`](docs/EDDs/NexusOS_Backend_Engineering_Design_Document_EDD.md)                                                                                 |
-| Experience Platform EDD    | [`docs/EDDs/NexusOS_Experience_Platform_Engineering_Design_Document_EDD.md`](docs/EDDs/NexusOS_Experience_Platform_Engineering_Design_Document_EDD.md)                                                         |
-| API Contract Specification | [`docs/Architecture_and_Specs/NexusOS_API_Contract_Specification_Section_1_System_Communication_Map.md`](docs/Architecture_and_Specs/NexusOS_API_Contract_Specification_Section_1_System_Communication_Map.md) |
-| AI Coding Standards        | [`docs/Architecture_and_Specs/NexusOS_AI_Coding_Standards_and_Development_Guide.md`](docs/Architecture_and_Specs/NexusOS_AI_Coding_Standards_and_Development_Guide.md)                                         |
-| Sprint 0 Blueprint         | [`docs/Architecture_and_Specs/NexusOS_Sprint_0_Implementation_Blueprint.md`](docs/Architecture_and_Specs/NexusOS_Sprint_0_Implementation_Blueprint.md)                                                         |
-| Phase 0 Threat Model       | [`threat-models/TM-0001-phase0-baseline.md`](threat-models/TM-0001-phase0-baseline.md)                                                                                                                         |
-| ADR Index                  | [`adrs/0001-monorepo-foundation.md`](adrs/0001-monorepo-foundation.md)                                                                                                                                         |
-| Task 041 Completion Report | [`apps/desktop-agent/docs/task-041-completion-report.md`](apps/desktop-agent/docs/task-041-completion-report.md)                                                                                               |
-| Task 042 Completion Report | [`apps/desktop-agent/docs/task-042-completion-report.md`](apps/desktop-agent/docs/task-042-completion-report.md)                                                                                               |
-| Task 043 Completion Report | [`apps/desktop-agent/docs/task-043-completion-report.md`](apps/desktop-agent/docs/task-043-completion-report.md)                                                                                               |
-| Task 044 Completion Report | [`apps/desktop-agent/docs/task-044-completion-report.md`](apps/desktop-agent/docs/task-044-completion-report.md)                                                                                               |
-| Task 045 Completion Report | [`apps/desktop-agent/docs/task-045-completion-report.md`](apps/desktop-agent/docs/task-045-completion-report.md)                                                                                               |
-| Task 046 Completion Report | [`apps/desktop-agent/docs/task-046-completion-report.md`](apps/desktop-agent/docs/task-046-completion-report.md)                                                                                               |
+| Document                     | Path                                                                                                                                                                                                           |
+| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Documentation index          | [`docs/INDEX.md`](docs/INDEX.md)                                                                                                                                                                               |
+| Sprint 0 Completion Report   | [`SPRINT_0_COMPLETION_REPORT.md`](SPRINT_0_COMPLETION_REPORT.md)                                                                                                                                               |
+| Sprint 1 Readiness & Backlog | [`docs/SPRINT_1_READINESS_AND_BACKLOG.md`](docs/SPRINT_1_READINESS_AND_BACKLOG.md)                                                                                                                             |
+| Operational Runbooks Index   | [`docs/RUNBOOKS.md`](docs/RUNBOOKS.md)                                                                                                                                                                         |
+| Resource Baseline Report     | [`docs/RESOURCE_BASELINE.md`](docs/RESOURCE_BASELINE.md)                                                                                                                                                       |
+| Local Development Guide      | [`docs/LOCAL_DEVELOPMENT.md`](docs/LOCAL_DEVELOPMENT.md)                                                                                                                                                       |
+| Enterprise PRD               | [`docs/PRDs/NexusOS_Enterprise_PRD_for_AI_Desktop_Agent_and_Web_Platform.md`](docs/PRDs/NexusOS_Enterprise_PRD_for_AI_Desktop_Agent_and_Web_Platform.md)                                                       |
+| Architecture Bible           | [`docs/Architecture_and_Specs/NexusOS_Architecture_Bible_Pre_EDD_Foundation.md`](docs/Architecture_and_Specs/NexusOS_Architecture_Bible_Pre_EDD_Foundation.md)                                                 |
+| Desktop Agent EDD            | [`docs/EDDs/NexusOS_Desktop_Agent_Engineering_Design_Document_EDD.md`](docs/EDDs/NexusOS_Desktop_Agent_Engineering_Design_Document_EDD.md)                                                                     |
+| AI Runtime EDD               | [`docs/EDDs/NexusOS_AI_Runtime_Engineering_Design_Document_EDD.md`](docs/EDDs/NexusOS_AI_Runtime_Engineering_Design_Document_EDD.md)                                                                           |
+| Backend EDD                  | [`docs/EDDs/NexusOS_Backend_Engineering_Design_Document_EDD.md`](docs/EDDs/NexusOS_Backend_Engineering_Design_Document_EDD.md)                                                                                 |
+| Experience Platform EDD      | [`docs/EDDs/NexusOS_Experience_Platform_Engineering_Design_Document_EDD.md`](docs/EDDs/NexusOS_Experience_Platform_Engineering_Design_Document_EDD.md)                                                         |
+| API Contract Specification   | [`docs/Architecture_and_Specs/NexusOS_API_Contract_Specification_Section_1_System_Communication_Map.md`](docs/Architecture_and_Specs/NexusOS_API_Contract_Specification_Section_1_System_Communication_Map.md) |
+| AI Coding Standards          | [`docs/Architecture_and_Specs/NexusOS_AI_Coding_Standards_and_Development_Guide.md`](docs/Architecture_and_Specs/NexusOS_AI_Coding_Standards_and_Development_Guide.md)                                         |
+| Sprint 0 Blueprint           | [`docs/Architecture_and_Specs/NexusOS_Sprint_0_Implementation_Blueprint.md`](docs/Architecture_and_Specs/NexusOS_Sprint_0_Implementation_Blueprint.md)                                                         |
+| Phase 0 Threat Model         | [`threat-models/TM-0001-phase0-baseline.md`](threat-models/TM-0001-phase0-baseline.md)                                                                                                                         |
+| ADR Index                    | [`adrs/0001-monorepo-foundation.md`](adrs/0001-monorepo-foundation.md)                                                                                                                                         |
 
 ---
 
