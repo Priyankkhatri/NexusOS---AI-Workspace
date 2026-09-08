@@ -1,5 +1,7 @@
-import { ExecutionLeaseHeader } from '@nexusos/contracts';
+import { WorkflowNode, WorkflowEdge, WorkflowDAG } from '@nexusos/contracts';
 import { TaskExecutionResult, TaskStatus } from '../orchestrator/types.js';
+
+export type { WorkflowNode, WorkflowEdge, WorkflowDAG };
 
 export type WorkflowNodeStatus =
   | 'Received'
@@ -12,31 +14,6 @@ export type WorkflowNodeStatus =
   | 'Failed'
   | 'CANCELED'
   | 'EXPIRED';
-
-export interface WorkflowNode {
-  nodeId: string;
-  capabilityId: string;
-  runtimeCategory: string;
-  payload: Record<string, unknown>;
-  dependencies?: string[]; // Array of parent nodeId dependencies
-  compensationPayload?: Record<string, unknown>;
-  timeoutMs?: number;
-}
-
-export interface WorkflowEdge {
-  fromNodeId: string;
-  toNodeId: string;
-}
-
-export interface WorkflowDAG {
-  workflowId: string;
-  taskId: string;
-  leaseHeader: ExecutionLeaseHeader;
-  correlationId: string;
-  nodes: WorkflowNode[];
-  edges?: WorkflowEdge[];
-  expiresAt?: string;
-}
 
 export interface WorkflowNodeExecutionState {
   nodeId: string;

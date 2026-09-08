@@ -206,7 +206,18 @@ export class BackendApp {
         const getMatch = url.pathname.match(/^\/v1\/tasks\/([^/]+)$/);
         if (req.method === 'GET' && getMatch) {
           const taskId = decodeURIComponent(getMatch[1]);
-          const result = this.taskController.getTask(taskId, authContext);
+          let result = null;
+          try {
+            result = this.taskController.getTask(taskId, authContext);
+          } catch (err: unknown) {
+            // 049-SEC-03: Non-disclosing 404 on cross-tenant probe
+            if (err instanceof Error && err.message.includes('different tenant')) {
+              result = null;
+            } else {
+              throw err;
+            }
+          }
+
           if (!result) {
             res.statusCode = 404;
             res.setHeader('Content-Type', 'application/json');
@@ -233,11 +244,31 @@ export class BackendApp {
         if (req.method === 'POST' && cancelMatch) {
           const taskId = decodeURIComponent(cancelMatch[1]);
           const body = (await this.readJsonBody(req)) as { reason?: string } | undefined;
-          const result = await this.taskController.cancelTask(taskId, body?.reason, authContext);
-          res.statusCode = 200;
-          res.setHeader('Content-Type', 'application/json');
-          res.end(JSON.stringify(result));
-          return;
+          try {
+            const result = await this.taskController.cancelTask(taskId, body?.reason, authContext);
+            res.statusCode = 200;
+            res.setHeader('Content-Type', 'application/json');
+            res.end(JSON.stringify(result));
+            return;
+          } catch (err: unknown) {
+            // 049-SEC-03: Non-disclosing 404 on cross-tenant cancellation probe
+            if (err instanceof Error && err.message.includes('different tenant')) {
+              res.statusCode = 404;
+              res.setHeader('Content-Type', 'application/json');
+              res.end(
+                JSON.stringify({
+                  error: {
+                    code: 'TASK_NOT_FOUND',
+                    message: `Task ${taskId} not found.`,
+                    requestId: context.requestId,
+                    correlationId: context.correlationId,
+                  },
+                }),
+              );
+              return;
+            }
+            throw err;
+          }
         }
 
         // 3d. POST /v1/tasks/:id/receipt

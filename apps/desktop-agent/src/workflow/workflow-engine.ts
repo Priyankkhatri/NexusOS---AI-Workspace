@@ -246,6 +246,33 @@ export class WorkflowEngine implements IWorkflowEngine {
       };
     }
 
+    // 5.5 Scope Validation: all DAG nodes must have their capability granted in lease scopes
+    const leaseScopes = dag.leaseHeader.scopes || [];
+    for (const node of dag.nodes) {
+      const isGranted = leaseScopes.some((s) => {
+        if (s === '*' || s === 'admin') return true;
+        const normS = s.replace(/^capability:/, '').replace(/:/g, '.');
+        const normCap = node.capabilityId.replace(/^capability:/, '').replace(/:/g, '.');
+        const normCat = node.runtimeCategory.replace(/:/g, '.');
+        return (
+          normS === normCap ||
+          normS === normCat ||
+          s === node.capabilityId ||
+          s === `capability:${node.capabilityId}`
+        );
+      });
+      if (!isGranted) {
+        return {
+          success: false,
+          taskId: dag.taskId,
+          stepId: dag.workflowId,
+          errorCode: 'SCOPE_NOT_GRANTED',
+          errorMessage: `Capability '${node.capabilityId}' required by node '${node.nodeId}' is not granted in workflow lease scopes [${leaseScopes.join(', ')}].`,
+          executionTimeMs: Date.now() - startTime,
+        };
+      }
+    }
+
     // 6. Initialize Workflow Execution State & Context
     const now = Date.now();
     const expiresAt = dag.expiresAt ? new Date(dag.expiresAt).getTime() : now + 3600000;

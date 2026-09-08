@@ -2,6 +2,11 @@ import crypto from 'node:crypto';
 import {
   TaskCreateRequest,
   TaskCreateRequestSchema,
+  TaskGraphCreateRequest,
+  TaskGraphCreateRequestSchema,
+  WorkflowDAG,
+  WorkflowExecutionReceiptSchema,
+  validateDAGTopology,
   TaskLifecycleState,
   TaskRecord,
   createEventEnvelope,
@@ -172,6 +177,10 @@ export class TaskController {
     rawRequest: unknown,
     context: AuthenticatedContextLike,
   ): Promise<{ task: TaskRecord; policyAllowed: boolean; denialReason?: string }> {
+    if (rawRequest && typeof rawRequest === 'object' && 'nodes' in rawRequest) {
+      return this.createTaskGraph(rawRequest, context);
+    }
+
     // 047-SEC-01: Authentication must be verified
     if (!context || !context.principal || !context.tenantId) {
       throw new Error('UNAUTHENTICATED: Valid user context is required to create a task.');
@@ -339,6 +348,315 @@ export class TaskController {
     return { task, policyAllowed: true };
   }
 
+  /**
+   * Governed Multi-Node Workflow Graph Intake (Sprint 1 Milestone 1 / Task 049)
+   */
+  public async createTaskGraph(
+    rawRequest: unknown,
+    context: AuthenticatedContextLike,
+  ): Promise<{ task: TaskRecord; policyAllowed: boolean; denialReason?: string }> {
+    // 047-SEC-01 & 049-SEC-01: Authentication must be verified
+    if (!context || !context.principal || !context.tenantId) {
+      throw new Error('UNAUTHENTICATED: Valid user context is required to create a task graph.');
+    }
+
+    const principalId =
+      (context.principal.type === 'USER'
+        ? context.principal.userId
+        : context.principal.type === 'SERVICE'
+          ? context.principal.serviceId
+          : context.principal.deviceId) || 'UNKNOWN_PRINCIPAL';
+
+    // Parse and validate DAG schema and topology
+    const req: TaskGraphCreateRequest = TaskGraphCreateRequestSchema.parse(rawRequest);
+    const topoResult = validateDAGTopology(req.nodes, req.edges);
+    if (!topoResult.valid) {
+      throw new Error(`DAG validation failed: ${topoResult.errorMessage}`);
+    }
+
+    const taskId = crypto.randomUUID();
+    const workflowId = req.workflowId ?? crypto.randomUUID();
+    const now = new Date().toISOString();
+
+    const requiredCapabilities = Array.from(new Set(req.nodes.map((n) => n.capabilityId)));
+    const canonicalScopes = requiredCapabilities.flatMap((cap) => [
+      cap,
+      `capability:${cap.replace(/\./g, ':')}`,
+      `capability:${cap}`,
+    ]);
+    const requiredScopes = Array.from(
+      new Set([...canonicalScopes, req.requestedScope].filter(Boolean) as string[]),
+    );
+
+    let task: TaskRecord = {
+      taskId,
+      tenantId: context.tenantId,
+      submittedBy: principalId,
+      title: req.title,
+      targetAgentId: req.targetAgentId,
+      capabilityId: 'workflow.dag',
+      runtimeCategory: 'workflow',
+      parameters: {
+        nodeCount: req.nodes.length,
+        requiredCapabilities,
+      },
+      requestedScope: req.requestedScope || requiredCapabilities.join(','),
+      state: TaskLifecycleState.SUBMITTED,
+      isWorkflow: true,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.tasks.set(taskId, task);
+
+    if (this.eventPublisher) {
+      await this.eventPublisher.publish(
+        createEventEnvelope(
+          'nexusos.events.task.created',
+          '1.0.0',
+          'control-plane-backend',
+          taskId,
+          {
+            taskId,
+            tenantId: context.tenantId,
+            submittedBy: principalId,
+            capabilityId: task.capabilityId,
+            targetAgentId: req.targetAgentId,
+          },
+        ),
+      );
+    }
+
+    // 049-SEC-01: Multi-node policy check. Evaluate policy for EVERY capability/node before execution.
+    const isUser = context.principal.type === 'USER';
+    const topDecisionRequest = {
+      subject: context,
+      action: {
+        actionName: 'task:execute',
+        ...(isUser ? { requiredRole: 'operator' } : { requiredScope: requiredScopes[0] }),
+      },
+      resource: {
+        resourceType: 'task',
+        resourceId: taskId,
+        tenantId: context.tenantId,
+      },
+      context: {
+        requestId: crypto.randomUUID(),
+        correlationId: taskId,
+        requestTimestamp: now,
+      },
+    };
+
+    const topDecision = await this.policyEvaluator.evaluate(topDecisionRequest);
+    if (this.policyAuditLogger) {
+      this.policyAuditLogger.logDecision(createDecisionEvidence(topDecisionRequest, topDecision));
+    }
+
+    if (!topDecision.allowed) {
+      task = TaskStateMachine.transition(task, TaskLifecycleState.FAILED, topDecision.reason);
+      task.error = {
+        code: 'POLICY_DENIED',
+        message: topDecision.reason || 'Workflow execution denied by policy decision.',
+      };
+      task.policyDecision = {
+        allowed: false,
+        reason: topDecision.reason,
+        policyVersion: topDecision.policyVersion,
+        policyHash: topDecision.policyHash,
+      };
+      this.tasks.set(taskId, task);
+      return { task, policyAllowed: false, denialReason: topDecision.reason };
+    }
+
+    // Evaluate policy for EVERY node in the DAG
+    let deniedNode: (typeof req.nodes)[0] | undefined;
+    let denialReason: string | undefined;
+
+    for (const node of req.nodes) {
+      const nodeScope = `capability:${node.capabilityId.replace(/\./g, ':')}`;
+      const nodeDecisionRequest = {
+        subject: context,
+        action: {
+          actionName: 'task:execute',
+          ...(isUser ? { requiredRole: 'operator' } : { requiredScope: nodeScope }),
+        },
+        resource: {
+          resourceType: 'task',
+          resourceId: `${taskId}:${node.nodeId}`,
+          tenantId: context.tenantId,
+        },
+        context: {
+          requestId: crypto.randomUUID(),
+          correlationId: taskId,
+          requestTimestamp: now,
+          details: {
+            nodeId: node.nodeId,
+            capabilityId: node.capabilityId,
+            requiredScope: nodeScope,
+            runtimeCategory: node.runtimeCategory,
+          },
+        },
+      };
+
+      const nodeDecision = await this.policyEvaluator.evaluate(nodeDecisionRequest);
+      if (this.policyAuditLogger) {
+        this.policyAuditLogger.logDecision(
+          createDecisionEvidence(nodeDecisionRequest, nodeDecision),
+        );
+      }
+
+      if (!nodeDecision.allowed) {
+        deniedNode = node;
+        denialReason =
+          nodeDecision.reason ||
+          `Policy denied capability '${node.capabilityId}' on node '${node.nodeId}'.`;
+        break;
+      }
+    }
+
+    if (deniedNode) {
+      // 049-SEC-01 Fail closed: a single denied node prevents the entire workflow from executing
+      task = TaskStateMachine.transition(task, TaskLifecycleState.FAILED, denialReason);
+      task.error = {
+        code: 'POLICY_DENIED',
+        message: denialReason || 'Workflow execution denied by policy.',
+      };
+      task.policyDecision = {
+        allowed: false,
+        reason: denialReason,
+        policyVersion: topDecision.policyVersion,
+        policyHash: topDecision.policyHash,
+      };
+      this.tasks.set(taskId, task);
+
+      if (this.eventPublisher) {
+        await this.eventPublisher.publish(
+          createEventEnvelope(
+            'nexusos.events.policy.denial',
+            '1.0.0',
+            'control-plane-backend',
+            taskId,
+            {
+              taskId,
+              workflowId,
+              deniedNodeId: deniedNode.nodeId,
+              deniedCapability: deniedNode.capabilityId,
+              reason: denialReason,
+              tenantId: context.tenantId,
+            },
+          ),
+        );
+      }
+
+      return { task, policyAllowed: false, denialReason };
+    }
+
+    // All nodes allowed: Transition to POLICY_EVALUATED
+    task.policyDecision = {
+      allowed: true,
+      reason: 'All workflow DAG nodes permitted by policy',
+      policyVersion: topDecision.policyVersion,
+      policyHash: topDecision.policyHash,
+    };
+    task = TaskStateMachine.transition(task, TaskLifecycleState.POLICY_EVALUATED);
+    this.tasks.set(taskId, task);
+
+    // 049-SEC-02: Issue Composite Execution Lease binding all workflow capability scopes
+    const lease = this.leaseIssuer.issueLease({
+      taskId,
+      agentId: req.targetAgentId,
+      tenantId: context.tenantId,
+      scopes: requiredScopes,
+      policyHash: topDecision.policyHash,
+    });
+
+    const dag: WorkflowDAG = {
+      workflowId,
+      taskId,
+      leaseHeader: lease,
+      correlationId: taskId,
+      nodes: req.nodes.map((n) => ({
+        ...n,
+        payload: this.redactSensitiveData(n.payload || {}),
+      })),
+      edges: req.edges ?? [],
+      expiresAt: lease.expires_at,
+    };
+
+    task.lease = lease;
+    task.dag = dag;
+    task = TaskStateMachine.transition(task, TaskLifecycleState.LEASED);
+    this.tasks.set(taskId, task);
+
+    if (this.eventPublisher) {
+      await this.eventPublisher.publish(
+        createEventEnvelope(
+          'nexusos.events.workflow.created',
+          '1.0.0',
+          'control-plane-backend',
+          taskId,
+          {
+            taskId,
+            workflowId,
+            tenantId: context.tenantId,
+            nodeCount: req.nodes.length,
+          },
+        ),
+      );
+      await this.eventPublisher.publish(
+        createEventEnvelope(
+          'nexusos.events.task.leased',
+          '1.0.0',
+          'control-plane-backend',
+          taskId,
+          {
+            taskId,
+            leaseId: lease.lease_id,
+            scopes: lease.scopes,
+            expiresAt: lease.expires_at,
+          },
+        ),
+      );
+    }
+
+    // ACP Workflow Dispatch
+    if (this.acpBridge) {
+      task = TaskStateMachine.transition(task, TaskLifecycleState.DISPATCHED);
+      this.tasks.set(taskId, task);
+
+      if (this.eventPublisher) {
+        await this.eventPublisher.publish(
+          createEventEnvelope(
+            'nexusos.events.workflow.dispatched',
+            '1.0.0',
+            'control-plane-backend',
+            taskId,
+            {
+              taskId,
+              workflowId,
+              targetAgentId: req.targetAgentId,
+            },
+          ),
+        );
+        await this.eventPublisher.publish(
+          createEventEnvelope(
+            'nexusos.events.task.dispatched',
+            '1.0.0',
+            'control-plane-backend',
+            taskId,
+            {
+              taskId,
+              targetAgentId: req.targetAgentId,
+            },
+          ),
+        );
+      }
+
+      await this.acpBridge.dispatchWorkflow(task, dag);
+    }
+
+    return { task, policyAllowed: true };
+  }
+
   public async cancelTask(
     taskId: string,
     reason: string | undefined,
@@ -386,6 +704,114 @@ export class TaskController {
   }
 
   public async settleReceipt(rawReceipt: unknown): Promise<TaskRecord> {
+    // Check if rawReceipt is a WorkflowExecutionReceipt
+    const workflowParseResult = WorkflowExecutionReceiptSchema.safeParse(rawReceipt);
+    if (workflowParseResult.success) {
+      const parsedReceipt = workflowParseResult.data;
+      const task = this.tasks.get(parsedReceipt.taskId);
+
+      if (!task) {
+        throw new Error(
+          `Task '${parsedReceipt.taskId}' not found for workflow receipt settlement.`,
+        );
+      }
+
+      if (task.state === TaskLifecycleState.CANCELLED) {
+        throw new Error(
+          `Cannot settle receipt for task '${task.taskId}': task is already CANCELLED.`,
+        );
+      }
+
+      if (!task.lease) {
+        throw new Error(
+          `Cannot settle receipt for task '${task.taskId}': task has no recorded lease.`,
+        );
+      }
+
+      // 049-SEC-02 & Phase 7: Verify workflow receipt authenticity, evidence hash, lease binding, tenant consistency
+      const verification = this.receiptVerifier.verifyWorkflowReceipt(parsedReceipt, {
+        expectedTaskId: task.taskId,
+        expectedWorkflowId: parsedReceipt.workflowId,
+        expectedLeaseId: task.lease.lease_id,
+        expectedAgentId: task.targetAgentId,
+        expectedTenantId: task.tenantId,
+      });
+
+      if (!verification.valid) {
+        const failedTask = TaskStateMachine.transition(
+          task,
+          TaskLifecycleState.FAILED,
+          verification.errorMessage,
+        );
+        failedTask.error = {
+          code: verification.errorCode || 'RECEIPT_VERIFICATION_FAILED',
+          message: verification.errorMessage || 'Workflow receipt verification failed.',
+        };
+        this.tasks.set(task.taskId, failedTask);
+        throw new Error(`Workflow receipt verification failed: ${verification.errorMessage}`);
+      }
+
+      let currentTask = task;
+      if (currentTask.state === TaskLifecycleState.LEASED) {
+        currentTask = TaskStateMachine.transition(currentTask, TaskLifecycleState.DISPATCHED);
+      }
+      if (currentTask.state === TaskLifecycleState.DISPATCHED) {
+        currentTask = TaskStateMachine.transition(currentTask, TaskLifecycleState.EXECUTING);
+      }
+
+      currentTask = TaskStateMachine.transition(currentTask, TaskLifecycleState.RECEIPT_VERIFIED);
+
+      if (parsedReceipt.status === 'SUCCESS') {
+        currentTask = TaskStateMachine.transition(currentTask, TaskLifecycleState.COMPLETED);
+      } else if (parsedReceipt.status === 'CANCELLED') {
+        currentTask = TaskStateMachine.transition(currentTask, TaskLifecycleState.CANCELLED);
+      } else {
+        currentTask = TaskStateMachine.transition(currentTask, TaskLifecycleState.FAILED);
+        currentTask.error = {
+          code: 'WORKFLOW_EXECUTION_FAILED',
+          message: parsedReceipt.errorMessage || 'Workflow execution reported failure.',
+        };
+      }
+
+      currentTask.receipt = parsedReceipt;
+      currentTask.evidenceChecksum = parsedReceipt.evidenceChecksum;
+      this.tasks.set(currentTask.taskId, currentTask);
+
+      if (this.eventPublisher) {
+        await this.eventPublisher.publish(
+          createEventEnvelope(
+            `nexusos.events.workflow.${currentTask.state.toLowerCase()}`,
+            '1.0.0',
+            'control-plane-backend',
+            currentTask.taskId,
+            {
+              taskId: currentTask.taskId,
+              workflowId: parsedReceipt.workflowId,
+              tenantId: currentTask.tenantId,
+              status: currentTask.state,
+              evidenceChecksum: currentTask.evidenceChecksum,
+            },
+          ),
+        );
+        await this.eventPublisher.publish(
+          createEventEnvelope(
+            `nexusos.events.task.${currentTask.state.toLowerCase()}`,
+            '1.0.0',
+            'control-plane-backend',
+            currentTask.taskId,
+            {
+              taskId: currentTask.taskId,
+              status: currentTask.state,
+              evidenceChecksum: currentTask.evidenceChecksum,
+            },
+          ),
+        );
+      }
+
+      return currentTask;
+    }
+
+    // Single-task execution receipt settlement
     const parsedReceipt = ExecutionReceiptSchema.parse(rawReceipt);
     const task = this.tasks.get(parsedReceipt.taskId);
 
@@ -430,6 +856,9 @@ export class TaskController {
 
     // Transition: EXECUTING (if not already) -> RECEIPT_VERIFIED -> COMPLETED (or FAILED if status was FAILURE)
     let currentTask = task;
+    if (currentTask.state === TaskLifecycleState.LEASED) {
+      currentTask = TaskStateMachine.transition(currentTask, TaskLifecycleState.DISPATCHED);
+    }
     if (currentTask.state === TaskLifecycleState.DISPATCHED) {
       currentTask = TaskStateMachine.transition(currentTask, TaskLifecycleState.EXECUTING);
     }

@@ -14,6 +14,11 @@ import {
   serializeContract,
   deserializeContract,
   TenantIdSchema,
+  WorkflowNodeSchema,
+  WorkflowEdgeSchema,
+  WorkflowDAGSchema,
+  TaskGraphCreateRequestSchema,
+  WorkflowExecutionReceiptSchema,
 } from '../src/index.js';
 import { z } from 'zod';
 
@@ -205,6 +210,156 @@ describe('@nexusos/contracts Foundation & Schema Validation Audit', () => {
       assert.strictEqual(deserialized.success, true);
       assert.strictEqual(deserialized.data.taskName, 'Analyze repository');
       assert.strictEqual(deserialized.meta.requestId, meta.requestId);
+    });
+  });
+
+  describe('Task 049 Workflow DAG and Receipt Contracts', () => {
+    const validLeaseHeader = {
+      lease_id: crypto.randomUUID(),
+      task_id: crypto.randomUUID(),
+      agent_id: crypto.randomUUID(),
+      tenant_id: crypto.randomUUID(),
+      issued_at: new Date().toISOString(),
+      expires_at: new Date(Date.now() + 60000).toISOString(),
+      scopes: ['capability:device:query'],
+      signature: 'valid-sig',
+    };
+
+    it('validates a valid WorkflowDAG and accepts it', () => {
+      const dag = {
+        workflowId: crypto.randomUUID(),
+        taskId: crypto.randomUUID(),
+        leaseHeader: validLeaseHeader,
+        correlationId: crypto.randomUUID(),
+        nodes: [
+          {
+            nodeId: 'node-1',
+            capabilityId: 'device.queryInfo',
+            runtimeCategory: 'DEVICE',
+            name: 'Step 1',
+          },
+          {
+            nodeId: 'node-2',
+            capabilityId: 'device.execute',
+            runtimeCategory: 'DEVICE',
+            name: 'Step 2',
+          },
+        ],
+        edges: [{ fromNodeId: 'node-1', toNodeId: 'node-2' }],
+      };
+
+      const parsed = WorkflowDAGSchema.parse(dag);
+      assert.strictEqual(parsed.workflowId, dag.workflowId);
+      assert.strictEqual(parsed.nodes.length, 2);
+      assert.strictEqual(parsed.edges?.length, 1);
+    });
+
+    it('rejects malformed nodes (empty ID or capability)', () => {
+      assert.throws(() => {
+        WorkflowNodeSchema.parse({
+          nodeId: '',
+          capabilityId: 'device.queryInfo',
+          runtimeCategory: 'DEVICE',
+        });
+      });
+      assert.throws(() => {
+        WorkflowNodeSchema.parse({ nodeId: 'node-1', capabilityId: '', runtimeCategory: 'DEVICE' });
+      });
+    });
+
+    it('validates WorkflowEdgeSchema and rejects malformed edges', () => {
+      const edge = WorkflowEdgeSchema.parse({ fromNodeId: 'node-1', toNodeId: 'node-2' });
+      assert.strictEqual(edge.fromNodeId, 'node-1');
+      assert.strictEqual(edge.toNodeId, 'node-2');
+      assert.throws(() => WorkflowEdgeSchema.parse({ fromNodeId: '', toNodeId: 'node-2' }));
+    });
+
+    it('rejects duplicate node IDs in a DAG', () => {
+      assert.throws(() => {
+        WorkflowDAGSchema.parse({
+          workflowId: crypto.randomUUID(),
+          taskId: crypto.randomUUID(),
+          leaseHeader: validLeaseHeader,
+          correlationId: crypto.randomUUID(),
+          nodes: [
+            { nodeId: 'node-1', capabilityId: 'device.queryInfo', runtimeCategory: 'DEVICE' },
+            { nodeId: 'node-1', capabilityId: 'device.execute', runtimeCategory: 'DEVICE' },
+          ],
+        });
+      }, /Duplicate nodeId/);
+    });
+
+    it('rejects edges with invalid/missing node references', () => {
+      assert.throws(() => {
+        WorkflowDAGSchema.parse({
+          workflowId: crypto.randomUUID(),
+          taskId: crypto.randomUUID(),
+          leaseHeader: validLeaseHeader,
+          correlationId: crypto.randomUUID(),
+          nodes: [
+            { nodeId: 'node-1', capabilityId: 'device.queryInfo', runtimeCategory: 'DEVICE' },
+          ],
+          edges: [{ fromNodeId: 'node-1', toNodeId: 'node-missing' }],
+        });
+      }, /Edge references non-existent nodes/);
+    });
+
+    it('rejects cyclic workflow graph structures', () => {
+      assert.throws(() => {
+        WorkflowDAGSchema.parse({
+          workflowId: crypto.randomUUID(),
+          taskId: crypto.randomUUID(),
+          leaseHeader: validLeaseHeader,
+          correlationId: crypto.randomUUID(),
+          nodes: [
+            { nodeId: 'a', capabilityId: 'device.queryInfo', runtimeCategory: 'DEVICE' },
+            { nodeId: 'b', capabilityId: 'device.execute', runtimeCategory: 'DEVICE' },
+          ],
+          edges: [
+            { fromNodeId: 'a', toNodeId: 'b' },
+            { fromNodeId: 'b', toNodeId: 'a' },
+          ],
+        });
+      }, /Circular dependency cycle detected/);
+    });
+
+    it('validates TaskGraphCreateRequestSchema', () => {
+      const validReq = {
+        title: 'Multi-step Pipeline',
+        targetAgentId: crypto.randomUUID(),
+        nodes: [
+          { nodeId: 'step-1', capabilityId: 'device.queryInfo', runtimeCategory: 'DEVICE' },
+          { nodeId: 'step-2', capabilityId: 'device.execute', runtimeCategory: 'DEVICE' },
+        ],
+        edges: [{ fromNodeId: 'step-1', toNodeId: 'step-2' }],
+      };
+
+      const parsed = TaskGraphCreateRequestSchema.parse(validReq);
+      assert.strictEqual(parsed.title, 'Multi-step Pipeline');
+      assert.strictEqual(parsed.nodes.length, 2);
+    });
+
+    it('validates WorkflowExecutionReceiptSchema', () => {
+      const receipt = {
+        receiptId: crypto.randomUUID(),
+        workflowId: crypto.randomUUID(),
+        taskId: crypto.randomUUID(),
+        leaseId: crypto.randomUUID(),
+        agentId: crypto.randomUUID(),
+        tenantId: crypto.randomUUID(),
+        status: 'SUCCESS' as const,
+        completedNodes: ['step-1'],
+        evidenceChecksum: 'a'.repeat(64),
+        nodeOutputs: {
+          'step-1': { ok: true },
+        },
+        completedAt: new Date().toISOString(),
+        signature: 'valid-sig',
+      };
+
+      const parsed = WorkflowExecutionReceiptSchema.parse(receipt);
+      assert.strictEqual(parsed.status, 'SUCCESS');
+      assert.deepStrictEqual(parsed.nodeOutputs['step-1'], { ok: true });
     });
   });
 });

@@ -2933,9 +2933,15 @@ export class DesktopAgent {
     if (typeof this.controlPlaneClient.registerCommandHandler === 'function') {
       this.controlPlaneClient.registerCommandHandler(async (envelope) => {
         if (envelope.payload && typeof envelope.payload === 'object') {
-          await this.taskScheduler.scheduleTask(
-            envelope.payload as unknown as TaskExecutionRequest,
-          );
+          if (envelope.schema_id === 'schema:nexusos:acp:workflow:execute:v1') {
+            const rawPayload = envelope.payload as Record<string, unknown>;
+            const dag = (rawPayload.workflow ? rawPayload.workflow : rawPayload) as WorkflowDAG;
+            await this.workflowEngine.executeWorkflow(dag);
+          } else {
+            await this.taskScheduler.scheduleTask(
+              envelope.payload as unknown as TaskExecutionRequest,
+            );
+          }
         }
       });
     }
@@ -3105,5 +3111,15 @@ export class DesktopAgent {
       registeredRuntimes: this.runtimeRegistry.listRuntimes().map((r) => r.runtimeId),
       lastHeartbeatAt: new Date().toISOString(),
     });
+  }
+
+  public getWorkflowEngine(): WorkflowEngine {
+    return this.workflowEngine;
+  }
+
+  public async executeWorkflow(
+    dag: WorkflowDAG,
+  ): Promise<import('./orchestrator/types.js').TaskExecutionResult> {
+    return this.workflowEngine.executeWorkflow(dag);
   }
 }

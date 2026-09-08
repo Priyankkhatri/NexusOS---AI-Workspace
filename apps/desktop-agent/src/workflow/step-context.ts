@@ -77,8 +77,25 @@ export class WorkflowStepContext {
     return result;
   }
 
+  /**
+   * Resolves template expressions in values, e.g. {{nodes.<nodeId>.output.<key>}}
+   * Enforces 049-SEC-04: Strict prototype pollution guards and path validation.
+   */
+  public resolveInterpolation(value: unknown): unknown {
+    return resolveInterpolation(value, { nodes: this.getAllOutputsForInterpolation() });
+  }
+
+  public getAllOutputsForInterpolation(): Record<string, { output?: Record<string, unknown> }> {
+    const res: Record<string, { output?: Record<string, unknown> }> = {};
+    for (const [nodeId, output] of this.outputs.entries()) {
+      res[nodeId] = { output };
+    }
+    return res;
+  }
+
   public buildNodeExecutionPayload(node: WorkflowNode): Record<string, unknown> {
-    const payload = JSON.parse(JSON.stringify(node.payload || {}));
+    const rawPayload = JSON.parse(JSON.stringify(node.payload || {}));
+    const interpolatedPayload = this.resolveInterpolation(rawPayload) as Record<string, unknown>;
 
     // Inject outputs from explicit parent dependencies if present
     if (node.dependencies && Array.isArray(node.dependencies)) {
@@ -89,9 +106,113 @@ export class WorkflowStepContext {
           parentOutputs[parentId] = parentOut;
         }
       }
-      payload._dependencyOutputs = parentOutputs;
+      interpolatedPayload._dependencyOutputs = parentOutputs;
     }
 
-    return payload;
+    return interpolatedPayload;
   }
+}
+
+/**
+ * Standalone prototype-pollution-safe context interpolation (049-SEC-04)
+ * Resolves expressions such as {{nodes.<nodeId>.output.<key>}}
+ */
+export function resolveInterpolation(
+  value: unknown,
+  context: { nodes: Record<string, { output?: Record<string, unknown> }> },
+): unknown {
+  if (typeof value === 'string') {
+    const rawMatches = Array.from(value.matchAll(/\{\{([^}]+)\}\}/g));
+    if (rawMatches.length === 0) {
+      return value;
+    }
+
+    for (const m of rawMatches) {
+      const expr = m[1].trim();
+      const parts = expr.split('.');
+      for (const part of parts) {
+        if (part === '__proto__' || part === 'constructor' || part === 'prototype') {
+          throw new Error(
+            `049-SEC-04: Prototype pollution attempt detected in workflow expression: '${expr}' contains unsafe property '${part}'.`,
+          );
+        }
+      }
+      if (!/^nodes\.[a-zA-Z0-9_-]+\.output\.[a-zA-Z0-9_.-]+$/.test(expr)) {
+        throw new Error(
+          `049-SEC-04: Invalid workflow interpolation pattern '{{${expr}}}'. Must match '{{nodes.<id>.output.<key>}}'.`,
+        );
+      }
+    }
+
+    const singleMatch = /^\{\{nodes\.([a-zA-Z0-9_-]+)\.output\.([a-zA-Z0-9_.-]+)\}\}$/.exec(
+      value.trim(),
+    );
+    if (singleMatch) {
+      const nodeId = singleMatch[1];
+      const keyPath = singleMatch[2];
+      const nodeData = context.nodes[nodeId];
+      if (nodeData && nodeData.output) {
+        let current: unknown = nodeData.output;
+        for (const part of keyPath.split('.')) {
+          if (part === '__proto__' || part === 'constructor' || part === 'prototype') {
+            throw new Error('049-SEC-04: Prototype pollution attempt detected in key navigation.');
+          }
+          if (
+            current &&
+            typeof current === 'object' &&
+            part in (current as Record<string, unknown>)
+          ) {
+            current = (current as Record<string, unknown>)[part];
+          } else {
+            return value;
+          }
+        }
+        return current;
+      }
+      return value;
+    }
+
+    const templateRegex = /\{\{nodes\.([a-zA-Z0-9_-]+)\.output\.([a-zA-Z0-9_.-]+)\}\}/g;
+    return value.replace(templateRegex, (_match, nodeId, keyPath) => {
+      const nodeData = context.nodes[nodeId];
+      if (!nodeData || !nodeData.output) {
+        return _match;
+      }
+      let current: unknown = nodeData.output;
+      for (const part of keyPath.split('.')) {
+        if (part === '__proto__' || part === 'constructor' || part === 'prototype') {
+          throw new Error('049-SEC-04: Prototype pollution attempt detected in key navigation.');
+        }
+        if (
+          current &&
+          typeof current === 'object' &&
+          part in (current as Record<string, unknown>)
+        ) {
+          current = (current as Record<string, unknown>)[part];
+        } else {
+          return _match;
+        }
+      }
+      return typeof current === 'object' ? JSON.stringify(current) : String(current);
+    });
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((item) => resolveInterpolation(item, context));
+  }
+
+  if (value && typeof value === 'object') {
+    const resolvedObj: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value)) {
+      if (k === '__proto__' || k === 'constructor' || k === 'prototype') {
+        throw new Error(
+          `049-SEC-04: Prototype pollution attempt detected: unsafe property key '${k}'.`,
+        );
+      }
+      resolvedObj[k] = resolveInterpolation(v, context);
+    }
+    return resolvedObj;
+  }
+
+  return value;
 }

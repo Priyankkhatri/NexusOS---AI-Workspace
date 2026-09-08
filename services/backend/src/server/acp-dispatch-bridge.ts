@@ -68,6 +68,45 @@ export class ACPDispatchBridge {
   }
 
   /**
+   * Dispatches a leased workflow DAG to the Desktop Agent via ACP Message Envelope
+   */
+  public async dispatchWorkflow(
+    task: TaskRecord,
+    dag: import('@nexusos/contracts').WorkflowDAG,
+  ): Promise<ACPMessageEnvelope> {
+    if (!task.lease) {
+      throw new Error(`Cannot dispatch workflow '${task.taskId}': task has no execution lease.`);
+    }
+
+    const messageId = crypto.randomUUID();
+    const envelope = createACPMessageEnvelope(
+      '1.0.0',
+      'control-plane-backend',
+      task.targetAgentId,
+      'schema:nexusos:acp:workflow:execute:v1',
+      task.taskId,
+      {
+        workflow: dag,
+        dag,
+        task_id: task.taskId,
+        taskId: task.taskId,
+        workflow_id: dag.workflowId,
+        workflowId: dag.workflowId,
+        correlation_id: task.taskId,
+        correlationId: task.taskId,
+        leaseHeader: task.lease,
+        message_id: messageId,
+      },
+    );
+
+    if (this.targetAgent) {
+      await this.targetAgent.receiveACPMessage(envelope);
+    }
+
+    return envelope;
+  }
+
+  /**
    * Inbound receipt event from Desktop Agent over ACP stream
    */
   public async handleInboundEvent(event: EventEnvelope): Promise<void> {
