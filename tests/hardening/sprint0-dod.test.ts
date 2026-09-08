@@ -224,7 +224,10 @@ describe('Sprint 0 Definition of Done Audit (Blueprint Section 56)', () => {
   // Criterion 17: Audit works
   it('[DoD-17] Audit receipt generation and cryptographic hashing work', () => {
     const hash = computeEvidenceHash({ step: 1, action: 'read' });
-    assert.ok(typeof hash === 'string' && hash.length === 64, 'Evidence hash must be 64-char SHA256 hex');
+    assert.ok(
+      typeof hash === 'string' && hash.length === 64,
+      'Evidence hash must be 64-char SHA256 hex',
+    );
 
     const receiptData = {
       receiptId: 'rcpt-123',
@@ -238,7 +241,10 @@ describe('Sprint 0 Definition of Done Audit (Blueprint Section 56)', () => {
       completedAt: new Date().toISOString(),
     };
     const sig = computeReceiptSignature(receiptData, 'test-signing-key');
-    assert.ok(typeof sig === 'string' && sig.length === 64, 'Receipt signature must be 64-char HMAC-SHA256 hex');
+    assert.ok(
+      typeof sig === 'string' && sig.length === 64,
+      'Receipt signature must be 64-char HMAC-SHA256 hex',
+    );
   });
 
   // Criterion 18: Security scanning works
