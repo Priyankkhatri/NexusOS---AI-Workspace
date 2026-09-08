@@ -201,9 +201,10 @@ describe('Task 043 — Local Terminal IPC & Host Integration Tests', () => {
     const res = (await callIPCHandler('terminal.listProcesses', {
       leaseHeader: lease,
       allowedRoots: [canonicalTmp],
-    })) as { success: boolean; data?: unknown[] };
+    })) as { processes: unknown[] };
 
-    assert.equal(res.success, true);
+    assert.ok(res);
+    assert.ok(Array.isArray(res.processes));
   });
 
   it('6. terminal.killProcess responds correctly via IPC', async () => {
