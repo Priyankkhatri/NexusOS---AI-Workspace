@@ -248,7 +248,10 @@ describe('Task 042 — Local Filesystem Adversarial Security Suite (042-SEC-01 -
     })) as { success: boolean; error?: { code: string } };
 
     assert.equal(res.success, false);
-    assert.equal(res.error?.code, 'PATH_OUTSIDE_SCOPE');
+    assert.ok(
+      res.error?.code === 'PROTECTED_PATH_DENIED' || res.error?.code === 'PATH_OUTSIDE_SCOPE',
+      `Expected PROTECTED_PATH_DENIED or PATH_OUTSIDE_SCOPE, got ${res.error?.code}`,
+    );
   });
 
   it('042-SEC-06: File write exceeding configured maxFileSizeByte rejected', async () => {

@@ -12,3 +12,4 @@ export * from './events/index.js';
 export * from './acp/index.js';
 export * from './permissions/index.js';
 export * from './tasks/index.js';
+export * from './filesystem/index.js';

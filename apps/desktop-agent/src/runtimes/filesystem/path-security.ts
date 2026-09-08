@@ -13,6 +13,36 @@ export interface PathSecurityResult {
 }
 
 export class PathSecurityService {
+  private static readonly SENSITIVE_SYS_PREFIXES = [
+    // Windows
+    'c:\\windows',
+    'c:\\program files',
+    'c:\\program files (x86)',
+    'c:\\programdata',
+    // Unix / Linux
+    '/etc',
+    '/boot',
+    '/dev',
+    '/proc',
+    '/sys',
+    '/usr',
+    '/var/run',
+    '/root',
+  ];
+
+  private static readonly SENSITIVE_CREDENTIAL_SEGMENTS = new Set([
+    '.ssh',
+    '.aws',
+    '.azure',
+    '.kube',
+    '.gnupg',
+    '.git-credentials',
+    '.npmrc',
+    '.dockercfg',
+    'id_rsa',
+    'id_ed25519',
+  ]);
+
   /**
    * Normalizes a path string, stripping trailing slashes except for root drives.
    */
@@ -39,6 +69,7 @@ export class PathSecurityService {
   /**
    * Evaluates if a given path is within one of the allowed roots.
    * Handles canonical realpath resolution for symlinks, junctions, and relative traversal.
+   * Enforces NTFS Alternate Data Stream (ADS) rejection and sensitive OS path protection.
    */
   public validatePath(targetPath: string, allowedRoots: string[]): PathSecurityResult {
     if (!allowedRoots || allowedRoots.length === 0) {
@@ -69,12 +100,13 @@ export class PathSecurityService {
       };
     }
 
-    // 2. Reject raw UNC device paths or dangerous device prefixes (\\.\, \\?\, \\server\share)
+    // 2. Reject raw UNC device paths or dangerous device prefixes (\\.\, \\?\, \\server\share, \Device\)
     if (
       normalizedInput.startsWith('\\\\.\\') ||
       normalizedInput.startsWith('\\\\?\\') ||
       normalizedInput.startsWith('//./') ||
-      normalizedInput.startsWith('//?/')
+      normalizedInput.startsWith('//?/') ||
+      normalizedInput.startsWith('\\Device\\')
     ) {
       return {
         valid: false,
@@ -87,45 +119,50 @@ export class PathSecurityService {
       };
     }
 
-    // 3. Normalize allowed roots
+    // 3. Reject NTFS Alternate Data Streams (ADS) (e.g. file.txt:stream, dir:stream, file.txt::$DATA)
+    const isWin = process.platform === 'win32';
+    const hasAds = isWin
+      ? (/^[a-zA-Z]:/.test(targetPath) && targetPath.slice(2).includes(':')) ||
+        (!/^[a-zA-Z]:/.test(targetPath) && targetPath.includes(':'))
+      : targetPath.includes(':');
+
+    if (hasAds) {
+      return {
+        valid: false,
+        canonicalPath: '',
+        isSymlink: false,
+        error: {
+          code: 'ADS_PROHIBITED',
+          message: 'NTFS Alternate Data Streams (ADS) are strictly prohibited.',
+        },
+      };
+    }
+
+    // 4. Sensitive Path Check on Raw / Normalized Input
+    const rawSensitiveError = this.checkSensitivePath(normalizedInput);
+    if (rawSensitiveError) {
+      return {
+        valid: false,
+        canonicalPath: normalizedInput,
+        isSymlink: false,
+        error: rawSensitiveError,
+      };
+    }
+
+    // 5. Normalize and canonicalize allowed roots
     const canonicalRoots = allowedRoots.map((root) => {
-      const norm = this.normalizePath(root);
-      try {
-        return fs.existsSync(norm) ? fs.realpathSync(norm) : norm;
-      } catch {
-        return norm;
-      }
+      return this.resolveCanonicalPath(root).canonicalPath;
     });
 
-    // 4. Resolve canonical realpath
+    // 6. Resolve canonical realpath with ancestor symlink traversal
     const absolutePath = path.resolve(normalizedInput);
-    let isSymlink = false;
-    let canonicalPath = absolutePath;
+    let canonicalPath: string;
+    let isDirectSymlink = false;
 
     try {
-      // Check lstat to detect symlink / junction
-      if (fs.existsSync(absolutePath)) {
-        const lstat = fs.lstatSync(absolutePath);
-        if (lstat.isSymbolicLink()) {
-          isSymlink = true;
-        }
-        canonicalPath = fs.realpathSync(absolutePath);
-      } else {
-        // Path does not exist yet (e.g. creating a new file).
-        // Canonicalize the existing parent directory.
-        const parentDir = path.dirname(absolutePath);
-        if (fs.existsSync(parentDir)) {
-          const parentLstat = fs.lstatSync(parentDir);
-          if (parentLstat.isSymbolicLink()) {
-            isSymlink = true;
-          }
-          const canonicalParent = fs.realpathSync(parentDir);
-          canonicalPath = path.join(canonicalParent, path.basename(absolutePath));
-        } else {
-          // Parent doesn't exist either; resolve relative segments
-          canonicalPath = absolutePath;
-        }
-      }
+      const resolved = this.resolveCanonicalPath(normalizedInput);
+      canonicalPath = resolved.canonicalPath;
+      isDirectSymlink = resolved.isDirectSymlink;
     } catch (err) {
       return {
         valid: false,
@@ -138,10 +175,18 @@ export class PathSecurityService {
       };
     }
 
-    // Re-normalize canonicalPath
-    canonicalPath = this.normalizePath(canonicalPath);
+    // 7. Sensitive Path Check on Canonical Resolved Path
+    const canonicalSensitiveError = this.checkSensitivePath(canonicalPath);
+    if (canonicalSensitiveError) {
+      return {
+        valid: false,
+        canonicalPath,
+        isSymlink: isDirectSymlink,
+        error: canonicalSensitiveError,
+      };
+    }
 
-    // 5. Verify Scope against Canonical Roots
+    // 8. Verify Scope against Canonical Roots
     let matchedRoot: string | undefined;
 
     for (const root of canonicalRoots) {
@@ -153,13 +198,23 @@ export class PathSecurityService {
     }
 
     if (!matchedRoot) {
+      // Determine if the escape was caused by a symlink/reparse point redirection:
+      // A symlink escape occurs when the path was lexically inside an allowed root but canonically outside,
+      // or when a symlink was directly encountered during resolution.
+      const lexicallyInsideRoot = allowedRoots.some((root) => {
+        const normRoot = this.normalizePath(path.resolve(root));
+        return this.isSubpath(this.normalizePath(absolutePath), normRoot);
+      });
+
+      const isSymlinkEscape = isDirectSymlink || lexicallyInsideRoot;
+
       return {
         valid: false,
         canonicalPath,
-        isSymlink,
+        isSymlink: isSymlinkEscape,
         error: {
-          code: isSymlink ? 'SYMLINK_SCOPE_ESCAPE' : 'PATH_OUTSIDE_SCOPE',
-          message: isSymlink
+          code: isSymlinkEscape ? 'SYMLINK_SCOPE_ESCAPE' : 'PATH_OUTSIDE_SCOPE',
+          message: isSymlinkEscape
             ? `Path resolves through a symlink to '${canonicalPath}' outside allowed roots.`
             : `Canonical path '${canonicalPath}' is outside the authorized filesystem scopes.`,
         },
@@ -170,8 +225,119 @@ export class PathSecurityService {
       valid: true,
       canonicalPath,
       matchedRoot,
-      isSymlink,
+      isSymlink: isDirectSymlink,
     };
+  }
+
+  /**
+   * Helper to resolve a path to its canonical realpath, resolving existing ancestors
+   * for uncreated paths and detecting symbolic links / junctions.
+   */
+  private resolveCanonicalPath(target: string): {
+    canonicalPath: string;
+    isDirectSymlink: boolean;
+  } {
+    const absolutePath = path.resolve(target);
+    let isDirectSymlink = false;
+    let canonicalPath = absolutePath;
+
+    try {
+      let curr = absolutePath;
+      const uncreatedSegments: string[] = [];
+
+      while (curr && !fs.existsSync(curr)) {
+        const parent = path.dirname(curr);
+        if (parent === curr) {
+          break;
+        }
+        uncreatedSegments.unshift(path.basename(curr));
+        curr = parent;
+      }
+
+      if (curr && fs.existsSync(curr)) {
+        try {
+          const lst = fs.lstatSync(curr);
+          if (lst.isSymbolicLink()) {
+            isDirectSymlink = true;
+          }
+        } catch {
+          // Ignore stat errors
+        }
+
+        const realExisting = fs.realpathSync(curr);
+        canonicalPath =
+          uncreatedSegments.length > 0
+            ? path.join(realExisting, ...uncreatedSegments)
+            : realExisting;
+      } else {
+        canonicalPath = absolutePath;
+      }
+    } catch {
+      canonicalPath = absolutePath;
+    }
+
+    return {
+      canonicalPath: this.normalizePath(canonicalPath),
+      isDirectSymlink,
+    };
+  }
+
+  /**
+   * Helper to detect access to protected host system directories or credential stores.
+   */
+  private checkSensitivePath(inputPath: string): { code: string; message: string } | undefined {
+    const isWindows = process.platform === 'win32';
+    const lower = isWindows ? inputPath.toLowerCase() : inputPath;
+    const noDriveLower = lower.replace(/^[a-z]:/i, '');
+
+    // Check system directory prefixes
+    for (const prefix of PathSecurityService.SENSITIVE_SYS_PREFIXES) {
+      const p = prefix.toLowerCase();
+      const pNormSlash = p.replace(/\\/g, '/');
+      const pNormBackslash = p.replace(/\//g, '\\');
+      if (
+        lower === p ||
+        lower.startsWith(p + '\\') ||
+        lower.startsWith(p + '/') ||
+        noDriveLower === pNormSlash ||
+        noDriveLower === pNormBackslash ||
+        noDriveLower.startsWith(pNormSlash + '/') ||
+        noDriveLower.startsWith(pNormSlash + '\\') ||
+        noDriveLower.startsWith(pNormBackslash + '\\') ||
+        noDriveLower.startsWith(pNormBackslash + '/')
+      ) {
+        return {
+          code: 'PROTECTED_PATH_DENIED',
+          message: `Access to protected system path '${prefix}' is denied.`,
+        };
+      }
+    }
+
+    // Check credential store segments
+    const segments = inputPath.split(/[/\\]/).map((s) => s.toLowerCase());
+    for (const cred of PathSecurityService.SENSITIVE_CREDENTIAL_SEGMENTS) {
+      if (segments.includes(cred)) {
+        return {
+          code: 'PROTECTED_PATH_DENIED',
+          message: `Access to protected credential location '${cred}' is denied.`,
+        };
+      }
+    }
+
+    // Check browser credential store paths
+    if (
+      (lower.includes('user data') &&
+        (lower.includes('cookies') || lower.includes('login data'))) ||
+      lower.includes('logins.json') ||
+      lower.includes('key4.db')
+    ) {
+      return {
+        code: 'PROTECTED_PATH_DENIED',
+        message: 'Access to protected browser credential store is denied.',
+      };
+    }
+
+    return undefined;
   }
 
   /**

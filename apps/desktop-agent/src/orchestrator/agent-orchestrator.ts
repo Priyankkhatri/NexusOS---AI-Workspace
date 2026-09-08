@@ -342,17 +342,36 @@ export class AgentOrchestrator implements IAgentOrchestrator {
       let executionOutput: unknown;
       let executionError: Error | undefined;
 
+      const rawPayload = (request.payload as Record<string, unknown>) || {};
       const runtimePayload = {
-        ...request.payload,
+        ...rawPayload,
         signal: abortController.signal,
+        leaseHeader: rawPayload.leaseHeader ?? request.leaseHeader,
+        taskId: rawPayload.taskId ?? request.task_id,
+        stepId: rawPayload.stepId ?? request.step_id,
+        correlationId: rawPayload.correlationId ?? request.correlation_id,
+        capabilityId: rawPayload.capabilityId ?? request.capabilityId,
       };
 
       try {
         const category = request.runtimeCategory.toLowerCase();
-        if (category === 'filesystem' && this.filesystemRuntime) {
-          executionOutput = await (
+        if ((category === 'filesystem' || category === 'fs') && this.filesystemRuntime) {
+          const fsRes = await (
             this.filesystemRuntime as unknown as { execute: (p: unknown) => Promise<unknown> }
           ).execute(runtimePayload);
+          if (
+            fsRes &&
+            typeof fsRes === 'object' &&
+            'success' in fsRes &&
+            (fsRes as { success: boolean }).success === false
+          ) {
+            const errObj = (fsRes as { error?: { code?: string; message?: string } }).error;
+            const err = new Error(errObj?.message || 'Filesystem operation failed');
+            (err as unknown as { code: string }).code =
+              errObj?.code || 'FILESYSTEM_OPERATION_FAILED';
+            throw err;
+          }
+          executionOutput = fsRes;
         } else if (category === 'terminal' && this.terminalRuntime) {
           executionOutput = await (
             this.terminalRuntime as unknown as { execute: (p: unknown) => Promise<unknown> }
@@ -442,7 +461,7 @@ export class AgentOrchestrator implements IAgentOrchestrator {
             success: false,
             taskId: request.task_id,
             stepId: request.step_id,
-            errorCode: 'EXECUTION_ERROR',
+            errorCode: (executionError as { code?: string }).code || 'EXECUTION_ERROR',
             errorMessage: redactedErrorMessage || 'Runtime execution error.',
             executionTimeMs: Date.now() - startTime,
           };

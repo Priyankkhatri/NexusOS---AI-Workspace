@@ -5,6 +5,7 @@ import { IRuntimeRouter } from './types.js';
 export class RuntimeRouter implements IRuntimeRouter {
   private static readonly VALID_CATEGORIES = new Set([
     'filesystem',
+    'fs',
     'terminal',
     'browser',
     'plugin',
@@ -38,6 +39,9 @@ export class RuntimeRouter implements IRuntimeRouter {
       return null;
     }
     const category = (capabilityId.split('.')[0] || capabilityId.split(':')[0]).toLowerCase();
+    if (category === 'fs') {
+      return 'filesystem';
+    }
     if (RuntimeRouter.VALID_CATEGORIES.has(category)) {
       return category;
     }
@@ -52,6 +56,8 @@ export class RuntimeRouter implements IRuntimeRouter {
     if (!expectedCategory) {
       return false;
     }
-    return expectedCategory === runtimeCategory.toLowerCase();
+    const actual = runtimeCategory.toLowerCase();
+    const normalizedActual = actual === 'fs' ? 'filesystem' : actual;
+    return expectedCategory === normalizedActual;
   }
 }

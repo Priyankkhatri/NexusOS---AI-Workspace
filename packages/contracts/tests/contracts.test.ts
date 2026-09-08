@@ -19,6 +19,10 @@ import {
   WorkflowDAGSchema,
   TaskGraphCreateRequestSchema,
   WorkflowExecutionReceiptSchema,
+  FilesystemOperation,
+  resolveFilesystemOperation,
+  WorkspaceDirectoryJailConfigSchema,
+  computeFilesystemEvidenceChecksum,
 } from '../src/index.js';
 import { z } from 'zod';
 
@@ -360,6 +364,59 @@ describe('@nexusos/contracts Foundation & Schema Validation Audit', () => {
       const parsed = WorkflowExecutionReceiptSchema.parse(receipt);
       assert.strictEqual(parsed.status, 'SUCCESS');
       assert.deepStrictEqual(parsed.nodeOutputs['step-1'], { ok: true });
+    });
+  });
+
+  describe('Task 050 Filesystem & Workspace Jail Contracts', () => {
+    it('resolves canonical and dot-notated filesystem operations', () => {
+      assert.strictEqual(resolveFilesystemOperation('fs.readFile'), FilesystemOperation.READ);
+      assert.strictEqual(resolveFilesystemOperation('fs:read'), FilesystemOperation.READ);
+      assert.strictEqual(
+        resolveFilesystemOperation('filesystem.writeFile'),
+        FilesystemOperation.WRITE,
+      );
+      assert.strictEqual(resolveFilesystemOperation('fs:delete'), FilesystemOperation.DELETE);
+      assert.strictEqual(resolveFilesystemOperation('fs.copyFile'), FilesystemOperation.COPY);
+      assert.strictEqual(resolveFilesystemOperation('fs.moveFile'), FilesystemOperation.MOVE);
+      assert.strictEqual(resolveFilesystemOperation('fs.statFile'), FilesystemOperation.STAT);
+      assert.strictEqual(resolveFilesystemOperation('unknown.operation'), undefined);
+    });
+
+    it('validates WorkspaceDirectoryJailConfigSchema', () => {
+      const validJail = {
+        workspaceId: crypto.randomUUID(),
+        tenantId: crypto.randomUUID(),
+        rootPath: 'C:\\NexusOS\\workspaces\\ws-1',
+        isReadOnly: false,
+      };
+      const parsed = WorkspaceDirectoryJailConfigSchema.parse(validJail);
+      assert.strictEqual(parsed.workspaceId, validJail.workspaceId);
+      assert.strictEqual(parsed.isReadOnly, false);
+    });
+
+    it('computes deterministic filesystem evidence checksum', () => {
+      const checksum1 = computeFilesystemEvidenceChecksum({
+        taskId: 'task-1',
+        leaseId: 'lease-1',
+        operation: 'fs:write',
+        canonicalPath: 'C:\\workspace\\test.txt',
+        preHash: 'a'.repeat(64),
+        postHash: 'b'.repeat(64),
+        bytesProcessed: 100,
+        snapshotId: 'snap-1',
+      });
+      const checksum2 = computeFilesystemEvidenceChecksum({
+        taskId: 'task-1',
+        leaseId: 'lease-1',
+        operation: 'fs:write',
+        canonicalPath: 'C:\\workspace\\test.txt',
+        preHash: 'a'.repeat(64),
+        postHash: 'b'.repeat(64),
+        bytesProcessed: 100,
+        snapshotId: 'snap-1',
+      });
+      assert.strictEqual(checksum1, checksum2);
+      assert.match(checksum1, /^[a-f0-9]{64}$/);
     });
   });
 });

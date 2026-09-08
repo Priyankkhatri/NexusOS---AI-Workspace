@@ -6,12 +6,18 @@ import {
   EventEnvelope,
   createNexusOSError,
   ErrorCategory,
+  ExecutionLeaseHeader,
+  FilesystemOperation,
+  computeFilesystemEvidenceChecksum,
+  resolveFilesystemOperation,
+  CANONICAL_FS_CAPABILITIES,
 } from '@nexusos/contracts';
 import { ExecutionLeaseBoundary } from '../../permissions/lease-boundary.js';
 import { RuntimeCategory, ToolRuntimeDescriptor } from '../../registry/runtime-registry.js';
 import { AgentLogger } from '../../observability/agent-logger.js';
 import { PathSecurityService } from './path-security.js';
 import { SnapshotManager } from './snapshot.js';
+import { WorkspaceDirectoryJail } from './workspace-jail.js';
 import {
   FilesystemOperationName,
   FilesystemOperationRequestContext,
@@ -27,6 +33,8 @@ import {
   FilesystemOperationResult,
   DEFAULT_FILESYSTEM_RESOURCE_LIMITS,
   Preconditions,
+  FilesystemExecutionRequest,
+  FilesystemResourceLimits,
 } from './types.js';
 
 export class FilesystemRuntime {
@@ -37,7 +45,12 @@ export class FilesystemRuntime {
     private readonly pathSecurity: PathSecurityService = new PathSecurityService(),
     private readonly snapshotManager: SnapshotManager = new SnapshotManager(),
     private readonly logger?: AgentLogger,
+    private readonly workspaceJail: WorkspaceDirectoryJail = new WorkspaceDirectoryJail(),
   ) {}
+
+  public getWorkspaceJail(): WorkspaceDirectoryJail {
+    return this.workspaceJail;
+  }
 
   public getDescriptor(): ToolRuntimeDescriptor {
     return Object.freeze({
@@ -155,10 +168,11 @@ export class FilesystemRuntime {
 
         // Create snapshot before overwrite
         let snapshotId: string | undefined;
-        if (targetExists && context.allowedRoots[0]) {
+        const primaryRoot = this.getPrimaryRoot(context);
+        if (targetExists && primaryRoot) {
           const snapshot = await this.snapshotManager.createSnapshot(
             canonicalPath,
-            context.allowedRoots[0],
+            primaryRoot,
             context.lease.task_id,
           );
           snapshotId = snapshot?.snapshotId;
@@ -353,8 +367,19 @@ export class FilesystemRuntime {
     request: CopyFileRequest,
     context: FilesystemOperationRequestContext,
   ): Promise<{ result: FilesystemOperationResult<FileMetadataResult>; event: EventEnvelope }> {
+    const effectiveRoots = this.resolveEffectiveRoots(context, false);
+    if (!effectiveRoots.allowed) {
+      return this.buildDeniedResult(
+        FilesystemOperationName.COPY,
+        request.sourcePath,
+        context,
+        effectiveRoots.error!.code,
+        effectiveRoots.error!.message,
+      );
+    }
+
     // Validate source path first
-    const sourceSecurity = this.pathSecurity.validatePath(request.sourcePath, context.allowedRoots);
+    const sourceSecurity = this.pathSecurity.validatePath(request.sourcePath, effectiveRoots.roots);
     if (!sourceSecurity.valid) {
       return this.buildDeniedResult(
         FilesystemOperationName.COPY,
@@ -432,7 +457,18 @@ export class FilesystemRuntime {
     request: MoveFileRequest,
     context: FilesystemOperationRequestContext,
   ): Promise<{ result: FilesystemOperationResult<FileMetadataResult>; event: EventEnvelope }> {
-    const sourceSecurity = this.pathSecurity.validatePath(request.sourcePath, context.allowedRoots);
+    const effectiveRoots = this.resolveEffectiveRoots(context, true);
+    if (!effectiveRoots.allowed) {
+      return this.buildDeniedResult(
+        FilesystemOperationName.MOVE,
+        request.sourcePath,
+        context,
+        effectiveRoots.error!.code,
+        effectiveRoots.error!.message,
+      );
+    }
+
+    const sourceSecurity = this.pathSecurity.validatePath(request.sourcePath, effectiveRoots.roots);
     if (!sourceSecurity.valid) {
       return this.buildDeniedResult(
         FilesystemOperationName.MOVE,
@@ -464,10 +500,11 @@ export class FilesystemRuntime {
 
         // Create snapshot before move/overwrite
         let snapshotId: string | undefined;
-        if (context.allowedRoots[0]) {
+        const primaryRoot = this.getPrimaryRoot(context);
+        if (primaryRoot) {
           const snapshot = await this.snapshotManager.createSnapshot(
             sourceCanonical,
-            context.allowedRoots[0],
+            primaryRoot,
             context.lease.task_id,
           );
           snapshotId = snapshot?.snapshotId;
@@ -533,10 +570,11 @@ export class FilesystemRuntime {
 
         // Create snapshot before delete
         let snapshotId: string | undefined;
-        if (context.allowedRoots[0]) {
+        const primaryRoot = this.getPrimaryRoot(context);
+        if (primaryRoot) {
           const snapshot = await this.snapshotManager.createSnapshot(
             canonicalPath,
-            context.allowedRoots[0],
+            primaryRoot,
             context.lease.task_id,
           );
           snapshotId = snapshot?.snapshotId;
@@ -559,7 +597,8 @@ export class FilesystemRuntime {
   }
 
   /**
-   * Centralized executor enforcing: Lease Validation -> Scope Capability -> Path Security -> Execution -> Evidence Envelope
+   * Centralized executor enforcing:
+   * Lease Validation -> Scope Capability -> Workspace Jail -> Path Security -> Execution -> Evidence Envelope
    */
   private async executeProtectedOperation<T>(
     operation: FilesystemOperationName,
@@ -573,6 +612,7 @@ export class FilesystemRuntime {
     }>,
   ): Promise<{ result: FilesystemOperationResult<T>; event: EventEnvelope }> {
     const evidenceId = crypto.randomUUID();
+    const isMutating = FilesystemRuntime.MUTATING_OPERATIONS.has(operation);
 
     // 1. Lease & Policy Evaluation
     const leaseResult = await this.leaseBoundary.validateLease(context.lease, context.subject);
@@ -597,8 +637,31 @@ export class FilesystemRuntime {
       );
     }
 
-    // 3. Path Security Validation
-    const pathSec = this.pathSecurity.validatePath(rawPath, context.allowedRoots);
+    // Explicit Context Read-Only Check for Mutating Operations
+    if (context.isReadOnly && isMutating) {
+      return this.buildDeniedResult(
+        operation,
+        rawPath,
+        context,
+        'WRITE_NOT_AUTHORIZED',
+        `Operation '${operation}' is prohibited because the execution context is read-only.`,
+      );
+    }
+
+    // 3. Workspace Jail Validation & Effective Root Resolution
+    const effectiveRoots = this.resolveEffectiveRoots(context, isMutating);
+    if (!effectiveRoots.allowed) {
+      return this.buildDeniedResult(
+        operation,
+        rawPath,
+        context,
+        effectiveRoots.error!.code,
+        effectiveRoots.error!.message,
+      );
+    }
+
+    // 4. Path Security Validation
+    const pathSec = this.pathSecurity.validatePath(rawPath, effectiveRoots.roots);
     if (!pathSec.valid) {
       return this.buildDeniedResult(
         operation,
@@ -609,9 +672,49 @@ export class FilesystemRuntime {
       );
     }
 
-    // 4. Operation Execution
+    // 5. Pre-mutation State / Hash Capture
+    let preHash: string | null = null;
+    if (isMutating) {
+      try {
+        if (fs.existsSync(pathSec.canonicalPath) && fs.statSync(pathSec.canonicalPath).isFile()) {
+          preHash = crypto
+            .createHash('sha256')
+            .update(fs.readFileSync(pathSec.canonicalPath))
+            .digest('hex');
+        }
+      } catch {
+        preHash = null;
+      }
+    }
+
+    // 6. Operation Execution
     try {
       const outcome = await action(pathSec.canonicalPath);
+
+      // 7. Post-mutation State / Hash Capture
+      let postHash: string | null = null;
+      if (isMutating) {
+        try {
+          if (fs.existsSync(pathSec.canonicalPath) && fs.statSync(pathSec.canonicalPath).isFile()) {
+            postHash = crypto
+              .createHash('sha256')
+              .update(fs.readFileSync(pathSec.canonicalPath))
+              .digest('hex');
+          }
+        } catch {
+          postHash = null;
+        }
+      }
+
+      // 8. Cryptographically Linked Evidence Checksum
+      const evidenceChecksum = computeFilesystemEvidenceChecksum({
+        taskId: context.lease.task_id,
+        leaseId: context.lease.lease_id,
+        operation,
+        canonicalPath: pathSec.canonicalPath,
+        preHash: preHash ?? undefined,
+        postHash: postHash ?? undefined,
+      });
 
       const result: FilesystemOperationResult<T> = {
         success: true,
@@ -622,9 +725,12 @@ export class FilesystemRuntime {
         data: outcome.data,
         snapshotId: outcome.snapshotId,
         evidenceId,
+        preHash: preHash ?? undefined,
+        postHash: postHash ?? undefined,
+        evidenceChecksum,
       };
 
-      // 5. Produce Evidence Event Envelope (NO raw content in payload!)
+      // 9. Produce Evidence Event Envelope (NO raw content in payload!)
       const eventPayload: Record<string, unknown> = {
         operation,
         resourcePath: rawPath,
@@ -635,6 +741,9 @@ export class FilesystemRuntime {
         tenantId: context.lease.tenant_id,
         bytesProcessed: outcome.bytesProcessed,
         snapshotId: outcome.snapshotId,
+        preHash,
+        postHash,
+        evidenceChecksum,
         status: 'SUCCESS',
         ...outcome.meta,
       };
@@ -703,6 +812,51 @@ export class FilesystemRuntime {
 
       return { result, event };
     }
+  }
+
+  private static readonly MUTATING_OPERATIONS = new Set<FilesystemOperationName>([
+    FilesystemOperationName.WRITE,
+    FilesystemOperationName.COPY,
+    FilesystemOperationName.MOVE,
+    FilesystemOperationName.DELETE,
+  ]);
+
+  private getPrimaryRoot(context: FilesystemOperationRequestContext): string | undefined {
+    if (context.workspaceId) {
+      const ws = this.workspaceJail.getWorkspace(context.workspaceId);
+      if (ws) {
+        return ws.rootPath;
+      }
+    }
+    return context.allowedRoots?.[0];
+  }
+
+  private resolveEffectiveRoots(
+    context: FilesystemOperationRequestContext,
+    isMutating: boolean,
+  ): { allowed: boolean; roots: string[]; error?: { code: string; message: string } } {
+    if (context.workspaceId) {
+      const wsValidation = this.workspaceJail.validateWorkspaceAccess(
+        context.workspaceId,
+        context.lease.tenant_id,
+        isMutating,
+      );
+      if (!wsValidation.allowed) {
+        return {
+          allowed: false,
+          roots: [],
+          error: wsValidation.error,
+        };
+      }
+      return {
+        allowed: true,
+        roots: [wsValidation.workspace!.rootPath],
+      };
+    }
+    return {
+      allowed: true,
+      roots: context.allowedRoots && context.allowedRoots.length > 0 ? context.allowedRoots : [],
+    };
   }
 
   private verifyPreconditions(canonicalPath: string, preconditions: Preconditions): void {
@@ -801,6 +955,160 @@ export class FilesystemRuntime {
     });
 
     return { result, event };
+  }
+
+  /**
+   * Unified execution entrypoint for AgentOrchestrator and workflow nodes.
+   */
+  public async execute(
+    rawRequest: FilesystemExecutionRequest,
+  ): Promise<FilesystemOperationResult<unknown>> {
+    const rawPayload = (rawRequest.payload as Record<string, unknown>) || {};
+    const merged: Record<string, unknown> = { ...rawRequest, ...rawPayload };
+
+    const opCandidate =
+      rawRequest.operation ||
+      rawRequest.action ||
+      rawRequest.capabilityId ||
+      rawPayload.operation ||
+      rawPayload.action ||
+      rawPayload.capabilityId;
+
+    const op = resolveFilesystemOperation(String(opCandidate || ''));
+    const resPath = String(merged.path || merged.sourcePath || '');
+    if (!op) {
+      return {
+        success: false,
+        operation: FilesystemOperationName.READ,
+        resourcePath: resPath,
+        canonicalPath: resPath,
+        evidenceId: crypto.randomUUID(),
+        error: {
+          code: 'UNSUPPORTED_OPERATION',
+          category: ErrorCategory.VALIDATION,
+          message: `Filesystem capability or operation '${opCandidate}' is unsupported. Supported: ${Object.values(CANONICAL_FS_CAPABILITIES).join(', ')}`,
+        },
+      };
+    }
+
+    const fsOpName = op as unknown as FilesystemOperationName;
+    const leaseHeader = (merged.leaseHeader as ExecutionLeaseHeader) || rawRequest.leaseHeader;
+    if (!leaseHeader) {
+      return {
+        success: false,
+        operation: fsOpName,
+        resourcePath: resPath,
+        canonicalPath: resPath,
+        evidenceId: crypto.randomUUID(),
+        error: {
+          code: 'LEASE_OR_POLICY_INVALID',
+          category: ErrorCategory.AUTHORIZATION,
+          message: 'Execution lease header is missing from filesystem execution request.',
+        },
+      };
+    }
+
+    const context: FilesystemOperationRequestContext = {
+      lease: leaseHeader,
+      allowedRoots: Array.isArray(merged.allowedRoots) ? (merged.allowedRoots as string[]) : [],
+      workspaceId: typeof merged.workspaceId === 'string' ? merged.workspaceId : undefined,
+      limits:
+        typeof merged.limits === 'object' && merged.limits !== null
+          ? (merged.limits as Partial<FilesystemResourceLimits>)
+          : undefined,
+    };
+
+    switch (op) {
+      case FilesystemOperation.READ: {
+        const { result } = await this.readFile(
+          {
+            path: String(merged.path || ''),
+            encoding: merged.encoding as 'utf-8' | 'binary' | undefined,
+          },
+          context,
+        );
+        return result;
+      }
+      case FilesystemOperation.WRITE: {
+        const { result } = await this.writeFile(
+          {
+            path: String(merged.path || ''),
+            content: (merged.content as string | Buffer) ?? '',
+            encoding: merged.encoding as 'utf-8' | 'binary' | undefined,
+            overwrite: typeof merged.overwrite === 'boolean' ? merged.overwrite : undefined,
+            preconditions: merged.preconditions as Preconditions | undefined,
+          },
+          context,
+        );
+        return result;
+      }
+      case FilesystemOperation.LIST: {
+        const { result } = await this.listDirectory(
+          {
+            path: String(merged.path || ''),
+            recursive: typeof merged.recursive === 'boolean' ? merged.recursive : undefined,
+          },
+          context,
+        );
+        return result;
+      }
+      case FilesystemOperation.STAT: {
+        const { result } = await this.statFile(
+          {
+            path: String(merged.path || ''),
+          },
+          context,
+        );
+        return result;
+      }
+      case FilesystemOperation.COPY: {
+        const { result } = await this.copyFile(
+          {
+            sourcePath: String(merged.sourcePath || ''),
+            destinationPath: String(merged.destinationPath || ''),
+            overwrite: typeof merged.overwrite === 'boolean' ? merged.overwrite : undefined,
+            preconditions: merged.preconditions as Preconditions | undefined,
+          },
+          context,
+        );
+        return result;
+      }
+      case FilesystemOperation.MOVE: {
+        const { result } = await this.moveFile(
+          {
+            sourcePath: String(merged.sourcePath || ''),
+            destinationPath: String(merged.destinationPath || ''),
+            preconditions: merged.preconditions as Preconditions | undefined,
+          },
+          context,
+        );
+        return result;
+      }
+      case FilesystemOperation.DELETE: {
+        const { result } = await this.deleteFile(
+          {
+            path: String(merged.path || ''),
+            preconditions: merged.preconditions as Preconditions | undefined,
+          },
+          context,
+        );
+        return result;
+      }
+      default: {
+        return {
+          success: false,
+          operation: fsOpName,
+          resourcePath: resPath,
+          canonicalPath: resPath,
+          evidenceId: crypto.randomUUID(),
+          error: {
+            code: 'UNSUPPORTED_OPERATION',
+            category: ErrorCategory.VALIDATION,
+            message: `Unsupported filesystem operation: ${op}`,
+          },
+        };
+      }
+    }
   }
 
   public shutdown(): void {

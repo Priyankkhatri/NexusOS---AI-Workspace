@@ -189,6 +189,18 @@ export class DesktopAgent {
         () => this.lifecycle.getState(),
       );
 
+    this.logger = new AgentLogger(baseLogger);
+
+    this.filesystemRuntime =
+      customFilesystemRuntime ||
+      new FilesystemRuntime(
+        this.leaseBoundary,
+        new PathSecurityService(),
+        new SnapshotManager(),
+        this.logger,
+      );
+    this.runtimeRegistry.registerRuntime(this.filesystemRuntime.getDescriptor());
+
     const runtimeRouter = new RuntimeRouter(this.capabilityRegistry, this.runtimeRegistry);
     this.orchestrator =
       customOrchestrator ||
@@ -205,7 +217,7 @@ export class DesktopAgent {
         undefined,
         undefined,
         () => this.lifecycle.getState(),
-        undefined,
+        this.filesystemRuntime,
         undefined,
         undefined,
         undefined,
@@ -822,19 +834,6 @@ export class DesktopAgent {
       isExecutable: true,
       supportedActions: ['queryInfo', 'getPosture', 'executeOperation'],
     });
-
-    this.logger = new AgentLogger(baseLogger);
-
-    this.filesystemRuntime =
-      customFilesystemRuntime ||
-      new FilesystemRuntime(
-        this.leaseBoundary,
-        new PathSecurityService(),
-        new SnapshotManager(),
-        this.logger,
-      );
-
-    this.runtimeRegistry.registerRuntime(this.filesystemRuntime.getDescriptor());
 
     this.terminalRuntime =
       customTerminalRuntime ||

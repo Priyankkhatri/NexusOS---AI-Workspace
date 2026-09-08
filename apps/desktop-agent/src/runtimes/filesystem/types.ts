@@ -1,5 +1,18 @@
 import { ExecutionLeaseHeader } from '@nexusos/contracts';
 import { AuthenticatedContext } from '@nexusos/identity';
+import {
+  FilesystemOperation,
+  CANONICAL_FS_CAPABILITIES,
+  resolveFilesystemOperation,
+  computeFilesystemEvidenceChecksum,
+} from '@nexusos/contracts';
+
+export {
+  FilesystemOperation,
+  CANONICAL_FS_CAPABILITIES,
+  resolveFilesystemOperation,
+  computeFilesystemEvidenceChecksum,
+};
 
 export enum FilesystemOperationName {
   READ = 'fs:read',
@@ -41,6 +54,8 @@ export interface FilesystemOperationRequestContext {
   lease: ExecutionLeaseHeader;
   subject?: AuthenticatedContext;
   allowedRoots: string[];
+  workspaceId?: string;
+  isReadOnly?: boolean;
   limits?: Partial<FilesystemResourceLimits>;
 }
 
@@ -121,11 +136,47 @@ export interface FilesystemOperationResult<T = unknown> {
   canonicalPath: string;
   bytesProcessed?: number;
   data?: T;
+  preHash?: string;
+  postHash?: string;
   snapshotId?: string;
   evidenceId: string;
+  evidenceChecksum?: string;
   error?: {
     code: string;
     category: string;
     message: string;
   };
+}
+
+/**
+ * Unified execution request passed to FilesystemRuntime.execute()
+ * Compatible with AgentOrchestrator and direct capability invocations.
+ */
+export interface FilesystemExecutionRequest {
+  operationName?: FilesystemOperationName | string;
+  operation?: FilesystemOperationName | string;
+  action?: string;
+  capabilityId?: string;
+  workspaceId?: string;
+  path?: string;
+  resourcePath?: string;
+  sourcePath?: string;
+  destinationPath?: string;
+  content?: string | Buffer;
+  encoding?: 'utf-8' | 'base64' | 'binary';
+  overwrite?: boolean;
+  preconditions?: Preconditions;
+  recursive?: boolean;
+  maxEntries?: number;
+  permanent?: boolean;
+  lease?: ExecutionLeaseHeader;
+  leaseHeader?: ExecutionLeaseHeader;
+  allowedRoots?: string[];
+  limits?: Partial<FilesystemResourceLimits>;
+  taskId?: string;
+  stepId?: string;
+  correlationId?: string;
+  signal?: AbortSignal;
+  payload?: Record<string, unknown>;
+  [key: string]: unknown;
 }
