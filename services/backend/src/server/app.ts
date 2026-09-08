@@ -12,11 +12,10 @@ import {
   serializeContract,
   APIErrorResponseSchema,
 } from '@nexusos/contracts';
-import { TaskController } from '../tasks/controller.js';
-import { AuthenticatedContext } from '@nexusos/identity';
+import { TaskController, AuthenticatedContextLike } from '../tasks/controller.js';
 
 export interface AuthenticatedIncomingMessage extends IncomingMessage {
-  authenticatedContext?: AuthenticatedContext;
+  authenticatedContext?: AuthenticatedContextLike;
 }
 
 export type RequestAuthenticator = (req: IncomingMessage, res: ServerResponse) => Promise<boolean>;

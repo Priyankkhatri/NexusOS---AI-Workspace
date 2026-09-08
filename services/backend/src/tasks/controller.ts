@@ -7,19 +7,123 @@ import {
   createEventEnvelope,
   ExecutionReceiptSchema,
 } from '@nexusos/contracts';
-import { AuthenticatedContext } from '@nexusos/identity';
-import { PolicyEvaluator, PolicyAuditLogger, createDecisionEvidence } from '@nexusos/policy';
 import { LeaseIssuer } from '../leases/lease-issuer.js';
 import { ReceiptVerifier } from '../receipts/receipt-verifier.js';
 import { TaskStateMachine } from './state-machine.js';
 import { EventPublisherBoundary } from '../events/publisher-boundary.js';
 import { ACPDispatchBridge } from '../server/acp-dispatch-bridge.js';
 
+export interface AuthenticatedContextLike {
+  principal: {
+    type: 'USER' | 'SERVICE' | 'DEVICE' | string;
+    userId?: string;
+    serviceId?: string;
+    deviceId?: string;
+    roles?: string[];
+    scopes?: string[];
+  };
+  tenantId: string;
+  issuedAt?: string;
+  expiresAt?: string;
+  rawTokenHash?: string;
+}
+
+export interface PolicyDecisionResultLike {
+  decisionId: string;
+  effect: 'ALLOW' | 'DENY' | string;
+  allowed: boolean;
+  policyVersion: string;
+  policyHash: string;
+  reason: string;
+  evaluatedAt?: string;
+  requestId?: string;
+  correlationId?: string;
+}
+
+export interface PolicyDecisionRequestLike {
+  subject?: AuthenticatedContextLike;
+  action: {
+    actionName: string;
+    requiredScope?: string;
+    requiredRole?: string;
+  };
+  resource: {
+    resourceType: string;
+    resourceId: string;
+    tenantId?: string;
+  };
+  context: {
+    requestId: string;
+    correlationId: string;
+    requestTimestamp: string;
+  };
+}
+
+export interface PolicyEvaluatorBoundary {
+  evaluate(request: PolicyDecisionRequestLike): Promise<PolicyDecisionResultLike>;
+  getSnapshot?(): unknown;
+}
+
+export interface DecisionEvidenceLike {
+  evidenceId: string;
+  decisionId: string;
+  effect: string;
+  principalId: string;
+  principalType: string;
+  tenantId: string;
+  actionName: string;
+  resourceType: string;
+  resourceId: string;
+  policyVersion: string;
+  policyHash: string;
+  requestId: string;
+  correlationId: string;
+  timestamp: string;
+  reason: string;
+}
+
+export interface PolicyAuditLoggerBoundary {
+  logDecision(evidence: DecisionEvidenceLike): void;
+}
+
+export function createDecisionEvidence(
+  request: PolicyDecisionRequestLike,
+  result: PolicyDecisionResultLike,
+): DecisionEvidenceLike {
+  const principalId = request.subject
+    ? request.subject.principal.type === 'USER'
+      ? (request.subject.principal.userId ?? 'UNKNOWN_USER')
+      : request.subject.principal.type === 'SERVICE'
+        ? (request.subject.principal.serviceId ?? 'UNKNOWN_SERVICE')
+        : (request.subject.principal.deviceId ?? 'UNKNOWN_DEVICE')
+    : 'UNAUTHENTICATED';
+  const principalType = request.subject ? request.subject.principal.type : 'NONE';
+  const tenantId = request.subject ? request.subject.tenantId : 'NONE';
+
+  return {
+    evidenceId: crypto.randomUUID(),
+    decisionId: result.decisionId,
+    effect: result.effect,
+    principalId,
+    principalType,
+    tenantId,
+    actionName: request.action.actionName,
+    resourceType: request.resource.resourceType,
+    resourceId: request.resource.resourceId,
+    policyVersion: result.policyVersion,
+    policyHash: result.policyHash,
+    requestId: request.context.requestId,
+    correlationId: request.context.correlationId,
+    timestamp: new Date().toISOString(),
+    reason: result.reason,
+  };
+}
+
 export interface TaskControllerOptions {
   leaseIssuer: LeaseIssuer;
   receiptVerifier: ReceiptVerifier;
-  policyEvaluator: PolicyEvaluator;
-  policyAuditLogger?: PolicyAuditLogger;
+  policyEvaluator: PolicyEvaluatorBoundary;
+  policyAuditLogger?: PolicyAuditLoggerBoundary;
   eventPublisher?: EventPublisherBoundary;
   acpBridge?: ACPDispatchBridge;
 }
@@ -28,8 +132,8 @@ export class TaskController {
   private readonly tasks = new Map<string, TaskRecord>();
   private readonly leaseIssuer: LeaseIssuer;
   private readonly receiptVerifier: ReceiptVerifier;
-  private readonly policyEvaluator: PolicyEvaluator;
-  private readonly policyAuditLogger?: PolicyAuditLogger;
+  private readonly policyEvaluator: PolicyEvaluatorBoundary;
+  private readonly policyAuditLogger?: PolicyAuditLoggerBoundary;
   private readonly eventPublisher?: EventPublisherBoundary;
   private readonly acpBridge?: ACPDispatchBridge;
 
@@ -48,7 +152,7 @@ export class TaskController {
     }
   }
 
-  public getTask(taskId: string, context?: AuthenticatedContext): TaskRecord | null {
+  public getTask(taskId: string, context?: AuthenticatedContextLike): TaskRecord | null {
     const task = this.tasks.get(taskId);
     if (!task) return null;
 
@@ -66,7 +170,7 @@ export class TaskController {
 
   public async createTask(
     rawRequest: unknown,
-    context: AuthenticatedContext,
+    context: AuthenticatedContextLike,
   ): Promise<{ task: TaskRecord; policyAllowed: boolean; denialReason?: string }> {
     // 047-SEC-01: Authentication must be verified
     if (!context || !context.principal || !context.tenantId) {
@@ -74,11 +178,11 @@ export class TaskController {
     }
 
     const principalId =
-      context.principal.type === 'USER'
+      (context.principal.type === 'USER'
         ? context.principal.userId
         : context.principal.type === 'SERVICE'
           ? context.principal.serviceId
-          : context.principal.deviceId;
+          : context.principal.deviceId) || 'UNKNOWN_PRINCIPAL';
 
     // Parse and validate schema
     const req: TaskCreateRequest = TaskCreateRequestSchema.parse(rawRequest);
@@ -238,7 +342,7 @@ export class TaskController {
   public async cancelTask(
     taskId: string,
     reason: string | undefined,
-    context: AuthenticatedContext,
+    context: AuthenticatedContextLike,
   ): Promise<TaskRecord> {
     const task = this.getTask(taskId, context);
     if (!task) {
