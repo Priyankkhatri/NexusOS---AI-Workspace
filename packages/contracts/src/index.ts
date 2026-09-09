@@ -17,3 +17,4 @@ export * from './ai/index.js';
 export * from './approval/index.js';
 export * from './plugin/index.js';
 export * from './browser/index.js';
+export * from './memory/index.js';
