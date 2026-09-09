@@ -58,8 +58,8 @@ export class PathSecurityService {
     // Convert backslashes to forward slashes for unified processing, then path.normalize
     let normalized = path.normalize(rawPath);
 
-    // Drive letter upper-casing on Windows for consistency (e.g. c:\ -> C:\)
-    if (process.platform === 'win32' && /^[a-z]:/i.test(normalized)) {
+    // Drive letter upper-casing for consistency (e.g. c:\ -> C:\)
+    if (/^[a-z]:/i.test(normalized)) {
       normalized = normalized[0]!.toUpperCase() + normalized.substring(1);
     }
 
@@ -101,13 +101,23 @@ export class PathSecurityService {
     }
 
     // 2. Reject raw UNC device paths or dangerous device prefixes (\\.\, \\?\, \\server\share, \Device\)
-    if (
+    const isDevice =
+      targetPath.startsWith('\\\\.\\') ||
+      targetPath.startsWith('\\\\?\\') ||
+      targetPath.startsWith('//./') ||
+      targetPath.startsWith('//?/') ||
+      targetPath.startsWith('/?/') ||
+      targetPath.startsWith('/./') ||
+      targetPath.startsWith('\\Device\\') ||
       normalizedInput.startsWith('\\\\.\\') ||
       normalizedInput.startsWith('\\\\?\\') ||
       normalizedInput.startsWith('//./') ||
       normalizedInput.startsWith('//?/') ||
-      normalizedInput.startsWith('\\Device\\')
-    ) {
+      normalizedInput.startsWith('/?/') ||
+      normalizedInput.startsWith('/./') ||
+      normalizedInput.startsWith('\\Device\\');
+
+    if (isDevice) {
       return {
         valid: false,
         canonicalPath: normalizedInput,
@@ -120,13 +130,9 @@ export class PathSecurityService {
     }
 
     // 3. Reject NTFS Alternate Data Streams (ADS) (e.g. file.txt:stream, dir:stream, file.txt::$DATA)
-    const isWin = process.platform === 'win32';
-    const hasAds = isWin
-      ? (/^[a-zA-Z]:/.test(targetPath) && targetPath.slice(2).includes(':')) ||
-        (!/^[a-zA-Z]:/.test(targetPath) && targetPath.includes(':'))
-      : targetPath.includes(':');
-
-    if (hasAds) {
+    // Strip optional Windows drive letter prefix (e.g. C:) so drive paths on Linux CI runners aren't falsely flagged as ADS
+    const withoutDrive = targetPath.replace(/^[a-zA-Z]:/, '');
+    if (withoutDrive.includes(':')) {
       return {
         valid: false,
         canonicalPath: '',
@@ -286,8 +292,7 @@ export class PathSecurityService {
    * Helper to detect access to protected host system directories or credential stores.
    */
   private checkSensitivePath(inputPath: string): { code: string; message: string } | undefined {
-    const isWindows = process.platform === 'win32';
-    const lower = isWindows ? inputPath.toLowerCase() : inputPath;
+    const lower = inputPath.toLowerCase();
     const noDriveLower = lower.replace(/^[a-z]:/i, '');
 
     // Check system directory prefixes
