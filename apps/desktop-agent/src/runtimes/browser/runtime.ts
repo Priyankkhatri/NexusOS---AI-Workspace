@@ -6,6 +6,19 @@ import {
   EventEnvelope,
   createNexusOSError,
   ErrorCategory,
+  BrowserOperationName,
+  BrowserOperationRequestContext,
+  BrowserOperationResult,
+  BrowserActionReceipt,
+  computeBrowserEvidenceChecksum,
+  DEFAULT_BROWSER_RESOURCE_LIMITS,
+  NavigateRequest,
+  ExtractRequest,
+  InteractRequest,
+  ScreenshotRequest,
+  DownloadRequest,
+  UploadRequest,
+  ClearSessionRequest,
 } from '@nexusos/contracts';
 import { ExecutionLeaseBoundary } from '../../permissions/lease-boundary.js';
 import { RuntimeCategory, ToolRuntimeDescriptor } from '../../registry/runtime-registry.js';
@@ -13,19 +26,12 @@ import { AgentLogger } from '../../observability/agent-logger.js';
 import { PathSecurityService } from '../filesystem/path-security.js';
 import { DomainSecurityService } from './domain-security.js';
 import { BrowserSessionManager } from './session-manager.js';
-import {
-  BrowserOperationName,
-  BrowserOperationRequestContext,
-  BrowserOperationResult,
-  ClearSessionRequest,
-  DEFAULT_BROWSER_RESOURCE_LIMITS,
-  DownloadRequest,
-  ExtractRequest,
-  InteractRequest,
-  NavigateRequest,
-  ScreenshotRequest,
-  UploadRequest,
-} from './types.js';
+
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+function ensureUuid(val?: string): string {
+  if (val && UUID_REGEX.test(val)) return val;
+  return crypto.randomUUID();
+}
 
 export class BrowserRuntime {
   public static readonly RUNTIME_ID = 'rt:browser-v1';
@@ -87,6 +93,7 @@ export class BrowserRuntime {
           meta: { domain: sec.domain },
         };
       },
+      sec.normalizedUrl,
     );
   }
 
@@ -289,6 +296,7 @@ export class BrowserRuntime {
           data: pathSec.canonicalPath,
         };
       },
+      request.downloadUrl,
     );
   }
 
@@ -384,8 +392,10 @@ export class BrowserRuntime {
       interventionReason?: string;
       meta?: Record<string, unknown>;
     }>,
+    targetUrl?: string,
   ): Promise<{ result: BrowserOperationResult<T>; event: EventEnvelope }> {
     const evidenceId = crypto.randomUUID();
+    const receiptId = crypto.randomUUID();
 
     // 1. Lease & Policy Evaluation
     const leaseResult = await this.leaseBoundary.validateLease(context.lease, context.subject);
@@ -410,23 +420,59 @@ export class BrowserRuntime {
       );
     }
 
-    // 3. Get Session
-    const session = this.sessionManager.getSession(sessionId);
-    if (!session && operation !== BrowserOperationName.CLEAR_SESSION) {
+    // 3. Validate Session Access & Isolation
+    const accessCheck = this.sessionManager.validateSessionAccess(sessionId, {
+      taskId: context.lease.task_id,
+      tenantId: context.lease.tenant_id,
+      workspaceId: context.workspaceId,
+    });
+
+    if (!accessCheck.valid) {
       return this.buildDeniedResult(
         operation,
         sessionId,
         context,
-        'INVALID_SESSION',
-        `Browser session '${sessionId}' was not found.`,
+        accessCheck.errorCode || 'INVALID_SESSION',
+        accessCheck.reason || `Browser session '${sessionId}' access denied.`,
       );
     }
 
+    const session = accessCheck.session!;
+
     // 4. Action Execution
     try {
-      const outcome = await action(
-        (session || { sessionId }) as unknown as Parameters<typeof action>[0],
-      );
+      const outcome = await action(session);
+
+      const status = outcome.humanInterventionRequired ? 'INTERVENTION_REQUIRED' : 'SUCCESS';
+      const effectiveUrl = outcome.activeUrl || targetUrl || session.activeUrl;
+      const sha256EvidenceChecksum = computeBrowserEvidenceChecksum({
+        taskId: context.lease.task_id,
+        leaseId: context.lease.lease_id,
+        operation,
+        sessionId,
+        targetUrl: effectiveUrl,
+        bytesProcessed: outcome.bytesProcessed,
+        status,
+      });
+
+      const receipt: BrowserActionReceipt = Object.freeze({
+        receiptId,
+        taskId: context.lease.task_id,
+        workspaceId: context.workspaceId || session.workspaceId,
+        tenantId: context.lease.tenant_id || session.tenantId || 'default-tenant',
+        sessionId,
+        operation,
+        targetUrl: effectiveUrl,
+        status,
+        timestamp: new Date().toISOString(),
+        correlationId: ensureUuid(context.lease.nonce || context.lease.task_id),
+        leaseId: context.lease.lease_id,
+        evidenceId,
+        sha256EvidenceChecksum,
+        bytesProcessed: outcome.bytesProcessed,
+        humanInterventionRequired: outcome.humanInterventionRequired,
+        interventionReason: outcome.interventionReason,
+      });
 
       const result: BrowserOperationResult<T> = {
         success: !outcome.humanInterventionRequired,
@@ -438,6 +484,7 @@ export class BrowserRuntime {
         humanInterventionRequired: outcome.humanInterventionRequired,
         interventionReason: outcome.interventionReason,
         evidenceId,
+        receipt,
       };
 
       const schemaEvent = outcome.humanInterventionRequired
@@ -451,9 +498,11 @@ export class BrowserRuntime {
         leaseId: context.lease.lease_id,
         agentId: context.lease.agent_id,
         tenantId: context.lease.tenant_id,
-        status: outcome.humanInterventionRequired ? 'INTERVENTION_REQUIRED' : 'SUCCESS',
+        status,
         interventionReason: outcome.interventionReason,
         bytesProcessed: outcome.bytesProcessed,
+        receiptId,
+        sha256EvidenceChecksum,
         ...outcome.meta,
       };
 
@@ -461,14 +510,14 @@ export class BrowserRuntime {
         `nexusos.events.browser.${schemaEvent}.v1`,
         '1.0.0',
         context.lease.agent_id,
-        context.lease.nonce || context.lease.task_id,
+        ensureUuid(context.lease.nonce || context.lease.task_id),
         eventPayload,
       );
 
       this.logger?.info(`Browser operation completed: ${operation}`, {
         operation,
         sessionId,
-        status: eventPayload['status'],
+        status,
       });
 
       return { result, event };
@@ -477,11 +526,40 @@ export class BrowserRuntime {
       const errCode = (err as { code?: string }).code || 'BROWSER_OPERATION_FAILED';
       const errMessage = err instanceof Error ? err.message : String(err);
 
+      const sha256EvidenceChecksum = computeBrowserEvidenceChecksum({
+        taskId: context.lease.task_id,
+        leaseId: context.lease.lease_id,
+        operation,
+        sessionId,
+        status: 'FAILED',
+      });
+
+      const receipt: BrowserActionReceipt = Object.freeze({
+        receiptId,
+        taskId: context.lease.task_id,
+        workspaceId: context.workspaceId || session.workspaceId,
+        tenantId: context.lease.tenant_id || session.tenantId || 'default-tenant',
+        sessionId,
+        operation,
+        status: 'FAILED',
+        timestamp: new Date().toISOString(),
+        correlationId: ensureUuid(context.lease.nonce || context.lease.task_id),
+        leaseId: context.lease.lease_id,
+        evidenceId,
+        sha256EvidenceChecksum,
+        error: {
+          code: errCode,
+          category: String(errCategory),
+          message: errMessage,
+        },
+      });
+
       const result: BrowserOperationResult<T> = {
         success: false,
         operation,
         sessionId,
         evidenceId,
+        receipt,
         error: {
           code: errCode,
           category: errCategory,
@@ -499,13 +577,15 @@ export class BrowserRuntime {
         status: 'FAILED',
         errorCode: errCode,
         errorMessage: errMessage,
+        receiptId,
+        sha256EvidenceChecksum,
       };
 
       const event = createEventEnvelope(
         'nexusos.events.browser.error.v1',
         '1.0.0',
         context.lease.agent_id,
-        context.lease.nonce || context.lease.task_id,
+        ensureUuid(context.lease.nonce || context.lease.task_id),
         eventPayload,
       );
 
@@ -521,12 +601,42 @@ export class BrowserRuntime {
     message: string,
   ): { result: BrowserOperationResult<T>; event: EventEnvelope } {
     const evidenceId = crypto.randomUUID();
+    const receiptId = crypto.randomUUID();
+
+    const sha256EvidenceChecksum = computeBrowserEvidenceChecksum({
+      taskId: context.lease.task_id,
+      leaseId: context.lease.lease_id,
+      operation,
+      sessionId,
+      status: 'DENIED',
+    });
+
+    const receipt: BrowserActionReceipt = Object.freeze({
+      receiptId,
+      taskId: context.lease.task_id,
+      workspaceId: context.workspaceId || 'unassigned',
+      tenantId: context.lease.tenant_id || 'default-tenant',
+      sessionId,
+      operation,
+      status: 'DENIED',
+      timestamp: new Date().toISOString(),
+      correlationId: ensureUuid(context.lease.nonce || context.lease.task_id),
+      leaseId: context.lease.lease_id,
+      evidenceId,
+      sha256EvidenceChecksum,
+      error: {
+        code,
+        category: String(ErrorCategory.AUTHORIZATION),
+        message,
+      },
+    });
 
     const result: BrowserOperationResult<T> = {
       success: false,
       operation,
       sessionId,
       evidenceId,
+      receipt,
       error: {
         code,
         category: ErrorCategory.AUTHORIZATION,
@@ -544,13 +654,15 @@ export class BrowserRuntime {
       status: 'DENIED',
       errorCode: code,
       errorMessage: message,
+      receiptId,
+      sha256EvidenceChecksum,
     };
 
     const event = createEventEnvelope(
       'nexusos.events.browser.denied.v1',
       '1.0.0',
       context.lease.agent_id,
-      context.lease.nonce || context.lease.task_id,
+      ensureUuid(context.lease.nonce || context.lease.task_id),
       eventPayload,
     );
 

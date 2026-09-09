@@ -21,6 +21,9 @@ export class DomainSecurityService {
     'edge:',
     'about:',
     'blob:',
+    'ws:',
+    'wss:',
+    'vbscript:',
   ]);
 
   private static readonly PROHIBITED_HOSTNAMES = new Set([
@@ -29,6 +32,8 @@ export class DomainSecurityService {
     '0.0.0.0',
     '::1',
     '169.254.169.254', // AWS/GCP/Azure Metadata Endpoint
+    'metadata.google.internal',
+    'instance-data',
   ]);
 
   /**
@@ -54,6 +59,19 @@ export class DomainSecurityService {
       };
     }
 
+    // 1. Prohibit embedded credentials in URL
+    if (parsedUrl.username || parsedUrl.password) {
+      return {
+        valid: false,
+        normalizedUrl: parsedUrl.toString(),
+        error: {
+          code: 'PROHIBITED_CREDENTIALS_IN_URL',
+          message: 'Embedded credentials (username/password) in URLs are strictly prohibited.',
+        },
+      };
+    }
+
+    // 2. Validate URL scheme
     const scheme = parsedUrl.protocol.toLowerCase();
     if (
       DomainSecurityService.PROHIBITED_SCHEMES.has(scheme) ||
@@ -70,12 +88,13 @@ export class DomainSecurityService {
     }
 
     const rawHost = parsedUrl.hostname.toLowerCase().trim();
-    const hostname = rawHost.replace(/^\[|\]$/g, '');
+    const hostname = rawHost.replace(/^\[|\]$/g, '').replace(/\.+$/, '');
 
-    // 1. Check prohibited hostnames & loopback / metadata endpoints
+    // 3. Check prohibited hostnames & loopback / metadata endpoints
     if (
       DomainSecurityService.PROHIBITED_HOSTNAMES.has(rawHost) ||
-      DomainSecurityService.PROHIBITED_HOSTNAMES.has(hostname)
+      DomainSecurityService.PROHIBITED_HOSTNAMES.has(hostname) ||
+      hostname.endsWith('.localhost')
     ) {
       return {
         valid: false,
@@ -87,7 +106,7 @@ export class DomainSecurityService {
       };
     }
 
-    // 2. Check private IPv4 / IPv6 ranges
+    // 4. Check private IPv4 / IPv6 ranges & alternative IP encodings
     if (this.isPrivateOrLocalIp(hostname)) {
       return {
         valid: false,
@@ -99,7 +118,7 @@ export class DomainSecurityService {
       };
     }
 
-    // 3. Domain Allowlist Verification
+    // 5. Domain Allowlist Verification
     if (!allowedDomains || allowedDomains.length === 0) {
       return {
         valid: false,
@@ -154,7 +173,7 @@ export class DomainSecurityService {
   }
 
   private matchesDomainPattern(hostname: string, pattern: string): boolean {
-    const normPattern = pattern.toLowerCase().trim();
+    const normPattern = pattern.toLowerCase().trim().replace(/\.+$/, '');
     if (normPattern === '*' || normPattern === hostname) {
       return true;
     }
@@ -170,12 +189,27 @@ export class DomainSecurityService {
   private isPrivateOrLocalIp(hostname: string): boolean {
     let target = hostname.toLowerCase().trim();
 
-    // Handle IPv4-mapped IPv6 (e.g. ::ffff:127.0.0.1)
+    // Handle IPv4-mapped IPv6 (e.g. ::ffff:127.0.0.1 or ::ffff:7f00:1)
     if (target.startsWith('::ffff:')) {
       target = target.substring(7);
+      if (target.includes(':')) {
+        const parts = target.split(':');
+        if (parts.length === 2) {
+          const p1 = parseInt(parts[0]!, 16);
+          const p2 = parseInt(parts[1]!, 16);
+          if (!isNaN(p1) && !isNaN(p2)) {
+            target = `${(p1 >> 8) & 255}.${p1 & 255}.${(p2 >> 8) & 255}.${p2 & 255}`;
+          }
+        }
+      }
     }
 
-    // IPv4 Private Ranges: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 100.64.0.0/10
+    // Direct match for loopback/zeros
+    if (target === '127.0.0.1' || target === '0.0.0.0') {
+      return true;
+    }
+
+    // IPv4 Private Ranges: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 100.64.0.0/10, 127.0.0.0/8
     const ipv4Regex = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
     const match = target.match(ipv4Regex);
 
@@ -192,7 +226,26 @@ export class DomainSecurityService {
       if (p1 === 0) return true; // 0.0.0.0/8
     }
 
-    // IPv6 Loopback or Local (fe80:, fc00:, fd00:)
+    // Alternative integer or hex IP representation
+    if (/^0x[0-9a-fA-F]+$/.test(target) || /^\d+$/.test(target)) {
+      const num = parseInt(target, target.startsWith('0x') ? 16 : 10);
+      if (!isNaN(num) && num >= 0 && num <= 0xffffffff) {
+        const p1 = (num >>> 24) & 255;
+        const p2 = (num >>> 16) & 255;
+        if (
+          p1 === 127 ||
+          p1 === 10 ||
+          (p1 === 172 && p2 >= 16 && p2 <= 31) ||
+          (p1 === 192 && p2 === 168) ||
+          (p1 === 169 && p2 === 254) ||
+          p1 === 0
+        ) {
+          return true;
+        }
+      }
+    }
+
+    // IPv6 Loopback or Local (fe80:, fc00:, fd00:, ::1, ::)
     if (
       target === '::' ||
       target === '::1' ||

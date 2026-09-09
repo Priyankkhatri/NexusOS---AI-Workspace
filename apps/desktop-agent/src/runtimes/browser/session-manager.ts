@@ -1,7 +1,14 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { BrowserSession } from './types.js';
+import { BrowserSession, BrowserSessionStatus } from '@nexusos/contracts';
+
+export interface SessionAccessValidationResult {
+  valid: boolean;
+  session?: BrowserSession;
+  reason?: string;
+  errorCode?: string;
+}
 
 export class BrowserSessionManager {
   private readonly sessions = new Map<string, BrowserSession>();
@@ -9,7 +16,12 @@ export class BrowserSessionManager {
   /**
    * Creates a new isolated browser session bound to task, workspace, and local profile directory.
    */
-  public createSession(taskId: string, workspaceId: string, storageDir: string): BrowserSession {
+  public createSession(
+    taskId: string,
+    workspaceId: string,
+    storageDir: string,
+    tenantId?: string,
+  ): BrowserSession {
     const sessionId = `sess_${crypto.randomUUID()}`;
     const profileSubdir = path.join(
       storageDir,
@@ -25,8 +37,10 @@ export class BrowserSessionManager {
       sessionId,
       taskId,
       workspaceId,
+      tenantId: tenantId || 'default-tenant',
       profilePath: profileSubdir,
       createdAt: new Date().toISOString(),
+      status: 'ACTIVE' as BrowserSessionStatus,
       cookies: {},
       history: [],
     });
@@ -40,16 +54,88 @@ export class BrowserSessionManager {
   }
 
   /**
+   * Validates that the requesting context owns and is authorized to access the specified session.
+   */
+  public validateSessionAccess(
+    sessionId: string,
+    context: {
+      taskId?: string;
+      workspaceId?: string;
+      tenantId?: string;
+    },
+  ): SessionAccessValidationResult {
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      return {
+        valid: false,
+        errorCode: 'INVALID_SESSION',
+        reason: `Browser session '${sessionId}' was not found or has been destroyed.`,
+      };
+    }
+
+    if (session.status === 'CLEARED') {
+      return {
+        valid: false,
+        errorCode: 'SESSION_CLEARED',
+        reason: `Browser session '${sessionId}' is cleared and cannot receive further operations.`,
+      };
+    }
+
+    if (context.taskId && session.taskId !== context.taskId) {
+      return {
+        valid: false,
+        errorCode: 'CROSS_TASK_SESSION_DENIED',
+        reason: `Session '${sessionId}' belongs to task '${session.taskId}', not '${context.taskId}'.`,
+      };
+    }
+
+    if (
+      context.tenantId &&
+      session.tenantId &&
+      session.tenantId !== 'default-tenant' &&
+      context.tenantId !== 'default-tenant' &&
+      session.tenantId !== context.tenantId
+    ) {
+      return {
+        valid: false,
+        errorCode: 'CROSS_TENANT_SESSION_DENIED',
+        reason: `Session '${sessionId}' belongs to tenant '${session.tenantId}', not '${context.tenantId}'.`,
+      };
+    }
+
+    if (
+      context.workspaceId &&
+      session.workspaceId &&
+      session.workspaceId !== 'default-workspace' &&
+      session.workspaceId !== 'unassigned' &&
+      context.workspaceId !== 'default-workspace' &&
+      context.workspaceId !== 'unassigned' &&
+      session.workspaceId !== context.workspaceId
+    ) {
+      return {
+        valid: false,
+        errorCode: 'CROSS_WORKSPACE_SESSION_DENIED',
+        reason: `Session '${sessionId}' belongs to workspace '${session.workspaceId}', not '${context.workspaceId}'.`,
+      };
+    }
+
+    return {
+      valid: true,
+      session,
+    };
+  }
+
+  /**
    * Updates active URL and history for an existing session.
    */
   public updateSessionUrl(sessionId: string, url: string): void {
     const session = this.sessions.get(sessionId);
-    if (!session) return;
+    if (!session || session.status === 'CLEARED') return;
 
     const updated: BrowserSession = Object.freeze({
       ...session,
       activeUrl: url,
-      history: [...session.history, url],
+      history: [...(session.history || []), url],
     });
 
     this.sessions.set(sessionId, updated);
@@ -75,7 +161,7 @@ export class BrowserSessionManager {
   }
 
   public listSessions(): BrowserSession[] {
-    return Array.from(this.sessions.values());
+    return Array.from(this.sessions.values()).filter((s) => s.status !== 'CLEARED');
   }
 
   /**

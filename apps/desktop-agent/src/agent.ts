@@ -1828,14 +1828,19 @@ export class DesktopAgent {
           );
         }
         try {
+          const taskId = req.leaseHeader?.task_id || req.taskId;
+          const workspaceId =
+            (req.leaseHeader as { workspace_id?: string })?.workspace_id || req.workspaceId;
+          const tenantId = req.leaseHeader?.tenant_id;
           const session = this.browserRuntime.sessionManager.createSession(
-            req.taskId,
-            req.workspaceId,
+            taskId,
+            workspaceId,
             req.storageDir,
+            tenantId,
           );
           this.telemetryManager.trackTrace('browser_create_session_ipc', {
             sessionId: session.sessionId,
-            taskId: req.taskId,
+            taskId,
           });
           return new RedactionFilter().redactObject({
             sessionId: session.sessionId,
