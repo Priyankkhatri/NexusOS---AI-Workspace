@@ -49,6 +49,9 @@ describe('Browser Runtime — Session Isolation, Navigation, & Security', () => 
   let runtime: BrowserRuntime;
   let validLease: ExecutionLeaseHeader;
 
+  const TEST_TASK_ID = '00000000-0000-4000-8000-000000000002';
+  const TEST_WORKSPACE_ID = 'w1';
+
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nexusos-brw-test-'));
     leaseBoundary = new ExecutionLeaseBoundary(new AllowPolicyEvaluator());
@@ -56,7 +59,7 @@ describe('Browser Runtime — Session Isolation, Navigation, & Security', () => 
 
     validLease = {
       lease_id: '00000000-0000-4000-8000-000000000001',
-      task_id: '00000000-0000-4000-8000-000000000002',
+      task_id: TEST_TASK_ID,
       agent_id: 'agent_test_1',
       tenant_id: '00000000-0000-4000-8000-000000000003',
       issued_at: new Date().toISOString(),
@@ -93,7 +96,7 @@ describe('Browser Runtime — Session Isolation, Navigation, & Security', () => 
   });
 
   it('navigates to policy-approved domain and emits event envelope', async () => {
-    const session = runtime.sessionManager.createSession('t1', 'w1', tmpDir);
+    const session = runtime.sessionManager.createSession(TEST_TASK_ID, TEST_WORKSPACE_ID, tmpDir);
 
     const { result, event } = await runtime.navigate(
       {
@@ -113,7 +116,7 @@ describe('Browser Runtime — Session Isolation, Navigation, & Security', () => 
   });
 
   it('rejects navigation to unapproved domain', async () => {
-    const session = runtime.sessionManager.createSession('t1', 'w1', tmpDir);
+    const session = runtime.sessionManager.createSession(TEST_TASK_ID, TEST_WORKSPACE_ID, tmpDir);
 
     const { result, event } = await runtime.navigate(
       {
@@ -133,7 +136,7 @@ describe('Browser Runtime — Session Isolation, Navigation, & Security', () => 
   });
 
   it('triggers human intervention pause when interacting with sensitive form (password/auth)', async () => {
-    const session = runtime.sessionManager.createSession('t1', 'w1', tmpDir);
+    const session = runtime.sessionManager.createSession(TEST_TASK_ID, TEST_WORKSPACE_ID, tmpDir);
 
     const { result, event } = await runtime.interactForm(
       {
@@ -155,7 +158,7 @@ describe('Browser Runtime — Session Isolation, Navigation, & Security', () => 
   });
 
   it('captures screenshot writing only to authorized filesystem scope', async () => {
-    const session = runtime.sessionManager.createSession('t1', 'w1', tmpDir);
+    const session = runtime.sessionManager.createSession(TEST_TASK_ID, TEST_WORKSPACE_ID, tmpDir);
     const dest = path.join(tmpDir, 'screenshot.png');
 
     const { result } = await runtime.captureScreenshot(
@@ -174,7 +177,7 @@ describe('Browser Runtime — Session Isolation, Navigation, & Security', () => 
   });
 
   it('rejects screenshot destination outside authorized filesystem scope', async () => {
-    const session = runtime.sessionManager.createSession('t1', 'w1', tmpDir);
+    const session = runtime.sessionManager.createSession(TEST_TASK_ID, TEST_WORKSPACE_ID, tmpDir);
     const outsideDest = path.join(path.dirname(tmpDir), 'unauthorized_screenshot.png');
 
     const { result } = await runtime.captureScreenshot(
@@ -193,7 +196,7 @@ describe('Browser Runtime — Session Isolation, Navigation, & Security', () => 
   });
 
   it('downloads file verifying both domain security and destination path security', async () => {
-    const session = runtime.sessionManager.createSession('t1', 'w1', tmpDir);
+    const session = runtime.sessionManager.createSession(TEST_TASK_ID, TEST_WORKSPACE_ID, tmpDir);
     const dest = path.join(tmpDir, 'downloaded_file.txt');
 
     const { result } = await runtime.downloadFile(
@@ -214,7 +217,7 @@ describe('Browser Runtime — Session Isolation, Navigation, & Security', () => 
   });
 
   it('uploads file enforcing source path security within allowedRoots', async () => {
-    const session = runtime.sessionManager.createSession('t1', 'w1', tmpDir);
+    const session = runtime.sessionManager.createSession(TEST_TASK_ID, TEST_WORKSPACE_ID, tmpDir);
     const sourceFile = path.join(tmpDir, 'upload_me.txt');
     fs.writeFileSync(sourceFile, 'hello upload');
 
@@ -234,7 +237,7 @@ describe('Browser Runtime — Session Isolation, Navigation, & Security', () => 
   });
 
   it('clears browser session and removes profile directory', async () => {
-    const session = runtime.sessionManager.createSession('t1', 'w1', tmpDir);
+    const session = runtime.sessionManager.createSession(TEST_TASK_ID, TEST_WORKSPACE_ID, tmpDir);
     assert.ok(fs.existsSync(session.profilePath));
 
     const { result } = await runtime.clearSession(
@@ -250,7 +253,7 @@ describe('Browser Runtime — Session Isolation, Navigation, & Security', () => 
   });
 
   it('rejects file downloads that redirect to an unauthorized domain', async () => {
-    const session = runtime.sessionManager.createSession('t1', 'w1', tmpDir);
+    const session = runtime.sessionManager.createSession(TEST_TASK_ID, TEST_WORKSPACE_ID, tmpDir);
     const dest = path.join(tmpDir, 'redirected_download.txt');
 
     const { result } = await runtime.downloadFile(
