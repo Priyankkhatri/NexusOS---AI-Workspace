@@ -17,6 +17,7 @@ export enum TaskLifecycleState {
   LEASED = 'LEASED',
   DISPATCHED = 'DISPATCHED',
   EXECUTING = 'EXECUTING',
+  AWAITING_APPROVAL = 'AWAITING_APPROVAL',
   RECEIPT_VERIFIED = 'RECEIPT_VERIFIED',
   COMPLETED = 'COMPLETED',
   FAILED = 'FAILED',
@@ -315,3 +316,45 @@ export const TaskCancelRequestSchema = z.object({
 });
 
 export type TaskCancelRequest = z.infer<typeof TaskCancelRequestSchema>;
+
+/**
+ * Task List Query Parameters Schema
+ */
+export const TaskQuerySchema = z.object({
+  limit: z.coerce.number().int().positive().max(100).default(50),
+  cursor: z.string().optional(),
+  status: TaskLifecycleStateSchema.optional(),
+  tenantId: TenantIdSchema.optional(),
+});
+
+export type TaskQuery = z.infer<typeof TaskQuerySchema>;
+
+/**
+ * Activity Stream Query Parameters Schema
+ */
+export const ActivityQuerySchema = z.object({
+  limit: z.coerce.number().int().positive().max(100).default(50),
+  cursor: z.string().optional(),
+  taskId: TaskIdSchema.optional(),
+  tenantId: TenantIdSchema.optional(),
+});
+
+export type ActivityQuery = z.infer<typeof ActivityQuerySchema>;
+
+/**
+ * Dashboard Summary Aggregation Schema
+ */
+export const DashboardSummarySchema = z.object({
+  tenantId: TenantIdSchema,
+  activeTaskCount: z.number().int().nonnegative(),
+  pendingApprovalCount: z.number().int().nonnegative(),
+  completedTaskCount: z.number().int().nonnegative(),
+  failedTaskCount: z.number().int().nonnegative(),
+  connectedDeviceCount: z.number().int().nonnegative(),
+  totalTokenUsage: z.number().int().nonnegative().optional(),
+  vramAlert: z.boolean().optional(),
+  healthStatus: z.enum(['HEALTHY', 'READY', 'DEGRADED', 'UNREADY']),
+  updatedAt: z.string().datetime(),
+});
+
+export type DashboardSummary = z.infer<typeof DashboardSummarySchema>;

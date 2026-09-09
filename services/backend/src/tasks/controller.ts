@@ -11,12 +11,33 @@ import {
   TaskRecord,
   createEventEnvelope,
   ExecutionReceiptSchema,
+  TaskQuery,
+  ActivityQuery,
+  DashboardSummary,
+  EventEnvelope,
+  ApprovalPromptItem,
+  ApprovalPromptRequest,
+  ApprovalDecisionRequest,
+  ApprovalDecisionRequestSchema,
+  ApprovalDecisionResult,
 } from '@nexusos/contracts';
 import { LeaseIssuer } from '../leases/lease-issuer.js';
 import { ReceiptVerifier } from '../receipts/receipt-verifier.js';
 import { TaskStateMachine } from './state-machine.js';
 import { EventPublisherBoundary } from '../events/publisher-boundary.js';
 import { ACPDispatchBridge } from '../server/acp-dispatch-bridge.js';
+
+/**
+ * Authoritative Approval Authority Boundary
+ * Reuses Task 052 canonical approval host authority.
+ */
+export interface ApprovalAuthorityBoundary {
+  presentPrompt(request: ApprovalPromptRequest): Promise<ApprovalPromptItem>;
+  getPrompt(promptId: string, tenantId?: string): ApprovalPromptItem | undefined;
+  listPendingPrompts(tenantId?: string): ApprovalPromptItem[];
+  submitDecision(request: ApprovalDecisionRequest): Promise<ApprovalDecisionResult>;
+  cancelPrompt?(promptId: string, reason?: string): boolean;
+}
 
 export interface AuthenticatedContextLike {
   principal: {
@@ -131,6 +152,7 @@ export interface TaskControllerOptions {
   policyAuditLogger?: PolicyAuditLoggerBoundary;
   eventPublisher?: EventPublisherBoundary;
   acpBridge?: ACPDispatchBridge;
+  approvalHost?: ApprovalAuthorityBoundary;
 }
 
 export class TaskController {
@@ -141,6 +163,7 @@ export class TaskController {
   private readonly policyAuditLogger?: PolicyAuditLoggerBoundary;
   private readonly eventPublisher?: EventPublisherBoundary;
   private readonly acpBridge?: ACPDispatchBridge;
+  private approvalHost?: ApprovalAuthorityBoundary;
 
   constructor(options: TaskControllerOptions) {
     this.leaseIssuer = options.leaseIssuer;
@@ -149,12 +172,21 @@ export class TaskController {
     this.policyAuditLogger = options.policyAuditLogger;
     this.eventPublisher = options.eventPublisher;
     this.acpBridge = options.acpBridge;
+    this.approvalHost = options.approvalHost;
 
     if (this.acpBridge) {
       this.acpBridge.setReceiptSettler({
         settleReceipt: (receipt: unknown) => this.settleReceipt(receipt),
       });
     }
+  }
+
+  public setApprovalHost(approvalHost: ApprovalAuthorityBoundary): void {
+    this.approvalHost = approvalHost;
+  }
+
+  public getApprovalHost(): ApprovalAuthorityBoundary | undefined {
+    return this.approvalHost;
   }
 
   public getTask(taskId: string, context?: AuthenticatedContextLike): TaskRecord | null {
@@ -171,6 +203,268 @@ export class TaskController {
 
   public getAllTasks(): TaskRecord[] {
     return Array.from(this.tasks.values());
+  }
+
+  /**
+   * Get tasks filtered by tenant with cursor-based pagination.
+   * 053-SEC-02: Strict tenant isolation — only returns tasks owned by tenantId.
+   * 053-SEC-05: Invalid or cross-tenant cursors fail safely.
+   */
+  public getTasksByTenant(
+    tenantId: string,
+    query: TaskQuery,
+  ): { items: TaskRecord[]; nextCursor?: string; total: number } {
+    let filtered = Array.from(this.tasks.values()).filter((t) => t.tenantId === tenantId);
+
+    // Status filter
+    if (query.status) {
+      filtered = filtered.filter((t) => t.state === query.status);
+    }
+
+    // Sort by createdAt descending (most recent first)
+    filtered.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+
+    const total = filtered.length;
+
+    // Cursor-based pagination: cursor is the taskId of the last seen item
+    if (query.cursor) {
+      const cursorIndex = filtered.findIndex((t) => t.taskId === query.cursor);
+      if (cursorIndex >= 0) {
+        filtered = filtered.slice(cursorIndex + 1);
+      } else {
+        // 053-SEC-05: Invalid/manipulated or cross-tenant cursor fails safely
+        return { items: [], nextCursor: undefined, total };
+      }
+    }
+
+    const limit = query.limit ?? 50;
+    const page = filtered.slice(0, limit);
+    const nextCursor =
+      page.length === limit && filtered.length > limit ? page[limit - 1].taskId : undefined;
+
+    return { items: page, nextCursor, total };
+  }
+
+  /**
+   * Get activity events filtered by tenant with cursor-based pagination.
+   * Events are filtered by tenantId from the payload or correlationId.
+   * 053-SEC-02: Strict tenant isolation.
+   * 053-SEC-05: Event deduplication and fail-safe cursor integrity.
+   */
+  public getActivityByTenant(
+    tenantId: string,
+    query: ActivityQuery,
+  ): { items: EventEnvelope[]; nextCursor?: string; total: number } {
+    if (!this.eventPublisher) {
+      return { items: [], total: 0 };
+    }
+
+    const allEvents = (
+      this.eventPublisher as unknown as { getPublishedEvents(): EventEnvelope[] }
+    ).getPublishedEvents();
+
+    // Filter events by tenantId (checking payload.tenantId or matching task ownership)
+    let filtered = allEvents.filter((ev) => {
+      const payload = ev.payload as Record<string, unknown> | undefined;
+      if (payload && payload['tenantId'] === tenantId) return true;
+
+      // Also check if event's correlationId maps to a task owned by this tenant
+      if (ev.correlation_id) {
+        const task = this.tasks.get(ev.correlation_id);
+        if (task && task.tenantId === tenantId) return true;
+      }
+
+      return false;
+    });
+
+    // Filter by taskId if specified
+    if (query.taskId) {
+      filtered = filtered.filter((ev) => {
+        const payload = ev.payload as Record<string, unknown> | undefined;
+        return payload && payload['taskId'] === query.taskId;
+      });
+    }
+
+    // 053-SEC-05: Event ID deduplication — keep first occurrence
+    const seenEventIds = new Set<string>();
+    const deduplicated: EventEnvelope[] = [];
+    for (const ev of filtered) {
+      if (!seenEventIds.has(ev.event_id)) {
+        seenEventIds.add(ev.event_id);
+        deduplicated.push(ev);
+      }
+    }
+    filtered = deduplicated;
+
+    // Sort deterministically by timestamp descending (most recent first) with event_id tie-breaker
+    filtered.sort(
+      (a, b) => b.occurred_at.localeCompare(a.occurred_at) || b.event_id.localeCompare(a.event_id),
+    );
+
+    const total = filtered.length;
+
+    // Cursor-based pagination: cursor is the event_id of the last seen item
+    if (query.cursor) {
+      const cursorIndex = filtered.findIndex((ev) => ev.event_id === query.cursor);
+      if (cursorIndex >= 0) {
+        filtered = filtered.slice(cursorIndex + 1);
+      } else {
+        // 053-SEC-05: Invalid/manipulated cursor fails safely
+        return { items: [], nextCursor: undefined, total };
+      }
+    }
+
+    const limit = query.limit ?? 50;
+    const page = filtered.slice(0, limit);
+    const nextCursor =
+      page.length === limit && filtered.length > limit ? page[limit - 1].event_id : undefined;
+
+    return { items: page, nextCursor, total };
+  }
+
+  /**
+   * List pending approvals for a tenant.
+   * 053-SEC-02: Scoped strictly to the caller tenant.
+   * Reuses canonical Task 052 approval authority.
+   */
+  public listPendingApprovals(tenantId: string): ApprovalPromptItem[] {
+    if (this.approvalHost) {
+      return this.approvalHost.listPendingPrompts(tenantId);
+    }
+    return [];
+  }
+
+  /**
+   * Submit an authoritative approval decision (ALLOW or DENY).
+   * 053-SEC-01 & 053-SEC-03: Server-side authorization — reuses Task 052 approval authority.
+   * Performs nonce, tenant, lease, and expiry validation via the authoritative host.
+   */
+  public async submitApprovalDecision(
+    rawDecision: unknown,
+    context: AuthenticatedContextLike,
+  ): Promise<ApprovalDecisionResult> {
+    if (!context || !context.principal || !context.tenantId) {
+      throw new Error(
+        'UNAUTHENTICATED: Valid credentials are required to submit an approval decision.',
+      );
+    }
+
+    if (!this.approvalHost) {
+      throw new Error('APPROVAL_HOST_UNAVAILABLE: Approval host is not configured.');
+    }
+
+    const decisionReq = ApprovalDecisionRequestSchema.parse(rawDecision);
+
+    // 053-SEC-02: Strict tenant isolation — block cross-tenant decision injection
+    if (decisionReq.tenantId && decisionReq.tenantId !== context.tenantId) {
+      throw new Error(
+        `TENANT_MISMATCH: Cross-tenant approval decision rejected for prompt '${decisionReq.promptId}'.`,
+      );
+    }
+
+    // Bind authenticated tenant and caller principal
+    const scopedReq: ApprovalDecisionRequest = {
+      ...decisionReq,
+      tenantId: context.tenantId,
+      decidedBy:
+        context.principal.type === 'USER'
+          ? context.principal.userId
+          : context.principal.serviceId || 'UNKNOWN_PRINCIPAL',
+    };
+
+    // Authoritative execution via Task 052 approval authority
+    const result = await this.approvalHost.submitDecision(scopedReq);
+
+    // Authoritative state reconciliation: update task state if tracked in tasks map
+    const prompt = this.approvalHost.getPrompt(result.promptId, context.tenantId);
+    const targetTaskId = result.taskId || prompt?.taskId;
+    if (targetTaskId) {
+      const task = this.tasks.get(targetTaskId);
+      if (task && task.tenantId === context.tenantId) {
+        if (result.decision === 'ALLOW') {
+          if (task.state === TaskLifecycleState.AWAITING_APPROVAL) {
+            const updated = TaskStateMachine.transition(
+              task,
+              TaskLifecycleState.EXECUTING,
+              'Approval granted by human decision.',
+            );
+            this.tasks.set(task.taskId, updated);
+          }
+        } else if (result.decision === 'DENY') {
+          if (task.state === TaskLifecycleState.AWAITING_APPROVAL) {
+            const updated = TaskStateMachine.transition(
+              task,
+              TaskLifecycleState.FAILED,
+              'Approval denied by human decision.',
+            );
+            updated.error = {
+              code: 'APPROVAL_DENIED',
+              message: 'Human operator denied approval for task execution.',
+            };
+            this.tasks.set(task.taskId, updated);
+          }
+        }
+      }
+    }
+
+    // Emit canonical audit event
+    if (this.eventPublisher) {
+      await this.eventPublisher.publish(
+        createEventEnvelope(
+          'nexusos.events.approval.decision',
+          '1.0.0',
+          'control-plane-backend',
+          targetTaskId || result.promptId,
+          {
+            promptId: result.promptId,
+            taskId: targetTaskId,
+            decision: result.decision,
+            state: result.state,
+            receiptHash: result.receiptHash,
+            tenantId: context.tenantId,
+          },
+        ),
+      );
+    }
+
+    return result;
+  }
+
+  /**
+   * Get aggregated dashboard summary for a tenant.
+   * 053-SEC-02: Strict tenant isolation.
+   */
+  public getDashboardSummary(tenantId: string): DashboardSummary {
+    const allTasks = Array.from(this.tasks.values()).filter((t) => t.tenantId === tenantId);
+
+    const activeStates = new Set([
+      TaskLifecycleState.SUBMITTED,
+      TaskLifecycleState.POLICY_EVALUATED,
+      TaskLifecycleState.LEASED,
+      TaskLifecycleState.DISPATCHED,
+      TaskLifecycleState.EXECUTING,
+      TaskLifecycleState.AWAITING_APPROVAL,
+    ]);
+
+    const activeTaskCount = allTasks.filter((t) => activeStates.has(t.state)).length;
+    const pendingApprovalCount = this.approvalHost
+      ? this.approvalHost.listPendingPrompts(tenantId).length
+      : allTasks.filter((t) => t.state === TaskLifecycleState.AWAITING_APPROVAL).length;
+    const completedTaskCount = allTasks.filter(
+      (t) => t.state === TaskLifecycleState.COMPLETED,
+    ).length;
+    const failedTaskCount = allTasks.filter((t) => t.state === TaskLifecycleState.FAILED).length;
+
+    return {
+      tenantId,
+      activeTaskCount,
+      pendingApprovalCount,
+      completedTaskCount,
+      failedTaskCount,
+      connectedDeviceCount: 0, // Production: populated by device registry
+      healthStatus: 'HEALTHY',
+      updatedAt: new Date().toISOString(),
+    };
   }
 
   public async createTask(
@@ -902,7 +1196,8 @@ export class TaskController {
   }
 
   private redactSensitiveData(data: Record<string, unknown>): Record<string, unknown> {
-    const sensitiveKeys = /(password|secret|token|api[_-]?key|authorization|auth|jwt|bearer)/i;
+    const sensitiveKeys =
+      /(password|secret|token|api[_-]?key|authorization|auth|jwt|bearer|private[_-]?key|hmac|credential)/i;
     const result: Record<string, unknown> = {};
 
     for (const [key, value] of Object.entries(data)) {

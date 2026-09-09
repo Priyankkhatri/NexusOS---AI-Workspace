@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="NexusOS Web Dashboard — Enterprise AI Operating System Experience Platform" />
+    <meta name="color-scheme" content="dark light" />
+    <title>NexusOS — Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="./src/index.css" />
+  </head>
+  <body>
+    <!-- Global Shell: Semantic landmarks per WCAG 2.2 AA -->
+    <a href="#main-content" class="skip-link">Skip to main content</a>
+
+    <div id="app" class="app-shell">
+      <!-- Header Bar -->
+      <header id="app-header" class="app-header" role="banner">
+        <div class="header-brand">
+          <svg class="brand-icon" viewBox="0 0 24 24" width="28" height="28" fill="none" aria-hidden="true">
+            <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="1.5" />
+            <path d="M12 2a10 10 0 0 1 0 20" fill="currentColor" opacity="0.15" />
+            <circle cx="12" cy="12" r="4" fill="currentColor" />
+          </svg>
+          <span class="brand-title">NexusOS</span>
+        </div>
+        <div class="header-center">
+          <span id="workspace-indicator" class="workspace-indicator">Default Workspace</span>
+          <span id="health-badge" class="health-badge health-badge--healthy" role="status" aria-live="polite">
+            <span class="health-dot"></span>
+            <span class="health-label">Healthy</span>
+          </span>
+        </div>
+        <div class="header-actions">
+          <button id="theme-toggle" class="icon-btn" aria-label="Toggle dark/light theme" type="button">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Zm0 16V5a7 7 0 0 1 0 14Z"/></svg>
+          </button>
+          <span id="connection-indicator" class="connection-indicator connection-indicator--online" role="status" aria-live="assertive">
+            Connected
+          </span>
+        </div>
+      </header>
+
+      <!-- Navigation Sidebar -->
+      <nav id="app-nav" class="app-nav" role="navigation" aria-label="Main navigation">
+        <ul class="nav-list">
+          <li><button class="nav-item nav-item--active" data-view="overview" id="nav-overview" aria-current="page">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M3 13h8V3H3v10Zm0 8h8v-6H3v6Zm10 0h8V11h-8v10Zm0-18v6h8V3h-8Z"/></svg>
+            <span>Overview</span>
+          </button></li>
+          <li><button class="nav-item" data-view="tasks" id="nav-tasks">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M19 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2Zm-9 14-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9Z"/></svg>
+            <span>Tasks</span>
+          </button></li>
+          <li><button class="nav-item" data-view="approvals" id="nav-approvals">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M12 1 3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4Zm-2 16-4-4 1.41-1.41L10 14.17l6.59-6.59L18 9l-8 8Z"/></svg>
+            <span>Approvals</span>
+            <span id="approval-badge" class="nav-badge" aria-label="pending approvals" hidden>0</span>
+          </button></li>
+          <li><button class="nav-item" data-view="activity" id="nav-activity">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M13 3a9 9 0 0 0-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7a6.9 6.9 0 0 1-4.9-2.04l-1.42 1.42A8.96 8.96 0 0 0 13 21c4.97 0 9-4.03 9-9s-4.03-9-9-9Zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12Z"/></svg>
+            <span>Activity</span>
+          </button></li>
+        </ul>
+      </nav>
+
+      <!-- Main Content Area -->
+      <main id="main-content" class="app-main" role="main">
+        <!-- View: Overview (default) -->
+        <section id="view-overview" class="view view--active" aria-labelledby="nav-overview">
+          <h1 class="view-title">Dashboard Overview</h1>
+
+          <!-- Summary Cards Grid -->
+          <div class="cards-grid" id="overview-cards">
+            <div class="summary-card card--active-tasks" id="card-active-tasks">
+              <div class="card-icon">
+                <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M19 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2Zm0 16H5V5h14v14ZM17.99 9l-1.41-1.42-6.59 6.59-2.58-2.57-1.42 1.41 4 3.99 8-8.01Z"/></svg>
+              </div>
+              <div class="card-body">
+                <span class="card-value" id="active-task-count">—</span>
+                <span class="card-label">Active Tasks</span>
+              </div>
+            </div>
+            <div class="summary-card card--approvals" id="card-approvals">
+              <div class="card-icon">
+                <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M12 1 3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4Zm0 10.99h7c-.53 4.12-3.28 7.79-7 8.94V12H5V6.3l7-3.11v8.8Z"/></svg>
+              </div>
+              <div class="card-body">
+                <span class="card-value" id="pending-approval-count">—</span>
+                <span class="card-label">Pending Approvals</span>
+              </div>
+            </div>
+            <div class="summary-card card--completed" id="card-completed">
+              <div class="card-icon">
+                <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41L9 16.17Z"/></svg>
+              </div>
+              <div class="card-body">
+                <span class="card-value" id="completed-task-count">—</span>
+                <span class="card-label">Completed</span>
+              </div>
+            </div>
+            <div class="summary-card card--failed" id="card-failed">
+              <div class="card-icon">
+                <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2Zm1 15h-2v-2h2v2Zm0-4h-2V7h2v6Z"/></svg>
+              </div>
+              <div class="card-body">
+                <span class="card-value" id="failed-task-count">—</span>
+                <span class="card-label">Failed</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Recent Activity Stream -->
+          <section class="panel" aria-labelledby="recent-activity-heading">
+            <h2 id="recent-activity-heading" class="panel-heading">Recent Activity</h2>
+            <div id="overview-activity-list" class="activity-list" role="log" aria-live="polite">
+              <div class="empty-state" id="overview-activity-empty">
+                <p>No recent activity to display.</p>
+              </div>
+            </div>
+          </section>
+        </section>
+
+        <!-- View: Tasks -->
+        <section id="view-tasks" class="view" aria-labelledby="nav-tasks" hidden>
+          <h1 class="view-title">Tasks</h1>
+          <div class="toolbar">
+            <div class="filter-group">
+              <label for="task-status-filter" class="sr-only">Filter by status</label>
+              <select id="task-status-filter" class="select-input">
+                <option value="">All Statuses</option>
+                <option value="SUBMITTED">Submitted</option>
+                <option value="EXECUTING">Executing</option>
+                <option value="AWAITING_APPROVAL">Awaiting Approval</option>
+                <option value="COMPLETED">Completed</option>
+                <option value="FAILED">Failed</option>
+                <option value="CANCELLED">Cancelled</option>
+              </select>
+            </div>
+            <button id="task-refresh-btn" class="btn btn--ghost" type="button">Refresh</button>
+          </div>
+          <div id="task-list-container" class="task-list" role="list">
+            <div class="empty-state" id="task-list-empty">
+              <p>No tasks to display.</p>
+            </div>
+          </div>
+          <div id="task-pagination" class="pagination" hidden>
+            <button id="task-load-more" class="btn btn--outline" type="button">Load More</button>
+          </div>
+        </section>
+
+        <!-- View: Approvals -->
+        <section id="view-approvals" class="view" aria-labelledby="nav-approvals" hidden>
+          <h1 class="view-title">Approval Inbox</h1>
+          <div id="approval-list-container" class="approval-list" role="list">
+            <div class="empty-state" id="approval-list-empty">
+              <p>No pending approvals.</p>
+            </div>
+          </div>
+        </section>
+
+        <!-- View: Activity -->
+        <section id="view-activity" class="view" aria-labelledby="nav-activity" hidden>
+          <h1 class="view-title">Activity Stream</h1>
+          <div id="activity-stream-container" class="activity-stream" role="log" aria-live="polite">
+            <div class="empty-state" id="activity-stream-empty">
+              <p>No activity events recorded.</p>
+            </div>
+          </div>
+          <div id="activity-pagination" class="pagination" hidden>
+            <button id="activity-load-more" class="btn btn--outline" type="button">Load More</button>
+          </div>
+        </section>
+
+        <!-- Task Detail Modal -->
+        <dialog id="task-detail-modal" class="modal task-detail-modal" aria-labelledby="task-detail-title">
+          <div class="modal-content">
+            <header class="modal-header">
+              <h2 id="task-detail-title" class="modal-title">Task Detail</h2>
+              <button id="task-detail-close" class="icon-btn modal-close" aria-label="Close" type="button">
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12 19 6.41Z"/></svg>
+              </button>
+            </header>
+            <div class="modal-body">
+              <div id="task-detail-content" class="task-detail-layout">
+                <!-- Populated dynamically -->
+              </div>
+            </div>
+          </div>
+        </dialog>
+      </main>
+    </div>
+
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>

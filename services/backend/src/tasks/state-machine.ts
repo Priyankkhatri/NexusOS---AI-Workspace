@@ -33,11 +33,18 @@ export class TaskStateMachine {
     ]),
     [TaskLifecycleState.DISPATCHED]: new Set([
       TaskLifecycleState.EXECUTING,
+      TaskLifecycleState.AWAITING_APPROVAL,
       TaskLifecycleState.FAILED,
       TaskLifecycleState.CANCELLED,
     ]),
     [TaskLifecycleState.EXECUTING]: new Set([
       TaskLifecycleState.RECEIPT_VERIFIED,
+      TaskLifecycleState.AWAITING_APPROVAL,
+      TaskLifecycleState.FAILED,
+      TaskLifecycleState.CANCELLED,
+    ]),
+    [TaskLifecycleState.AWAITING_APPROVAL]: new Set([
+      TaskLifecycleState.EXECUTING,
       TaskLifecycleState.FAILED,
       TaskLifecycleState.CANCELLED,
     ]),

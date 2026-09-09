@@ -11,6 +11,8 @@ import {
   ErrorCategory,
   serializeContract,
   APIErrorResponseSchema,
+  TaskQuerySchema,
+  ActivityQuerySchema,
 } from '@nexusos/contracts';
 import { TaskController, AuthenticatedContextLike } from '../tasks/controller.js';
 
@@ -66,6 +68,68 @@ export class BackendApp {
       });
       req.on('error', reject);
     });
+  }
+
+  /**
+   * Authenticate request for dashboard projection endpoints.
+   * Returns the authenticated context or null if authentication fails (response already sent).
+   */
+  private async authenticateForDashboard(
+    req: IncomingMessage,
+    res: ServerResponse,
+    context: { requestId: string; correlationId: string; timestamp: string },
+  ): Promise<AuthenticatedContextLike | null> {
+    if (this.authenticator) {
+      const isAuthed = await this.authenticator(req, res);
+      if (!isAuthed) return null;
+    } else {
+      const err = createNexusOSError(
+        'UNAUTHENTICATED',
+        ErrorCategory.AUTHENTICATION,
+        'Authentication credentials are required.',
+        { requestId: context.requestId, correlationId: context.correlationId },
+      );
+      res.statusCode = 401;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(
+        serializeContract(APIErrorResponseSchema, {
+          success: false,
+          error: err,
+          meta: {
+            requestId: context.requestId,
+            correlationId: context.correlationId,
+            timestamp: context.timestamp,
+          },
+        }),
+      );
+      return null;
+    }
+
+    const authContext = (req as AuthenticatedIncomingMessage).authenticatedContext;
+    if (!authContext) {
+      const err = createNexusOSError(
+        'UNAUTHENTICATED',
+        ErrorCategory.AUTHENTICATION,
+        'Authentication credentials are required.',
+        { requestId: context.requestId, correlationId: context.correlationId },
+      );
+      res.statusCode = 401;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(
+        serializeContract(APIErrorResponseSchema, {
+          success: false,
+          error: err,
+          meta: {
+            requestId: context.requestId,
+            correlationId: context.correlationId,
+            timestamp: context.timestamp,
+          },
+        }),
+      );
+      return null;
+    }
+
+    return authContext;
   }
 
   public async handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -192,7 +256,21 @@ export class BackendApp {
           return;
         }
 
-        // 3a. POST /v1/tasks
+        // 3a. GET /v1/tasks — Paginated tenant-filtered task listing (053-SEC-02)
+        if (req.method === 'GET' && url.pathname === '/v1/tasks') {
+          const rawQuery: Record<string, string> = {};
+          for (const [k, v] of url.searchParams) {
+            rawQuery[k] = v;
+          }
+          const query = TaskQuerySchema.parse(rawQuery);
+          const result = this.taskController.getTasksByTenant(authContext.tenantId, query);
+          res.statusCode = 200;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify(result));
+          return;
+        }
+
+        // 3b. POST /v1/tasks — Single-task creation
         if (req.method === 'POST' && url.pathname === '/v1/tasks') {
           const body = await this.readJsonBody(req);
           const result = await this.taskController.createTask(body, authContext);
@@ -283,7 +361,180 @@ export class BackendApp {
         }
       }
 
-      // 4. Unhandled endpoint (404)
+      // 4. Activity Stream Endpoint — GET /v1/activity (053-SEC-02)
+      if (req.method === 'GET' && url.pathname === '/v1/activity') {
+        const dashAuth = await this.authenticateForDashboard(req, res, context);
+        if (!dashAuth) return;
+
+        if (!this.taskController) {
+          res.statusCode = 200;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ items: [], total: 0 }));
+          return;
+        }
+
+        const rawQuery: Record<string, string> = {};
+        for (const [k, v] of url.searchParams) {
+          rawQuery[k] = v;
+        }
+        const query = ActivityQuerySchema.parse(rawQuery);
+        const result = this.taskController.getActivityByTenant(dashAuth.tenantId, query);
+        res.statusCode = 200;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify(result));
+        return;
+      }
+
+      // 5. Dashboard Summary Endpoint — GET /v1/dashboard/summary (053-SEC-02)
+      if (req.method === 'GET' && url.pathname === '/v1/dashboard/summary') {
+        const dashAuth = await this.authenticateForDashboard(req, res, context);
+        if (!dashAuth) return;
+
+        if (!this.taskController) {
+          res.statusCode = 200;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(
+            JSON.stringify({
+              tenantId: dashAuth.tenantId,
+              activeTaskCount: 0,
+              pendingApprovalCount: 0,
+              completedTaskCount: 0,
+              failedTaskCount: 0,
+              connectedDeviceCount: 0,
+              healthStatus: 'HEALTHY',
+              updatedAt: new Date().toISOString(),
+            }),
+          );
+          return;
+        }
+
+        const result = this.taskController.getDashboardSummary(dashAuth.tenantId);
+        res.statusCode = 200;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify(result));
+        return;
+      }
+
+      // 6. Approval Listing Endpoint — GET /v1/approvals (053-SEC-01 & 053-SEC-02)
+      if (req.method === 'GET' && url.pathname === '/v1/approvals') {
+        const dashAuth = await this.authenticateForDashboard(req, res, context);
+        if (!dashAuth) return;
+
+        if (!this.taskController) {
+          res.statusCode = 200;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ items: [], total: 0 }));
+          return;
+        }
+
+        const items = this.taskController.listPendingApprovals(dashAuth.tenantId);
+        res.statusCode = 200;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ items, total: items.length }));
+        return;
+      }
+
+      // 7. Authoritative Approval Decision Endpoint — POST /v1/approvals/:id/decision (053-SEC-01 & 053-SEC-03)
+      const approvalDecisionMatch = url.pathname.match(/^\/v1\/approvals\/([^/]+)\/decision$/);
+      if (req.method === 'POST' && approvalDecisionMatch) {
+        const dashAuth = await this.authenticateForDashboard(req, res, context);
+        if (!dashAuth) return;
+
+        if (!this.taskController) {
+          res.statusCode = 503;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(
+            JSON.stringify({
+              error: {
+                code: 'TASK_CONTROLLER_UNAVAILABLE',
+                message: 'TaskController is not configured.',
+                requestId: context.requestId,
+                correlationId: context.correlationId,
+              },
+            }),
+          );
+          return;
+        }
+
+        const promptId = decodeURIComponent(approvalDecisionMatch[1]);
+        const body = (await this.readJsonBody(req)) as Record<string, unknown>;
+
+        if (body && typeof body === 'object') {
+          if (!body['promptId']) {
+            body['promptId'] = promptId;
+          } else if (body['promptId'] !== promptId) {
+            res.statusCode = 400;
+            res.setHeader('Content-Type', 'application/json');
+            res.end(
+              JSON.stringify({
+                error: {
+                  code: 'INVALID_INPUT',
+                  message: `Path promptId '${promptId}' does not match body promptId '${body['promptId']}'.`,
+                  requestId: context.requestId,
+                  correlationId: context.correlationId,
+                },
+              }),
+            );
+            return;
+          }
+        }
+
+        try {
+          const result = await this.taskController.submitApprovalDecision(body, dashAuth);
+          res.statusCode = 200;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify(result));
+          return;
+        } catch (err: unknown) {
+          const errObj = err as { code?: string; message?: string } | undefined;
+          const message = err instanceof Error ? err.message : String(err);
+          let code = errObj?.code || 'APPROVAL_ERROR';
+          let statusCode = 400;
+
+          if (code === 'PROMPT_NOT_FOUND' || message.includes('not found')) {
+            statusCode = 404;
+            code = 'PROMPT_NOT_FOUND';
+          } else if (code === 'TENANT_MISMATCH' || message.includes('TENANT_MISMATCH')) {
+            statusCode = 403;
+            code = 'TENANT_MISMATCH';
+          } else if (code === 'PROMPT_ALREADY_RESOLVED' || message.includes('already resolved')) {
+            statusCode = 409;
+            code = 'PROMPT_ALREADY_RESOLVED';
+          } else if (code === 'NONCE_MISMATCH' || message.includes('Nonce mismatch')) {
+            statusCode = 400;
+            code = 'NONCE_MISMATCH';
+          } else if (
+            code === 'PROMPT_EXPIRED' ||
+            message.includes('EXPIRED') ||
+            message.includes('expired')
+          ) {
+            statusCode = 410;
+            code = 'PROMPT_EXPIRED';
+          } else if (
+            code === 'APPROVAL_HOST_UNAVAILABLE' ||
+            message.includes('APPROVAL_HOST_UNAVAILABLE')
+          ) {
+            statusCode = 503;
+            code = 'APPROVAL_HOST_UNAVAILABLE';
+          }
+
+          res.statusCode = statusCode;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(
+            JSON.stringify({
+              error: {
+                code,
+                message,
+                requestId: context.requestId,
+                correlationId: context.correlationId,
+              },
+            }),
+          );
+          return;
+        }
+      }
+
+      // 8. Unhandled endpoint (404)
       res.statusCode = 404;
       res.setHeader('Content-Type', 'application/json');
       res.end(
