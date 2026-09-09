@@ -20,6 +20,7 @@ import {
   ApprovalDecisionRequest,
   ApprovalDecisionRequestSchema,
   ApprovalDecisionResult,
+  PluginSummary,
 } from '@nexusos/contracts';
 import { LeaseIssuer } from '../leases/lease-issuer.js';
 import { ReceiptVerifier } from '../receipts/receipt-verifier.js';
@@ -37,6 +38,44 @@ export interface ApprovalAuthorityBoundary {
   listPendingPrompts(tenantId?: string): ApprovalPromptItem[];
   submitDecision(request: ApprovalDecisionRequest): Promise<ApprovalDecisionResult>;
   cancelPrompt?(promptId: string, reason?: string): boolean;
+}
+
+/**
+ * Authoritative Plugin Registry Authority Boundary
+ * Reuses Task 045 PluginRuntime & Catalog authority structurally without circular imports.
+ */
+export interface PluginCatalogEntryLike {
+  pluginId: string;
+  package: {
+    manifest: {
+      pluginId: string;
+      version: string;
+      publisher: string;
+      name: string;
+      description?: string;
+      trustLevel: string;
+      riskTier?: string;
+      requestedCapabilities: string[];
+    };
+  };
+  tenantId?: string;
+  state: string;
+  installedAt: string;
+  updatedAt: string;
+}
+
+export interface PluginQuarantineRecordLike {
+  pluginId: string;
+  quarantinedAt: string;
+  reason: string;
+  crashCount: number;
+}
+
+export interface PluginRegistryAuthorityBoundary {
+  listEntries(tenantId?: string): PluginCatalogEntryLike[];
+  getEntry(pluginId: string, tenantId?: string): PluginCatalogEntryLike | undefined;
+  listQuarantined(): PluginQuarantineRecordLike[];
+  isQuarantined(pluginId: string): boolean;
 }
 
 export interface AuthenticatedContextLike {
@@ -153,6 +192,7 @@ export interface TaskControllerOptions {
   eventPublisher?: EventPublisherBoundary;
   acpBridge?: ACPDispatchBridge;
   approvalHost?: ApprovalAuthorityBoundary;
+  pluginRegistry?: PluginRegistryAuthorityBoundary;
 }
 
 export class TaskController {
@@ -164,6 +204,7 @@ export class TaskController {
   private readonly eventPublisher?: EventPublisherBoundary;
   private readonly acpBridge?: ACPDispatchBridge;
   private approvalHost?: ApprovalAuthorityBoundary;
+  private pluginRegistry?: PluginRegistryAuthorityBoundary;
 
   constructor(options: TaskControllerOptions) {
     this.leaseIssuer = options.leaseIssuer;
@@ -173,6 +214,7 @@ export class TaskController {
     this.eventPublisher = options.eventPublisher;
     this.acpBridge = options.acpBridge;
     this.approvalHost = options.approvalHost;
+    this.pluginRegistry = options.pluginRegistry;
 
     if (this.acpBridge) {
       this.acpBridge.setReceiptSettler({
@@ -187,6 +229,80 @@ export class TaskController {
 
   public getApprovalHost(): ApprovalAuthorityBoundary | undefined {
     return this.approvalHost;
+  }
+
+  public setPluginRegistry(pluginRegistry: PluginRegistryAuthorityBoundary): void {
+    this.pluginRegistry = pluginRegistry;
+  }
+
+  public getPluginRegistry(): PluginRegistryAuthorityBoundary | undefined {
+    return this.pluginRegistry;
+  }
+
+  /**
+   * 054-SEC-03: List plugins projected from authoritative registry.
+   */
+  public listPlugins(tenantId?: string): PluginSummary[] {
+    if (!this.pluginRegistry) {
+      return [];
+    }
+
+    const entries = this.pluginRegistry.listEntries(tenantId);
+    const filtered = tenantId
+      ? entries.filter((e) => !e.tenantId || e.tenantId === tenantId)
+      : entries;
+
+    return filtered.map((entry) => {
+      const qRec = this.pluginRegistry
+        ?.listQuarantined()
+        .find((q) => q.pluginId === entry.pluginId);
+      return {
+        pluginId: entry.pluginId,
+        name: entry.package.manifest.name,
+        version: entry.package.manifest.version,
+        publisher: entry.package.manifest.publisher,
+        state: (entry.state as any) || 'INSTALLED',
+        trustLevel: (entry.package.manifest.trustLevel as any) || 'UNVERIFIED',
+        riskTier: (entry.package.manifest.riskTier as any) || 'MEDIUM',
+        requestedCapabilities: entry.package.manifest.requestedCapabilities || [],
+        installedAt: entry.installedAt,
+        updatedAt: entry.updatedAt,
+        quarantineReason: qRec?.reason,
+      };
+    });
+  }
+
+  /**
+   * 054-SEC-03: Get detailed plugin summary by ID.
+   */
+  public getPlugin(pluginId: string, tenantId?: string): PluginSummary | null {
+    if (!this.pluginRegistry) {
+      return null;
+    }
+
+    const entry = this.pluginRegistry.getEntry(pluginId, tenantId);
+    if (!entry) {
+      return null;
+    }
+
+    if (tenantId && entry.tenantId && entry.tenantId !== tenantId) {
+      return null;
+    }
+
+    const qRec = this.pluginRegistry.listQuarantined().find((q) => q.pluginId === entry.pluginId);
+    return {
+      pluginId: entry.pluginId,
+      name: entry.package.manifest.name,
+      version: entry.package.manifest.version,
+      publisher: entry.package.manifest.publisher,
+      state: (entry.state as any) || 'INSTALLED',
+      trustLevel: (entry.package.manifest.trustLevel as any) || 'UNVERIFIED',
+      riskTier: (entry.package.manifest.riskTier as any) || 'MEDIUM',
+      requestedCapabilities: entry.package.manifest.requestedCapabilities || [],
+      installedAt: entry.installedAt,
+      updatedAt: entry.updatedAt,
+      quarantineReason: qRec?.reason,
+    };
   }
 
   public getTask(taskId: string, context?: AuthenticatedContextLike): TaskRecord | null {

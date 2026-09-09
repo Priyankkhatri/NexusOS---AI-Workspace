@@ -1,39 +1,19 @@
 import { z } from 'zod';
-import { ExecutionLeaseHeaderSchema } from '@nexusos/contracts';
+import {
+  ExecutionLeaseHeaderSchema,
+  PluginPackageSchema,
+  PluginResourceLimitsSchema,
+  PluginTrustLevelSchema,
+  PluginManifestSchema,
+} from '@nexusos/contracts';
 
-// ---------------------------------------------------------------------------
-// Common Sub-Schemas
-// ---------------------------------------------------------------------------
-
-export const PluginTrustLevelSchema = z.enum([
-  'UNVERIFIED',
-  'VERIFIED_PUBLISHER',
-  'ENTERPRISE_INTERNAL',
-]);
-
-export const PluginManifestSchema = z.object({
-  pluginId: z.string().min(1, 'pluginId is required').max(256),
-  version: z.string().min(1, 'version is required').max(64),
-  publisher: z.string().min(1, 'publisher is required').max(256),
-  name: z.string().min(1, 'name is required').max(256),
-  description: z.string().max(2048),
-  requestedCapabilities: z.array(z.string().min(1).max(256)).max(100),
-  outboundDomains: z.array(z.string().min(1).max(512)).max(100),
-  trustLevel: PluginTrustLevelSchema,
-});
-
-export const PluginPackageSchema = z.object({
-  manifest: PluginManifestSchema,
-  packageHash: z.string().min(1, 'packageHash is required').max(256),
-  signature: z.string().min(1, 'signature is required').max(1024),
-  bundleContent: z.string().max(10 * 1024 * 1024),
-});
-
-export const PluginResourceLimitsSchema = z.object({
-  maxConcurrentHosts: z.number().int().nonnegative().max(100).optional(),
-  hostTimeoutMs: z.number().int().positive().max(300_000).optional(),
-  maxCrashAttempts: z.number().int().positive().max(20).optional(),
-});
+// Re-export canonical schemas
+export {
+  PluginTrustLevelSchema,
+  PluginManifestSchema,
+  PluginPackageSchema,
+  PluginResourceLimitsSchema,
+};
 
 // ---------------------------------------------------------------------------
 // 1. plugin.verify

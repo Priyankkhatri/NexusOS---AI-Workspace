@@ -534,7 +534,71 @@ export class BackendApp {
         }
       }
 
-      // 8. Unhandled endpoint (404)
+      // 8. Governed Plugin Registry & Projection Endpoints (Milestone M6 / Task 054)
+      if (req.method === 'GET' && url.pathname === '/v1/plugins') {
+        const dashAuth = await this.authenticateForDashboard(req, res, context);
+        if (!dashAuth) return;
+
+        if (!this.taskController) {
+          res.statusCode = 200;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ plugins: [], total: 0 }));
+          return;
+        }
+
+        const plugins = this.taskController.listPlugins(dashAuth.tenantId);
+        res.statusCode = 200;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ plugins, total: plugins.length }));
+        return;
+      }
+
+      const pluginDetailMatch = url.pathname.match(/^\/v1\/plugins\/([^/]+)$/);
+      if (req.method === 'GET' && pluginDetailMatch) {
+        const dashAuth = await this.authenticateForDashboard(req, res, context);
+        if (!dashAuth) return;
+
+        if (!this.taskController) {
+          res.statusCode = 404;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(
+            JSON.stringify({
+              error: {
+                code: 'PLUGIN_NOT_FOUND',
+                message: 'Plugin registry not configured.',
+                requestId: context.requestId,
+                correlationId: context.correlationId,
+              },
+            }),
+          );
+          return;
+        }
+
+        const pluginId = decodeURIComponent(pluginDetailMatch[1]);
+        const plugin = this.taskController.getPlugin(pluginId, dashAuth.tenantId);
+        if (!plugin) {
+          res.statusCode = 404;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(
+            JSON.stringify({
+              error: {
+                code: 'PLUGIN_NOT_FOUND',
+                message: `Plugin '${pluginId}' not found or access denied for tenant '${dashAuth.tenantId}'.`,
+                requestId: context.requestId,
+                correlationId: context.correlationId,
+              },
+            }),
+          );
+          return;
+        }
+
+        res.statusCode = 200;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify(plugin));
+        return;
+      }
+
+      // 9. Unhandled endpoint (404)
       res.statusCode = 404;
       res.setHeader('Content-Type', 'application/json');
       res.end(
