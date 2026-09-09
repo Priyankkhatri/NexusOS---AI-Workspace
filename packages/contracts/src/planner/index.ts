@@ -3,6 +3,7 @@ import { UUIDSchema, TaskIdSchema, TenantIdSchema, DeviceIdSchema } from '../ide
 import {
   TaskGraphCreateRequestSchema,
   WorkflowNodeSchema,
+  WorkflowNode,
   validateDAGTopology,
 } from '../tasks/index.js';
 
