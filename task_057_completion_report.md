@@ -20,8 +20,10 @@
 
 ## 3. Final SHA
 
-- Commit SHA (documentation commit): Will be finalized upon committing this report.
-- Implementation HEAD: `d94832e01dfb003a73c1d9b33a595cb623912da4`
+- **Exact Final SHA**: `96eeacdd4ecedd0ceafd0246a85e9df754b4a36b`
+- **GitHub Actions CI Run**: `34384612988` (Status: `SUCCESS` / GREEN in 1m11s)
+- **Baseline SHA**: `729b4cbef7e7d1f2d076d374144e3804d31bc301`
+- **Working Tree**: Clean on `origin/main`
 
 ---
 
