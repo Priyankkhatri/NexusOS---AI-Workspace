@@ -19,7 +19,7 @@
   - `f90c2723e942f04b756822247a1d386aba153f69` (`feat(contracts): introduce canonical browser contracts and schemas for Task 055`)
   - `f83ba8b4a80c83caae7f6d520937a15f65e2ffb5` (`feat(desktop-agent): harden browser runtime with session isolation, action receipts, and ssrf defenses`)
   - `ec121e77be8e7490dc22a20f1aeb878c7a084e3b` (`test(browser): add 055-SEC-01..06 security invariants and vertical-slice tests`)
-- **Documentation Commit**: `e80b2c914bb248fe9ac9604ea1127fc19e3f85b1`
+- **Final Documentation Commit**: `a6a6159d423f9b442b966e0251c71005c5e6ee28`
 
 ---
 
