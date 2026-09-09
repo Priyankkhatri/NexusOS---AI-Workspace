@@ -28,4 +28,5 @@ export * from './memory/index.js';
 export * from './orchestrator/index.js';
 export * from './scheduler/index.js';
 export * from './workflow/index.js';
+export * from './ui/index.js';
 export * from './agent.js';

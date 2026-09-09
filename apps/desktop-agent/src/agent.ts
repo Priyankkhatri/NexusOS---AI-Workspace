@@ -721,6 +721,8 @@ export class DesktopAgent {
     this.trayController = customTrayController || new TrayUIController();
     this.approvalHost =
       customApprovalHost || new NativeApprovalHost(this.leaseBoundary, redactionFilter);
+    this.orchestrator.setApprovalHost(this.approvalHost);
+    this.orchestrator.setTrayController(this.trayController);
     this.notificationManager = customNotificationManager || new NotificationManager();
     this.vaultClient =
       customVaultClient ||

@@ -1,6 +1,13 @@
-import { ExecutionLeaseHeader } from '@nexusos/contracts';
+import { ApprovalRiskTier, ExecutionLeaseHeader } from '@nexusos/contracts';
 
-export type TaskStatus = 'QUEUED' | 'RUNNING' | 'PAUSED' | 'COMPLETED' | 'FAILED' | 'CANCELED';
+export type TaskStatus =
+  | 'QUEUED'
+  | 'RUNNING'
+  | 'PAUSED'
+  | 'AWAITING_APPROVAL'
+  | 'COMPLETED'
+  | 'FAILED'
+  | 'CANCELED';
 
 export interface TaskExecutionRequest {
   task_id: string;
@@ -13,6 +20,13 @@ export interface TaskExecutionRequest {
   timeoutMs?: number;
   idempotency_key?: string;
   message_id?: string;
+  riskTier?: ApprovalRiskTier;
+  requiresApproval?: boolean;
+  actionIdentifier?: string;
+  targetResource?: string;
+  reversibility?: 'REVERSIBLE' | 'IRREVERSIBLE';
+  title?: string;
+  description?: string;
 }
 
 export interface TaskExecutionResult {
@@ -24,6 +38,8 @@ export interface TaskExecutionResult {
   errorMessage?: string;
   executionTimeMs: number;
   receiptSignature?: string;
+  approvalReceiptHash?: string;
+  approvalDecision?: 'ALLOW' | 'DENY';
 }
 
 export interface IRuntimeRouter {

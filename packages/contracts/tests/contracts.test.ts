@@ -28,6 +28,12 @@ import {
   ModelInferenceRequestSchema,
   ModelInferenceResponseSchema,
   computeModelEvidenceChecksum,
+  ApprovalPromptRequestSchema,
+  ApprovalDecisionRequestSchema,
+  ApprovalDecisionResultSchema,
+  computeApprovalReceiptChecksum,
+  isHighRiskCapability,
+  DEFAULT_PROMPT_TTL_SECONDS,
 } from '../src/index.js';
 import { z } from 'zod';
 
@@ -558,6 +564,108 @@ describe('@nexusos/contracts Foundation & Schema Validation Audit', () => {
         cpuFallback: true,
       });
       assert.notStrictEqual(checksum1, tamperedChecksum);
+    });
+  });
+
+  describe('Approval Contracts & High-Risk Interceptor Validation', () => {
+    const validLeaseHeader = {
+      lease_id: '550e8400-e29b-41d4-a716-446655440001',
+      task_id: '550e8400-e29b-41d4-a716-446655440002',
+      agent_id: 'agent-1',
+      tenant_id: '550e8400-e29b-41d4-a716-446655440003',
+      scopes: ['terminal.execute'],
+      issued_at: new Date(Date.now() - 1000).toISOString(),
+      expires_at: new Date(Date.now() + 60000).toISOString(),
+      signature: 'sig-test-valid',
+    };
+
+    it('validates canonical ApprovalPromptRequestSchema with required and optional fields', () => {
+      const validReq = {
+        leaseHeader: validLeaseHeader,
+        requestId: 'req-101',
+        taskId: '550e8400-e29b-41d4-a716-446655440002',
+        title: 'Run Terminal Command',
+        description: 'Execute `npm run build` in working tree',
+        riskTier: 'HIGH' as const,
+        actionIdentifier: 'terminal.execute',
+        capabilityId: 'terminal.execute',
+        reversibility: 'IRREVERSIBLE' as const,
+        ttlSeconds: DEFAULT_PROMPT_TTL_SECONDS,
+      };
+
+      const parsed = ApprovalPromptRequestSchema.parse(validReq);
+      assert.strictEqual(parsed.riskTier, 'HIGH');
+      assert.strictEqual(parsed.actionIdentifier, 'terminal.execute');
+      assert.strictEqual(parsed.ttlSeconds, 60);
+    });
+
+    it('rejects oversized approval prompt descriptions (>64KB)', () => {
+      const invalidReq = {
+        leaseHeader: validLeaseHeader,
+        requestId: 'req-101',
+        title: 'Too large',
+        description: 'x'.repeat(65537),
+        riskTier: 'HIGH' as const,
+        actionIdentifier: 'terminal.execute',
+      };
+
+      assert.throws(() => ApprovalPromptRequestSchema.parse(invalidReq));
+    });
+
+    it('validates canonical ApprovalDecisionRequestSchema and ApprovalDecisionResultSchema', () => {
+      const decisionReq = {
+        promptId: '550e8400-e29b-41d4-a716-446655440000',
+        decision: 'ALLOW' as const,
+        nonce: 'nonce-random-12345',
+        leaseHeader: validLeaseHeader,
+        tenantId: '550e8400-e29b-41d4-a716-446655440003',
+      };
+
+      const parsedReq = ApprovalDecisionRequestSchema.parse(decisionReq);
+      assert.strictEqual(parsedReq.decision, 'ALLOW');
+
+      const resolvedAt = Date.now();
+      const receiptHash = computeApprovalReceiptChecksum({
+        promptId: decisionReq.promptId,
+        requestId: 'req-101',
+        decision: 'ALLOW',
+        resolvedAt,
+        nonce: decisionReq.nonce,
+        tenantId: 'tenant-engineering',
+        leaseId: 'lease-app-1',
+      });
+
+      const decisionRes = {
+        promptId: decisionReq.promptId,
+        requestId: 'req-101',
+        decision: 'ALLOW' as const,
+        state: 'APPROVED' as const,
+        resolvedAt,
+        receiptHash,
+      };
+
+      const parsedRes = ApprovalDecisionResultSchema.parse(decisionRes);
+      assert.strictEqual(parsedRes.state, 'APPROVED');
+      assert.strictEqual(parsedRes.receiptHash.length, 64);
+    });
+
+    it('correctly classifies capabilities using isHighRiskCapability', () => {
+      // Risk tier override
+      assert.strictEqual(isHighRiskCapability(undefined, 'HIGH', undefined), true);
+      assert.strictEqual(isHighRiskCapability(undefined, 'CRITICAL', undefined), true);
+      assert.strictEqual(isHighRiskCapability('any.capability', 'LOW', undefined), false);
+
+      // Dangerous capability IDs
+      assert.strictEqual(isHighRiskCapability('terminal.execute'), true);
+      assert.strictEqual(isHighRiskCapability('terminal.run'), true);
+      assert.strictEqual(isHighRiskCapability('filesystem.deleteFile'), true);
+      assert.strictEqual(isHighRiskCapability('fs:delete'), true);
+      assert.strictEqual(isHighRiskCapability('vault.delete'), true);
+
+      // Safe capabilities
+      assert.strictEqual(isHighRiskCapability('filesystem.readFile'), false);
+      assert.strictEqual(isHighRiskCapability('browser.navigate'), false);
+      assert.strictEqual(isHighRiskCapability('local-ai.inference'), false);
     });
   });
 });

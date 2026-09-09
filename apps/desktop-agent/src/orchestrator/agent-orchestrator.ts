@@ -1,5 +1,10 @@
 import crypto from 'node:crypto';
-import { EventEnvelope } from '@nexusos/contracts';
+import {
+  ApprovalDecisionResult,
+  ApprovalPromptRequest,
+  EventEnvelope,
+  isHighRiskCapability,
+} from '@nexusos/contracts';
 import { DesktopAgentConfig } from '../config/index.js';
 import { AgentIdentityProvider } from '../identity/agent-identity.js';
 import { ExecutionLeaseBoundary } from '../permissions/lease-boundary.js';
@@ -18,6 +23,8 @@ import { BrowserRuntime } from '../runtimes/browser/index.js';
 import { PluginRuntime } from '../runtimes/plugin/index.js';
 import { DeviceRuntime } from '../runtimes/device/index.js';
 import { LocalAiRuntime } from '../runtimes/local-ai/index.js';
+import type { NativeApprovalHost } from '../ui/approval-host.js';
+import type { TrayUIController } from '../ui/tray-controller.js';
 
 import {
   IAgentOrchestrator,
@@ -39,6 +46,7 @@ export class AgentOrchestrator implements IAgentOrchestrator {
   private readonly processedMessageIds = new Map<string, number>();
   private readonly taskStateMap = new Map<string, TaskRecord>();
   private readonly activeCancellations = new Map<string, AbortController>();
+  private readonly taskPendingPrompts = new Map<string, string>();
   private stateMutexPromise: Promise<void> = Promise.resolve();
 
   constructor(
@@ -60,9 +68,27 @@ export class AgentOrchestrator implements IAgentOrchestrator {
     private readonly pluginRuntime?: PluginRuntime,
     private readonly deviceRuntime?: DeviceRuntime,
     private readonly localAiRuntime?: LocalAiRuntime,
+    private approvalHost?: NativeApprovalHost,
+    private trayController?: TrayUIController,
   ) {
     void this._config;
     void this._secretsVault;
+  }
+
+  public setApprovalHost(approvalHost: NativeApprovalHost): void {
+    this.approvalHost = approvalHost;
+  }
+
+  public setTrayController(trayController: TrayUIController): void {
+    this.trayController = trayController;
+  }
+
+  public getApprovalHost(): NativeApprovalHost | undefined {
+    return this.approvalHost;
+  }
+
+  public getTrayController(): TrayUIController | undefined {
+    return this.trayController;
   }
 
   public getActiveCount(): number {
@@ -115,6 +141,18 @@ export class AgentOrchestrator implements IAgentOrchestrator {
       const controller = this.activeCancellations.get(taskId);
       if (controller) {
         controller.abort();
+      }
+
+      // Clean up any pending approval prompt
+      const pendingPromptId = this.taskPendingPrompts.get(taskId);
+      if (pendingPromptId && this.approvalHost) {
+        this.approvalHost.cancelPrompt(pendingPromptId, 'Task cancelled');
+        this.taskPendingPrompts.delete(taskId);
+        if (this.trayController) {
+          this.trayController.setPendingApprovalCount(
+            this.approvalHost.listPendingPrompts().length,
+          );
+        }
       }
 
       if (this.stateManager) {
@@ -341,6 +379,182 @@ export class AgentOrchestrator implements IAgentOrchestrator {
         timeoutTimer.unref();
       }
 
+      // 10. Human-in-the-Loop (HITL) Approval Interception (Task 052)
+      let approvalReceiptHash: string | undefined;
+      const requiresApproval =
+        request.requiresApproval === true ||
+        (request.payload as Record<string, unknown>)?.requiresApproval === true ||
+        isHighRiskCapability(request.capabilityId, request.riskTier, request.actionIdentifier);
+
+      if (requiresApproval && !this.approvalHost && request.requiresApproval === true) {
+        clearTimeout(timeoutTimer);
+        return {
+          success: false,
+          taskId: request.task_id,
+          stepId: request.step_id,
+          errorCode: 'APPROVAL_REQUIRED',
+          errorMessage:
+            'Human approval is required for high-risk capabilities but no approval host is configured.',
+          executionTimeMs: Date.now() - startTime,
+        };
+      }
+
+      if (requiresApproval && this.approvalHost) {
+        // Checkpoint AWAITING_APPROVAL state
+        await this.withTaskStateLock(async () => {
+          this.taskStateMap.set(request.task_id, {
+            status: 'AWAITING_APPROVAL',
+            tenantId: request.leaseHeader.tenant_id,
+          });
+        });
+
+        if (this.stateManager) {
+          await this.stateManager.set(`task_checkpoint:${request.task_id}`, {
+            taskId: request.task_id,
+            stepId: request.step_id,
+            status: 'AWAITING_APPROVAL',
+            correlationId: request.correlation_id,
+            timestamp: new Date().toISOString(),
+          });
+        }
+
+        const promptReq: ApprovalPromptRequest = {
+          leaseHeader: request.leaseHeader,
+          requestId: request.task_id,
+          taskId: request.task_id,
+          stepId: request.step_id,
+          title: request.title || `Authorize Execution: ${request.capabilityId}`,
+          description:
+            request.description ||
+            `Task '${request.task_id}' requests execution of high-risk capability '${request.capabilityId}'. Please authorize to proceed.`,
+          riskTier: request.riskTier || 'HIGH',
+          actionIdentifier: request.actionIdentifier || request.capabilityId,
+          capabilityId: request.capabilityId,
+          targetResource: request.targetResource,
+          reversibility: request.reversibility,
+          tenantId: request.leaseHeader.tenant_id,
+          deviceId: identity.deviceId,
+          ttlSeconds: 60,
+        };
+
+        const prompt = await this.approvalHost.presentPrompt(promptReq);
+        this.taskPendingPrompts.set(request.task_id, prompt.promptId);
+
+        if (this.trayController) {
+          this.trayController.setPendingApprovalCount(
+            this.approvalHost.listPendingPrompts().length,
+          );
+        }
+
+        try {
+          const decisionResult: ApprovalDecisionResult = await this.approvalHost.waitForDecision(
+            prompt.promptId,
+            abortController.signal,
+          );
+
+          this.taskPendingPrompts.delete(request.task_id);
+
+          if (this.trayController) {
+            this.trayController.setPendingApprovalCount(
+              this.approvalHost.listPendingPrompts().length,
+            );
+          }
+
+          if (decisionResult.state === 'EXPIRED') {
+            clearTimeout(timeoutTimer);
+            await this.withTaskStateLock(async () => {
+              this.taskStateMap.set(request.task_id, {
+                status: 'FAILED',
+                tenantId: request.leaseHeader.tenant_id,
+              });
+            });
+            return {
+              success: false,
+              taskId: request.task_id,
+              stepId: request.step_id,
+              errorCode: 'APPROVAL_EXPIRED',
+              errorMessage: `Approval request '${prompt.promptId}' expired after 60 seconds without authorization.`,
+              executionTimeMs: Date.now() - startTime,
+            };
+          }
+
+          if (decisionResult.decision === 'DENY' || decisionResult.state === 'DENIED') {
+            clearTimeout(timeoutTimer);
+            await this.withTaskStateLock(async () => {
+              this.taskStateMap.set(request.task_id, {
+                status: 'FAILED',
+                tenantId: request.leaseHeader.tenant_id,
+              });
+            });
+            return {
+              success: false,
+              taskId: request.task_id,
+              stepId: request.step_id,
+              errorCode: 'APPROVAL_DENIED',
+              errorMessage: `Human approval was denied for capability '${request.capabilityId}'.`,
+              executionTimeMs: Date.now() - startTime,
+            };
+          }
+
+          // Human approved: record receipt hash and transition back to RUNNING
+          approvalReceiptHash = decisionResult.receiptHash;
+
+          await this.withTaskStateLock(async () => {
+            this.taskStateMap.set(request.task_id, {
+              status: 'RUNNING',
+              tenantId: request.leaseHeader.tenant_id,
+            });
+          });
+
+          if (this.telemetrySpool?.enqueueEventEnvelope) {
+            this.telemetrySpool.enqueueEventEnvelope({
+              schema_id: 'schema:nexusos:approval:decision:v1',
+              version: '1.0.0',
+              event_id: crypto.randomUUID(),
+              correlation_id: request.correlation_id,
+              occurred_at: new Date(decisionResult.resolvedAt).toISOString(),
+              producer_id: identity.deviceId,
+              payload: {
+                promptId: decisionResult.promptId,
+                requestId: decisionResult.requestId,
+                taskId: request.task_id,
+                stepId: request.step_id,
+                tenantId: request.leaseHeader.tenant_id,
+                capabilityId: request.capabilityId,
+                decision: decisionResult.decision,
+                state: decisionResult.state,
+                resolvedAt: decisionResult.resolvedAt,
+                receiptHash: decisionResult.receiptHash,
+                leaseId: request.leaseHeader.lease_id,
+              },
+            });
+          }
+        } catch (err: unknown) {
+          this.taskPendingPrompts.delete(request.task_id);
+          if (this.trayController) {
+            this.trayController.setPendingApprovalCount(
+              this.approvalHost.listPendingPrompts().length,
+            );
+          }
+
+          if (abortController.signal.aborted) {
+            clearTimeout(timeoutTimer);
+            return {
+              success: false,
+              taskId: request.task_id,
+              stepId: request.step_id,
+              errorCode: isTimedOut ? 'TASK_TIMEOUT' : 'TASK_CANCELED',
+              errorMessage: isTimedOut
+                ? `Task execution timed out after ${timeoutMs}ms.`
+                : 'Task execution was canceled.',
+              executionTimeMs: Date.now() - startTime,
+            };
+          }
+
+          throw err;
+        }
+      }
+
       let executionOutput: unknown;
       let executionError: Error | undefined;
 
@@ -498,6 +712,8 @@ export class AgentOrchestrator implements IAgentOrchestrator {
             output: redactedOutput,
             executionTimeMs: Date.now() - startTime,
             receiptSignature: receiptSig,
+            approvalReceiptHash,
+            approvalDecision: approvalReceiptHash ? 'ALLOW' : undefined,
           };
         }
 

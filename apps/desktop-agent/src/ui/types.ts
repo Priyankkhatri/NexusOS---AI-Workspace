@@ -1,5 +1,26 @@
 import { z } from 'zod';
-import { ExecutionLeaseHeaderSchema, type ExecutionLeaseHeader } from '@nexusos/contracts';
+import {
+  ApprovalDecisionChoiceSchema,
+  ApprovalDecisionRequestSchema,
+  ApprovalDecisionResultSchema,
+  ApprovalLifecycleStateSchema,
+  ApprovalPromptItemSchema,
+  ApprovalPromptRequestSchema,
+  ApprovalRiskTierSchema,
+  computeApprovalReceiptChecksum,
+  DEFAULT_PROMPT_TTL_SECONDS,
+  ExecutionLeaseHeaderSchema,
+  isHighRiskCapability,
+  MAX_PROMPT_DESCRIPTION_BYTES,
+  type ApprovalDecisionChoice,
+  type ApprovalDecisionRequest,
+  type ApprovalDecisionResult,
+  type ApprovalLifecycleState,
+  type ApprovalPromptItem,
+  type ApprovalPromptRequest,
+  type ApprovalRiskTier,
+  type ExecutionLeaseHeader,
+} from '@nexusos/contracts';
 
 export type TrayState =
   | 'CONNECTED'
@@ -34,87 +55,31 @@ export interface TrayMenuDescriptor {
   shortcut?: string;
 }
 
-export type PromptLifecycleState = 'PENDING' | 'APPROVED' | 'DENIED' | 'EXPIRED' | 'CANCELLED';
+/** Backward-compatible type alias for prompt lifecycle state */
+export type PromptLifecycleState = ApprovalLifecycleState;
 
-export type ApprovalRiskTier = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
-
-export const MAX_PROMPT_DESCRIPTION_BYTES = 65536; // 64 KB limit
-export const DEFAULT_PROMPT_TTL_SECONDS = 60; // 60s default timeout
-
-export interface ApprovalPromptRequest {
-  leaseHeader: ExecutionLeaseHeader;
-  requestId: string;
-  title: string;
-  description: string;
-  riskTier: ApprovalRiskTier;
-  actionIdentifier: string;
-  tenantId?: string;
-  deviceId?: string;
-  ttlSeconds?: number;
-  isLockScreenPrivate?: boolean;
-  metadata?: Record<string, unknown>;
-}
-
-export interface ApprovalPromptItem {
-  promptId: string;
-  requestId: string;
-  leaseId: string;
-  tenantId: string;
-  deviceId?: string;
-  title: string;
-  description: string;
-  riskTier: ApprovalRiskTier;
-  actionIdentifier: string;
-  nonce: string;
-  state: PromptLifecycleState;
-  createdAt: number;
-  expiresAt: number;
-  isLockScreenPrivate: boolean;
-  metadata?: Record<string, unknown>;
-}
-
-export interface ApprovalDecisionRequest {
-  promptId: string;
-  decision: 'ALLOW' | 'DENY';
-  nonce: string;
-  leaseHeader: ExecutionLeaseHeader;
-  tenantId?: string;
-  userNotes?: string;
-}
-
-export interface ApprovalDecisionResult {
-  promptId: string;
-  requestId: string;
-  decision: 'ALLOW' | 'DENY';
-  state: PromptLifecycleState;
-  resolvedAt: number;
-  receiptHash: string;
-}
-
-// --- Zod Schemas ---
-
-export const ApprovalPromptRequestSchema = z.object({
-  leaseHeader: ExecutionLeaseHeaderSchema,
-  requestId: z.string().min(1).max(128),
-  title: z.string().min(1).max(256),
-  description: z.string().min(1).max(MAX_PROMPT_DESCRIPTION_BYTES),
-  riskTier: z.enum(['LOW', 'MEDIUM', 'HIGH', 'CRITICAL']),
-  actionIdentifier: z.string().min(1).max(256),
-  tenantId: z.string().optional(),
-  deviceId: z.string().optional(),
-  ttlSeconds: z.number().int().min(1).max(600).optional(),
-  isLockScreenPrivate: z.boolean().optional(),
-  metadata: z.record(z.unknown()).optional(),
-});
-
-export const ApprovalDecisionRequestSchema = z.object({
-  promptId: z.string().uuid(),
-  decision: z.enum(['ALLOW', 'DENY']),
-  nonce: z.string().min(1).max(128),
-  leaseHeader: ExecutionLeaseHeaderSchema,
-  tenantId: z.string().optional(),
-  userNotes: z.string().max(1024).optional(),
-});
+export {
+  MAX_PROMPT_DESCRIPTION_BYTES,
+  DEFAULT_PROMPT_TTL_SECONDS,
+  ApprovalRiskTierSchema,
+  ApprovalLifecycleStateSchema,
+  ApprovalDecisionChoiceSchema,
+  ApprovalPromptRequestSchema,
+  ApprovalPromptItemSchema,
+  ApprovalDecisionRequestSchema,
+  ApprovalDecisionResultSchema,
+  computeApprovalReceiptChecksum,
+  isHighRiskCapability,
+  ExecutionLeaseHeaderSchema,
+  type ApprovalDecisionChoice,
+  type ApprovalLifecycleState,
+  type ApprovalRiskTier,
+  type ApprovalPromptRequest,
+  type ApprovalPromptItem,
+  type ApprovalDecisionRequest,
+  type ApprovalDecisionResult,
+  type ExecutionLeaseHeader,
+};
 
 export const TrayStatusRequestSchema = z.object({
   tenantId: z.string().optional(),
