@@ -18,3 +18,4 @@ export * from './server/acp-dispatch-bridge.js';
 export * from './server/app.js';
 export * from './security/redaction-filter.js';
 export * from './memory/index.js';
+export * from './planner/index.js';
