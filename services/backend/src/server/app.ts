@@ -17,6 +17,7 @@ import {
 import { TaskController, AuthenticatedContextLike } from '../tasks/controller.js';
 import { MemoryController } from '../memory/memory-controller.js';
 import { handleMemoryRoutes } from '../memory/memory-routes.js';
+import { AmbiguousGoalException } from '../planner/index.js';
 
 export interface AuthenticatedIncomingMessage extends IncomingMessage {
   authenticatedContext?: AuthenticatedContextLike;
@@ -280,6 +281,36 @@ export class BackendApp {
           const body = await this.readJsonBody(req);
           const result = await this.taskController.createTask(body, authContext);
           res.statusCode = 201;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify(result));
+          return;
+        }
+
+        // 3c. POST /v1/tasks/plan — Autonomous Goal Decomposition Plan Proposal (Task 057)
+        if (req.method === 'POST' && url.pathname === '/v1/tasks/plan') {
+          const body = await this.readJsonBody(req);
+          try {
+            const result = await this.taskController.planGoal(body, authContext);
+            res.statusCode = 200;
+            res.setHeader('Content-Type', 'application/json');
+            res.end(JSON.stringify(result));
+            return;
+          } catch (err: unknown) {
+            if (err instanceof AmbiguousGoalException) {
+              res.statusCode = 400;
+              res.setHeader('Content-Type', 'application/json');
+              res.end(JSON.stringify({ error: err.details }));
+              return;
+            }
+            throw err;
+          }
+        }
+
+        // 3d. POST /v1/tasks/replan — Adaptive Replanning upon Node Failure (Task 057)
+        if (req.method === 'POST' && url.pathname === '/v1/tasks/replan') {
+          const body = await this.readJsonBody(req);
+          const result = await this.taskController.replanGoal(body, authContext);
+          res.statusCode = 200;
           res.setHeader('Content-Type', 'application/json');
           res.end(JSON.stringify(result));
           return;

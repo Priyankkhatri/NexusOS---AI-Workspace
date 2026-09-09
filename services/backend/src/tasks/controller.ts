@@ -21,12 +21,15 @@ import {
   ApprovalDecisionRequestSchema,
   ApprovalDecisionResult,
   PluginSummary,
+  GoalDecompositionResponse,
+  AdaptiveReplanResponse,
 } from '@nexusos/contracts';
 import { LeaseIssuer } from '../leases/lease-issuer.js';
 import { ReceiptVerifier } from '../receipts/receipt-verifier.js';
 import { TaskStateMachine } from './state-machine.js';
 import { EventPublisherBoundary } from '../events/publisher-boundary.js';
 import { ACPDispatchBridge } from '../server/acp-dispatch-bridge.js';
+import { IPlannerService, PlannerService } from '../planner/index.js';
 
 /**
  * Authoritative Approval Authority Boundary
@@ -193,6 +196,7 @@ export interface TaskControllerOptions {
   acpBridge?: ACPDispatchBridge;
   approvalHost?: ApprovalAuthorityBoundary;
   pluginRegistry?: PluginRegistryAuthorityBoundary;
+  plannerService?: IPlannerService;
 }
 
 export class TaskController {
@@ -205,6 +209,7 @@ export class TaskController {
   private readonly acpBridge?: ACPDispatchBridge;
   private approvalHost?: ApprovalAuthorityBoundary;
   private pluginRegistry?: PluginRegistryAuthorityBoundary;
+  private plannerService: IPlannerService;
 
   constructor(options: TaskControllerOptions) {
     this.leaseIssuer = options.leaseIssuer;
@@ -215,12 +220,35 @@ export class TaskController {
     this.acpBridge = options.acpBridge;
     this.approvalHost = options.approvalHost;
     this.pluginRegistry = options.pluginRegistry;
+    this.plannerService = options.plannerService || new PlannerService();
 
     if (this.acpBridge) {
       this.acpBridge.setReceiptSettler({
         settleReceipt: (receipt: unknown) => this.settleReceipt(receipt),
       });
     }
+  }
+
+  public setPlannerService(plannerService: IPlannerService): void {
+    this.plannerService = plannerService;
+  }
+
+  public getPlannerService(): IPlannerService {
+    return this.plannerService;
+  }
+
+  public async planGoal(
+    rawRequest: unknown,
+    context: AuthenticatedContextLike,
+  ): Promise<GoalDecompositionResponse> {
+    return this.plannerService.planGoal(rawRequest, context);
+  }
+
+  public async replanGoal(
+    rawRequest: unknown,
+    context: AuthenticatedContextLike,
+  ): Promise<AdaptiveReplanResponse> {
+    return this.plannerService.replanGoal(rawRequest, context);
   }
 
   public setApprovalHost(approvalHost: ApprovalAuthorityBoundary): void {
