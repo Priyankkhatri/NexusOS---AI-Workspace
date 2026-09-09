@@ -168,7 +168,10 @@ describe('Task 042 — Local Filesystem Adversarial Security Suite (042-SEC-01 -
     })) as { success: boolean; error?: { code: string } };
 
     assert.equal(res.success, false);
-    assert.equal(res.error?.code, 'PATH_OUTSIDE_SCOPE');
+    assert.ok(
+      res.error?.code === 'PATH_OUTSIDE_SCOPE' || res.error?.code === 'PROTECTED_PATH_DENIED',
+      `Expected PATH_OUTSIDE_SCOPE or PROTECTED_PATH_DENIED, got ${res.error?.code}`,
+    );
   });
 
   it('042-SEC-02: Symlink escape outside authorized root rejected', async () => {

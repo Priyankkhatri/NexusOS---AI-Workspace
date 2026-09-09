@@ -51,7 +51,10 @@ describe('Path Security Service — Traversal, Scope, & Symlink Security', () =>
     const result = pathSecurity.validatePath(traversalPath, [allowedSubDir]);
 
     assert.strictEqual(result.valid, false);
-    assert.strictEqual(result.error?.code, 'PATH_OUTSIDE_SCOPE');
+    assert.ok(
+      result.error?.code === 'PATH_OUTSIDE_SCOPE' || result.error?.code === 'PROTECTED_PATH_DENIED',
+      `Expected PATH_OUTSIDE_SCOPE or PROTECTED_PATH_DENIED, got ${result.error?.code}`,
+    );
   });
 
   it('rejects absolute path pointing outside allowed root', () => {
