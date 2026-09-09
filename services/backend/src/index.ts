@@ -16,3 +16,5 @@ export * from './leases/lease-issuer.js';
 export * from './receipts/receipt-verifier.js';
 export * from './server/acp-dispatch-bridge.js';
 export * from './server/app.js';
+export * from './security/redaction-filter.js';
+export * from './memory/index.js';

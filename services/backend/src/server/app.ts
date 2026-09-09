@@ -15,6 +15,8 @@ import {
   ActivityQuerySchema,
 } from '@nexusos/contracts';
 import { TaskController, AuthenticatedContextLike } from '../tasks/controller.js';
+import { MemoryController } from '../memory/memory-controller.js';
+import { handleMemoryRoutes } from '../memory/memory-routes.js';
 
 export interface AuthenticatedIncomingMessage extends IncomingMessage {
   authenticatedContext?: AuthenticatedContextLike;
@@ -24,6 +26,7 @@ export type RequestAuthenticator = (req: IncomingMessage, res: ServerResponse) =
 
 export interface BackendAppOptions {
   taskController?: TaskController;
+  memoryController?: MemoryController;
   authenticator?: RequestAuthenticator;
 }
 
@@ -33,6 +36,7 @@ export class BackendApp {
   public readonly logger: Logger;
   public readonly database: DatabaseBoundary;
   public readonly taskController?: TaskController;
+  public readonly memoryController?: MemoryController;
   private readonly authenticator?: RequestAuthenticator;
 
   constructor(
@@ -43,6 +47,7 @@ export class BackendApp {
     this.logger = new Logger(config.logLevel);
     this.database = new DatabaseBoundary(config);
     this.taskController = options?.taskController;
+    this.memoryController = options?.memoryController;
     this.authenticator = options?.authenticator;
   }
 
@@ -598,7 +603,40 @@ export class BackendApp {
         return;
       }
 
-      // 9. Unhandled endpoint (404)
+      // 9. Governed Persistent Memory Endpoints (Milestone M8 / Task 056)
+      if (url.pathname.startsWith('/v1/memory')) {
+        const authCtx = await this.authenticateForDashboard(req, res, context);
+        if (!authCtx) return;
+
+        if (!this.memoryController) {
+          res.statusCode = 503;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(
+            JSON.stringify({
+              error: {
+                code: 'MEMORY_SERVICE_UNAVAILABLE',
+                message: 'MemoryController is not configured.',
+                requestId: context.requestId,
+                correlationId: context.correlationId,
+              },
+            }),
+          );
+          return;
+        }
+
+        const handled = await handleMemoryRoutes(
+          req,
+          res,
+          url,
+          this.memoryController,
+          authCtx,
+          context,
+          (r) => this.readJsonBody(r),
+        );
+        if (handled) return;
+      }
+
+      // 10. Unhandled endpoint (404)
       res.statusCode = 404;
       res.setHeader('Content-Type', 'application/json');
       res.end(
