@@ -42,6 +42,9 @@ export class RuntimeRouter implements IRuntimeRouter {
     if (category === 'fs') {
       return 'filesystem';
     }
+    if (category === 'localai') {
+      return 'local-ai';
+    }
     if (RuntimeRouter.VALID_CATEGORIES.has(category)) {
       return category;
     }
@@ -57,7 +60,10 @@ export class RuntimeRouter implements IRuntimeRouter {
       return false;
     }
     const actual = runtimeCategory.toLowerCase();
-    const normalizedActual = actual === 'fs' ? 'filesystem' : actual;
+    let normalizedActual = actual === 'fs' ? 'filesystem' : actual;
+    if (normalizedActual === 'localai') {
+      normalizedActual = 'local-ai';
+    }
     return expectedCategory === normalizedActual;
   }
 }

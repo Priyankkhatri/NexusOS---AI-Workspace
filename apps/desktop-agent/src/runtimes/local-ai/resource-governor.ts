@@ -48,14 +48,24 @@ export class ResourceGovernor {
       );
     }
 
-    // 2. Estimate required RAM and VRAM
-    const requiredRam = model?.fileSizeBytes ? Math.ceil(model.fileSizeBytes * 1.1) : 1073741824; // Default 1 GB estimate
+    // 2. Estimate required RAM and VRAM (respecting hardwareBudget overrides if provided)
+    const budget = request.hardwareBudget;
+    const requestedRam =
+      budget?.maxRamBytes ??
+      ((budget as any)?.maxRamMb ? (budget as any).maxRamMb * 1024 * 1024 : undefined);
+    const requestedVram =
+      budget?.maxVramBytes ??
+      ((budget as any)?.maxVramMb ? (budget as any).maxVramMb * 1024 * 1024 : undefined);
+
+    const requiredRam =
+      requestedRam ?? (model?.fileSizeBytes ? Math.ceil(model.fileSizeBytes * 1.1) : 1073741824);
     const requiredVram =
-      hardware.gpuAdapters.length > 0
+      requestedVram ??
+      (hardware.gpuAdapters.length > 0
         ? model?.fileSizeBytes
           ? Math.ceil(model.fileSizeBytes * 0.9)
           : 1073741824
-        : 0; // 0 if CPU only
+        : 0);
 
     // 3. Validate against physical system limits
     const maxAllowedRam = Math.floor(hardware.totalRamBytes * this.maxRamPercent);
@@ -66,14 +76,35 @@ export class ResourceGovernor {
       );
     }
 
+    let isCpuFallback = false;
+    let fallbackReason: string | undefined;
+    let allocatedVram = requiredVram;
+
     if (hardware.gpuAdapters.length > 0) {
       const primaryGpu = hardware.gpuAdapters[0];
       const maxAllowedVram = Math.floor(primaryGpu.vramBytes * this.maxVramPercent);
       if (this.reservedVramBytes + requiredVram > maxAllowedVram) {
-        throw new ResourceGovernorError(
-          `Inference request '${request.requestId}' rejected: VRAM requirement (${requiredVram} bytes) exceeds safety ceiling of ${maxAllowedVram} bytes (80% GPU VRAM). Currently reserved: ${this.reservedVramBytes} bytes.`,
-          'MODEL_ADMISSION_DENIED',
-        );
+        const allowFallback =
+          request.allowCpuFallback === true ||
+          (request.hardwareBudget?.allowCpuFallback === true && request.allowCpuFallback !== false);
+
+        if (allowFallback) {
+          isCpuFallback = true;
+          allocatedVram = 0;
+          fallbackReason = `VRAM requirement (${requiredVram} bytes) exceeds safety ceiling of ${maxAllowedVram} bytes (80% GPU VRAM); falling back to CPU quantized execution.`;
+          // Validate that RAM safety ceiling is still respected for CPU fallback
+          if (this.reservedRamBytes + requiredRam > maxAllowedRam) {
+            throw new ResourceGovernorError(
+              `Inference request '${request.requestId}' rejected: CPU fallback RAM requirement (${requiredRam} bytes) exceeds safety ceiling of ${maxAllowedRam} bytes (70% system RAM). Currently reserved: ${this.reservedRamBytes} bytes.`,
+              'MODEL_ADMISSION_DENIED',
+            );
+          }
+        } else {
+          throw new ResourceGovernorError(
+            `Inference request '${request.requestId}' rejected: VRAM requirement (${requiredVram} bytes) exceeds safety ceiling of ${maxAllowedVram} bytes (80% GPU VRAM). Currently reserved: ${this.reservedVramBytes} bytes.`,
+            'MODEL_ADMISSION_DENIED',
+          );
+        }
       }
     }
 
@@ -82,17 +113,19 @@ export class ResourceGovernor {
     const reservation: ResourceReservation = {
       reservationId,
       ramBytes: requiredRam,
-      vramBytes: requiredVram,
+      vramBytes: allocatedVram,
       cpuCores: 1,
       acquiredAt: Date.now(),
       isReleased: false,
+      cpuFallback: isCpuFallback,
+      fallbackReason,
     };
 
     // Update internal tracking
     this.activeReservations.set(reservationId, reservation);
     this.activeConcurrentCount++;
     this.reservedRamBytes += requiredRam;
-    this.reservedVramBytes += requiredVram;
+    this.reservedVramBytes += allocatedVram;
 
     return { ...reservation };
   }

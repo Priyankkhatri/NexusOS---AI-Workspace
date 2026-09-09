@@ -201,6 +201,18 @@ export class DesktopAgent {
       );
     this.runtimeRegistry.registerRuntime(this.filesystemRuntime.getDescriptor());
 
+    /** Task 046 / Task 051: Local AI Runtime */
+    this.modelRuntimeManager = new ModelRuntimeManager(this.leaseBoundary, '.nexus-local-ai');
+    this.localAiRuntime =
+      customLocalAiRuntime ||
+      new LocalAiRuntime(
+        this.leaseBoundary,
+        this.modelRuntimeManager,
+        '.nexus-local-ai',
+        this.logger,
+      );
+    this.runtimeRegistry.registerRuntime(this.localAiRuntime.getDescriptor());
+
     const runtimeRouter = new RuntimeRouter(this.capabilityRegistry, this.runtimeRegistry);
     this.orchestrator =
       customOrchestrator ||
@@ -222,6 +234,7 @@ export class DesktopAgent {
         undefined,
         undefined,
         this.deviceRuntime,
+        this.localAiRuntime,
       );
 
     this.taskScheduler =
@@ -701,7 +714,6 @@ export class DesktopAgent {
       requiredScope: 'ai:write',
     });
 
-    this.modelRuntimeManager = new ModelRuntimeManager(this.leaseBoundary, '.nexus-local-ai');
     const redactionFilter = new RedactionFilter(new SecretRedactionRegistry());
     this.clipboardRuntime =
       customClipboardRuntime || new ClipboardRuntimeManager(this.leaseBoundary, redactionFilter);
@@ -866,18 +878,6 @@ export class DesktopAgent {
       );
 
     this.runtimeRegistry.registerRuntime(this.pluginRuntime.getDescriptor());
-
-    /** Task 046: Local AI Runtime & Hardware Acceleration Adapter */
-    this.localAiRuntime =
-      customLocalAiRuntime ||
-      new LocalAiRuntime(
-        this.leaseBoundary,
-        this.modelRuntimeManager,
-        '.nexus-local-ai',
-        this.logger,
-      );
-
-    this.runtimeRegistry.registerRuntime(this.localAiRuntime.getDescriptor());
 
     if (this.ipcManager) {
       this.ipcManager.registerMethodHandler('device.execute', async (params) => {

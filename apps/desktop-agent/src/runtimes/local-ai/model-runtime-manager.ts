@@ -4,6 +4,7 @@ import { HardwareDetector } from './hardware-detector.js';
 import { ModelCacheManager } from './model-cache-manager.js';
 import { ProviderAdapterFactory } from './provider-adapters.js';
 import { ResourceGovernor } from './resource-governor.js';
+import { PromptTemplateIsolationService } from './prompt-isolation.js';
 import {
   HardwareProfile,
   InferenceRequest,
@@ -13,6 +14,8 @@ import {
   MAX_OUTPUT_BYTES,
   MAX_OUTPUT_TOKENS,
   ModelLifecycleState,
+  ProviderType,
+  ResourceReservation,
 } from './types.js';
 
 export class ModelRuntimeError extends Error {
@@ -24,7 +27,9 @@ export class ModelRuntimeError extends Error {
       | 'ADMISSION_DENIED'
       | 'MODEL_NOT_FOUND'
       | 'INFERENCE_FAILED'
-      | 'ALREADY_SHUTDOWN',
+      | 'ALREADY_SHUTDOWN'
+      | 'VRAM_BUDGET_EXCEEDED'
+      | 'PROMPT_INJECTION_DETECTED',
   ) {
     super(message);
     this.name = 'ModelRuntimeError';
@@ -37,6 +42,7 @@ export class ModelRuntimeManager {
   public readonly modelCacheManager: ModelCacheManager;
   public readonly adapterFactory: ProviderAdapterFactory;
   public readonly redactionFilter: RedactionFilter;
+  public readonly promptIsolationService: PromptTemplateIsolationService;
   private isShutdown = false;
 
   private readonly loadedModelStates = new Map<string, ModelLifecycleState>();
@@ -50,12 +56,14 @@ export class ModelRuntimeManager {
     customCacheManager?: ModelCacheManager,
     customAdapterFactory?: ProviderAdapterFactory,
     customRedactionFilter?: RedactionFilter,
+    customPromptIsolation?: PromptTemplateIsolationService,
   ) {
     this.hardwareDetector = customHardwareDetector ?? new HardwareDetector();
     this.resourceGovernor = customResourceGovernor ?? new ResourceGovernor();
     this.modelCacheManager = customCacheManager ?? new ModelCacheManager(baseDir);
     this.adapterFactory = customAdapterFactory ?? new ProviderAdapterFactory();
     this.redactionFilter = customRedactionFilter ?? new RedactionFilter();
+    this.promptIsolationService = customPromptIsolation ?? new PromptTemplateIsolationService();
   }
 
   public async initialize(): Promise<void> {
@@ -107,15 +115,60 @@ export class ModelRuntimeManager {
     // 2. Re-validate execution lease authority immediately before model dispatch
     if (validatedRequest.leaseHeader) {
       try {
-        const isLeaseValid = this.leaseBoundary.validateLease(
+        const leaseDecision = await this.leaseBoundary.validateLease(
           validatedRequest.leaseHeader as never,
         );
-        if (!isLeaseValid) {
+        const isValid =
+          typeof leaseDecision === 'boolean'
+            ? leaseDecision
+            : Boolean(leaseDecision && (leaseDecision as { valid?: boolean }).valid);
+
+        if (!isValid) {
           this.activeInferenceStates.set(validatedRequest.requestId, 'Denied');
+          const reason =
+            typeof leaseDecision === 'object' && leaseDecision !== null && 'reason' in leaseDecision
+              ? (leaseDecision as { reason?: string }).reason
+              : 'Model dispatch rejected.';
           throw new ModelRuntimeError(
-            `Lease re-validation failed for request '${validatedRequest.requestId}'. Model dispatch rejected.`,
+            `Lease re-validation failed for request '${validatedRequest.requestId}'. ${reason}`,
             'LEASE_DENIED',
           );
+        }
+
+        const leaseObj =
+          typeof leaseDecision === 'object' && leaseDecision !== null && 'lease' in leaseDecision
+            ? (leaseDecision as { lease?: { tenant_id?: string; scopes?: string[] } }).lease
+            : (validatedRequest.leaseHeader as
+                | { tenant_id?: string; scopes?: string[] }
+                | undefined);
+
+        if (
+          validatedRequest.tenantId &&
+          leaseObj?.tenant_id &&
+          validatedRequest.tenantId !== leaseObj.tenant_id
+        ) {
+          this.activeInferenceStates.set(validatedRequest.requestId, 'Denied');
+          throw new ModelRuntimeError(
+            `Lease re-validation failed for request '${validatedRequest.requestId}': tenant mismatch (${validatedRequest.tenantId} !== ${leaseObj.tenant_id})`,
+            'LEASE_DENIED',
+          );
+        }
+
+        const scopes = Array.isArray(leaseObj?.scopes) ? leaseObj.scopes : [];
+        if (scopes.length > 0) {
+          const hasScope =
+            scopes.includes('*') ||
+            scopes.includes('admin') ||
+            scopes.includes('ai:write') ||
+            scopes.includes('ai:inference') ||
+            scopes.includes('local_ai:execute');
+          if (!hasScope) {
+            this.activeInferenceStates.set(validatedRequest.requestId, 'Denied');
+            throw new ModelRuntimeError(
+              `Lease re-validation failed for request '${validatedRequest.requestId}': missing required 'ai:inference' or 'ai:write' scope`,
+              'LEASE_DENIED',
+            );
+          }
         }
       } catch (err) {
         this.activeInferenceStates.set(validatedRequest.requestId, 'Denied');
@@ -138,10 +191,22 @@ export class ModelRuntimeManager {
       );
     }
 
+    // 4. Apply structural prompt template isolation before model dispatch
+    const promptPackage = this.promptIsolationService.isolatePrompt(
+      validatedRequest.prompt,
+      validatedRequest.systemPrompt,
+      validatedRequest.contextDocuments,
+      validatedRequest.isolationPolicy,
+    );
+    const isolatedRequest: InferenceRequest = {
+      ...validatedRequest,
+      prompt: promptPackage.assembledPrompt,
+    };
+
     const cachedModel = this.modelCacheManager.getModel(validatedRequest.modelId);
-    let reservation;
+    let reservation: ResourceReservation;
     try {
-      reservation = await this.resourceGovernor.reserve(validatedRequest, hardware, cachedModel);
+      reservation = await this.resourceGovernor.reserve(isolatedRequest, hardware, cachedModel);
     } catch (err) {
       this.activeInferenceStates.set(validatedRequest.requestId, 'Denied');
       throw new ModelRuntimeError(
@@ -150,9 +215,12 @@ export class ModelRuntimeManager {
       );
     }
 
-    // 4. Dispatch to provider adapter
+    // 5. Dispatch to provider adapter (route to cpu_fallback if governor selected fallback)
     this.activeInferenceStates.set(validatedRequest.requestId, 'LoadingModel');
-    const adapter = this.adapterFactory.getAdapter(validatedRequest.provider);
+    const effectiveProvider: ProviderType = reservation.cpuFallback
+      ? 'cpu_fallback'
+      : validatedRequest.provider;
+    const adapter = this.adapterFactory.getAdapter(effectiveProvider);
 
     if (cachedModel) {
       this.modelCacheManager.markModelActive(cachedModel.modelId);
@@ -166,7 +234,7 @@ export class ModelRuntimeManager {
     let totalBytes = 0;
 
     try {
-      for await (const chunk of adapter.generateStream(validatedRequest, signal)) {
+      for await (const chunk of adapter.generateStream(isolatedRequest, signal)) {
         if (signal?.aborted) {
           this.activeInferenceStates.set(validatedRequest.requestId, 'Canceled');
           yield {
@@ -223,6 +291,220 @@ export class ModelRuntimeManager {
         this.modelCacheManager.markModelInactive(cachedModel.modelId);
       }
     }
+  }
+
+  /**
+   * Executes local model inference directly, collecting streamed output into a canonical single response structure.
+   */
+  public async executeInferenceDirect(
+    request: InferenceRequest,
+    signal?: AbortSignal,
+  ): Promise<{
+    content: string;
+    finishReason: 'stop' | 'length' | 'cancel' | 'error';
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+    hardwareProfileUsed: {
+      gpuAccelerated: boolean;
+      vramAllocatedBytes: number;
+      ramAllocatedBytes: number;
+      cpuFallback: boolean;
+      fallbackReason?: string;
+    };
+    effectiveProvider: ProviderType;
+    redacted: boolean;
+  }> {
+    if (this.isShutdown) {
+      throw new ModelRuntimeError(
+        'Cannot execute inference: ModelRuntimeManager is shutdown.',
+        'ALREADY_SHUTDOWN',
+      );
+    }
+
+    const validatedRequest = InferenceRequestSchema.parse(request) as InferenceRequest;
+    this.activeInferenceStates.set(validatedRequest.requestId, 'Admitting');
+
+    if (validatedRequest.leaseHeader) {
+      try {
+        const leaseDecision = await this.leaseBoundary.validateLease(
+          validatedRequest.leaseHeader as never,
+        );
+        const isValid =
+          typeof leaseDecision === 'boolean'
+            ? leaseDecision
+            : Boolean(leaseDecision && (leaseDecision as { valid?: boolean }).valid);
+
+        if (!isValid) {
+          this.activeInferenceStates.set(validatedRequest.requestId, 'Denied');
+          const reason =
+            typeof leaseDecision === 'object' && leaseDecision !== null && 'reason' in leaseDecision
+              ? (leaseDecision as { reason?: string }).reason
+              : 'Model dispatch rejected.';
+          throw new ModelRuntimeError(
+            `Lease re-validation failed for request '${validatedRequest.requestId}'. ${reason}`,
+            'LEASE_DENIED',
+          );
+        }
+
+        const leaseObj =
+          typeof leaseDecision === 'object' && leaseDecision !== null && 'lease' in leaseDecision
+            ? (leaseDecision as { lease?: { tenant_id?: string; scopes?: string[] } }).lease
+            : (validatedRequest.leaseHeader as
+                | { tenant_id?: string; scopes?: string[] }
+                | undefined);
+
+        if (
+          validatedRequest.tenantId &&
+          leaseObj?.tenant_id &&
+          validatedRequest.tenantId !== leaseObj.tenant_id
+        ) {
+          this.activeInferenceStates.set(validatedRequest.requestId, 'Denied');
+          throw new ModelRuntimeError(
+            `Lease re-validation failed for request '${validatedRequest.requestId}': tenant mismatch (${validatedRequest.tenantId} !== ${leaseObj.tenant_id})`,
+            'LEASE_DENIED',
+          );
+        }
+
+        const scopes = Array.isArray(leaseObj?.scopes) ? leaseObj.scopes : [];
+        if (scopes.length > 0) {
+          const hasScope =
+            scopes.includes('*') ||
+            scopes.includes('admin') ||
+            scopes.includes('ai:write') ||
+            scopes.includes('ai:inference') ||
+            scopes.includes('local_ai:execute');
+          if (!hasScope) {
+            this.activeInferenceStates.set(validatedRequest.requestId, 'Denied');
+            throw new ModelRuntimeError(
+              `Lease re-validation failed for request '${validatedRequest.requestId}': missing required 'ai:inference' or 'ai:write' scope`,
+              'LEASE_DENIED',
+            );
+          }
+        }
+      } catch (err) {
+        this.activeInferenceStates.set(validatedRequest.requestId, 'Denied');
+        throw new ModelRuntimeError(
+          `Lease re-validation error: ${err instanceof Error ? err.message : String(err)}`,
+          'LEASE_DENIED',
+        );
+      }
+    }
+
+    let hardware: HardwareProfile;
+    try {
+      hardware = await this.hardwareDetector.getProfile();
+    } catch {
+      this.activeInferenceStates.set(validatedRequest.requestId, 'Denied');
+      throw new ModelRuntimeError(
+        `Hardware detection failed for request '${validatedRequest.requestId}'.`,
+        'ADMISSION_DENIED',
+      );
+    }
+
+    const promptPackage = this.promptIsolationService.isolatePrompt(
+      validatedRequest.prompt,
+      validatedRequest.systemPrompt,
+      validatedRequest.contextDocuments,
+      validatedRequest.isolationPolicy,
+    );
+    const isolatedRequest: InferenceRequest = {
+      ...validatedRequest,
+      prompt: promptPackage.assembledPrompt,
+    };
+
+    const cachedModel = this.modelCacheManager.getModel(validatedRequest.modelId);
+    let reservation: ResourceReservation;
+    try {
+      reservation = await this.resourceGovernor.reserve(isolatedRequest, hardware, cachedModel);
+    } catch (err) {
+      this.activeInferenceStates.set(validatedRequest.requestId, 'Denied');
+      throw new ModelRuntimeError(
+        `Resource reservation failed: ${err instanceof Error ? err.message : String(err)}`,
+        'ADMISSION_DENIED',
+      );
+    }
+
+    const effectiveProvider: ProviderType = reservation.cpuFallback
+      ? 'cpu_fallback'
+      : validatedRequest.provider;
+    const adapter = this.adapterFactory.getAdapter(effectiveProvider);
+
+    if (cachedModel) {
+      this.modelCacheManager.markModelActive(cachedModel.modelId);
+      this.transitionModelState(cachedModel.modelId, 'Ready');
+      await adapter.loadModel(cachedModel);
+    }
+
+    this.activeInferenceStates.set(validatedRequest.requestId, 'Generating');
+
+    let fullContent = '';
+    let totalTokens = 0;
+    let totalBytes = 0;
+    let finishReason: 'stop' | 'length' | 'cancel' | 'error' = 'stop';
+    let wasRedacted = false;
+
+    try {
+      for await (const chunk of adapter.generateStream(isolatedRequest, signal)) {
+        if (signal?.aborted) {
+          this.activeInferenceStates.set(validatedRequest.requestId, 'Canceled');
+          finishReason = 'cancel';
+          break;
+        }
+
+        const rawText = chunk.text || '';
+        const sanitizedText = this.redactionFilter.redactString(rawText);
+        if (sanitizedText !== rawText || chunk.redacted) {
+          wasRedacted = true;
+        }
+
+        fullContent += sanitizedText;
+        totalTokens += chunk.tokenCount;
+        totalBytes += Buffer.byteLength(sanitizedText, 'utf8');
+
+        if (totalTokens >= MAX_OUTPUT_TOKENS || totalBytes >= MAX_OUTPUT_BYTES) {
+          finishReason = 'length';
+          this.activeInferenceStates.set(validatedRequest.requestId, 'Completed');
+          break;
+        }
+
+        if (chunk.isFinal) {
+          finishReason = chunk.finishReason || 'stop';
+          this.activeInferenceStates.set(validatedRequest.requestId, 'Completed');
+          break;
+        }
+      }
+    } catch (err) {
+      this.activeInferenceStates.set(validatedRequest.requestId, 'Failed');
+      throw new ModelRuntimeError(
+        `Model generation error: ${err instanceof Error ? err.message : String(err)}`,
+        'INFERENCE_FAILED',
+      );
+    } finally {
+      this.resourceGovernor.release(reservation);
+      if (cachedModel) {
+        this.modelCacheManager.markModelInactive(cachedModel.modelId);
+      }
+    }
+
+    const promptTokens = Math.max(1, Math.ceil(isolatedRequest.prompt.length / 4));
+
+    return {
+      content: fullContent,
+      finishReason,
+      promptTokens,
+      completionTokens: totalTokens,
+      totalTokens: promptTokens + totalTokens,
+      hardwareProfileUsed: {
+        gpuAccelerated: hardware.gpuAdapters.length > 0 && !reservation.cpuFallback,
+        vramAllocatedBytes: reservation.vramBytes,
+        ramAllocatedBytes: reservation.ramBytes,
+        cpuFallback: reservation.cpuFallback ?? false,
+        fallbackReason: reservation.fallbackReason,
+      },
+      effectiveProvider,
+      redacted: wasRedacted,
+    };
   }
 
   public async unloadModel(modelId: string): Promise<void> {

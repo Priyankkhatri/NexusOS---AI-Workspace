@@ -23,6 +23,11 @@ import {
   resolveFilesystemOperation,
   WorkspaceDirectoryJailConfigSchema,
   computeFilesystemEvidenceChecksum,
+  LocalAiOperation,
+  resolveLocalAiOperation,
+  ModelInferenceRequestSchema,
+  ModelInferenceResponseSchema,
+  computeModelEvidenceChecksum,
 } from '../src/index.js';
 import { z } from 'zod';
 
@@ -417,6 +422,142 @@ describe('@nexusos/contracts Foundation & Schema Validation Audit', () => {
       });
       assert.strictEqual(checksum1, checksum2);
       assert.match(checksum1, /^[a-f0-9]{64}$/);
+    });
+  });
+
+  describe('Task 051 Local AI Model Inference and Evidence Contracts', () => {
+    const validLeaseHeader = {
+      lease_id: crypto.randomUUID(),
+      task_id: crypto.randomUUID(),
+      agent_id: crypto.randomUUID(),
+      tenant_id: crypto.randomUUID(),
+      issued_at: new Date().toISOString(),
+      expires_at: new Date(Date.now() + 60000).toISOString(),
+      scopes: ['ai:inference', 'ai:write'],
+      signature: 'valid-sig',
+    };
+
+    it('resolves Local AI capability strings to canonical LocalAiOperation', () => {
+      assert.strictEqual(resolveLocalAiOperation('localAi.generate'), LocalAiOperation.GENERATE);
+      assert.strictEqual(resolveLocalAiOperation('local-ai:generate'), LocalAiOperation.GENERATE);
+      assert.strictEqual(resolveLocalAiOperation('localai.generate'), LocalAiOperation.GENERATE);
+      assert.strictEqual(
+        resolveLocalAiOperation('localAi.listModels'),
+        LocalAiOperation.LIST_MODELS,
+      );
+      assert.strictEqual(
+        resolveLocalAiOperation('localAi.getHardwareProfile'),
+        LocalAiOperation.GET_HARDWARE_PROFILE,
+      );
+      assert.strictEqual(
+        resolveLocalAiOperation('localAi.unloadModel'),
+        LocalAiOperation.UNLOAD_MODEL,
+      );
+      assert.strictEqual(resolveLocalAiOperation('unknown.operation'), undefined);
+    });
+
+    it('validates ModelInferenceRequestSchema with valid payload and defaults', () => {
+      const validReq = {
+        requestId: crypto.randomUUID(),
+        taskId: 'task-ai-101',
+        tenantId: validLeaseHeader.tenant_id,
+        leaseHeader: validLeaseHeader,
+        modelId: 'onnx-llama-3-8b',
+        prompt: 'Summarize the architecture report.',
+      };
+      const parsed = ModelInferenceRequestSchema.parse(validReq);
+      assert.strictEqual(parsed.provider, 'onnx');
+      assert.strictEqual(parsed.temperature, 0.7);
+      assert.strictEqual(parsed.maxTokens, 2048);
+      assert.strictEqual(parsed.hardwareBudget.allowCpuFallback, true);
+      assert.strictEqual(parsed.isolationPolicy.strictSeparation, true);
+      assert.strictEqual(parsed.isolationPolicy.neutralizeControlTokens, true);
+    });
+
+    it('rejects ModelInferenceRequestSchema with invalid modelId or missing lease', () => {
+      const invalidModelId = {
+        requestId: crypto.randomUUID(),
+        taskId: 'task-ai-102',
+        tenantId: validLeaseHeader.tenant_id,
+        leaseHeader: validLeaseHeader,
+        modelId: 'bad model!@#$%',
+        prompt: 'Hello world',
+      };
+      assert.throws(() => ModelInferenceRequestSchema.parse(invalidModelId));
+
+      const missingLease = {
+        requestId: crypto.randomUUID(),
+        taskId: 'task-ai-103',
+        tenantId: validLeaseHeader.tenant_id,
+        modelId: 'valid-model',
+        prompt: 'Hello world',
+      };
+      assert.throws(() => ModelInferenceRequestSchema.parse(missingLease));
+    });
+
+    it('validates ModelInferenceResponseSchema', () => {
+      const checksum = computeModelEvidenceChecksum({
+        taskId: 'task-ai-101',
+        leaseId: validLeaseHeader.lease_id,
+        modelId: 'onnx-llama-3-8b',
+        provider: 'onnx',
+        promptHash: 'a'.repeat(64),
+        outputHash: 'b'.repeat(64),
+        cpuFallback: false,
+        totalTokens: 150,
+      });
+
+      const validRes = {
+        requestId: crypto.randomUUID(),
+        taskId: 'task-ai-101',
+        modelId: 'onnx-llama-3-8b',
+        provider: 'onnx' as const,
+        content: 'This is the model response.',
+        finishReason: 'stop' as const,
+        usage: {
+          promptTokens: 50,
+          completionTokens: 100,
+          totalTokens: 150,
+        },
+        hardwareProfileUsed: {
+          gpuAccelerated: true,
+          vramAllocatedBytes: 4294967296,
+          ramAllocatedBytes: 8589934592,
+          cpuFallback: false,
+        },
+        durationMs: 450,
+        evidenceChecksum: checksum,
+        redacted: false,
+      };
+
+      const parsed = ModelInferenceResponseSchema.parse(validRes);
+      assert.strictEqual(parsed.finishReason, 'stop');
+      assert.strictEqual(parsed.evidenceChecksum, checksum);
+    });
+
+    it('computes deterministic model evidence checksum with tamper detection', () => {
+      const params = {
+        taskId: 'task-ai-101',
+        leaseId: 'lease-99',
+        modelId: 'onnx-llama-3-8b',
+        provider: 'onnx',
+        promptHash: 'a'.repeat(64),
+        outputHash: 'b'.repeat(64),
+        cpuFallback: false,
+        totalTokens: 200,
+      };
+
+      const checksum1 = computeModelEvidenceChecksum(params);
+      const checksum2 = computeModelEvidenceChecksum(params);
+      assert.strictEqual(checksum1, checksum2);
+      assert.match(checksum1, /^[a-f0-9]{64}$/);
+
+      // Tampering test: different fallback flag or tokens produces different hash
+      const tamperedChecksum = computeModelEvidenceChecksum({
+        ...params,
+        cpuFallback: true,
+      });
+      assert.notStrictEqual(checksum1, tamperedChecksum);
     });
   });
 });

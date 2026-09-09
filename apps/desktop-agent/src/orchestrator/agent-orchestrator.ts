@@ -17,6 +17,7 @@ import { TerminalRuntime } from '../runtimes/terminal/index.js';
 import { BrowserRuntime } from '../runtimes/browser/index.js';
 import { PluginRuntime } from '../runtimes/plugin/index.js';
 import { DeviceRuntime } from '../runtimes/device/index.js';
+import { LocalAiRuntime } from '../runtimes/local-ai/index.js';
 
 import {
   IAgentOrchestrator,
@@ -58,6 +59,7 @@ export class AgentOrchestrator implements IAgentOrchestrator {
     private readonly browserRuntime?: BrowserRuntime,
     private readonly pluginRuntime?: PluginRuntime,
     private readonly deviceRuntime?: DeviceRuntime,
+    private readonly localAiRuntime?: LocalAiRuntime,
   ) {
     void this._config;
     void this._secretsVault;
@@ -386,6 +388,23 @@ export class AgentOrchestrator implements IAgentOrchestrator {
           ).execute(runtimePayload);
         } else if (category === 'device' && this.deviceRuntime) {
           executionOutput = await this.deviceRuntime.execute(runtimePayload as never);
+        } else if (
+          (category === 'localai' || category === 'local-ai' || category === 'local_ai') &&
+          this.localAiRuntime
+        ) {
+          const aiRes = await this.localAiRuntime.execute(runtimePayload as any);
+          if (
+            aiRes &&
+            typeof aiRes === 'object' &&
+            'success' in aiRes &&
+            (aiRes as { success: boolean }).success === false
+          ) {
+            const errStr = (aiRes as { error?: string }).error || 'LOCAL_AI_EXECUTION_FAILED';
+            const err = new Error(errStr);
+            (err as unknown as { code: string }).code = errStr;
+            throw err;
+          }
+          executionOutput = aiRes;
         } else if (category === 'memory' && this.memoryCache) {
           executionOutput = await this.memoryCache.get(
             (request.payload.key as string) || 'default_key',

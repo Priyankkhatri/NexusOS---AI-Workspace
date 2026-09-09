@@ -6,3 +6,4 @@ export * from './resource-governor.js';
 export * from './model-cache-manager.js';
 export * from './provider-adapters.js';
 export * from './model-runtime-manager.js';
+export * from './prompt-isolation.js';

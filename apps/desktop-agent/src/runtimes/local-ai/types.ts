@@ -67,6 +67,8 @@ export interface ResourceReservation {
   cpuCores: number;
   acquiredAt: number;
   isReleased: boolean;
+  cpuFallback?: boolean;
+  fallbackReason?: string;
 }
 
 export interface ModelArtifact {
@@ -91,16 +93,92 @@ export interface InferenceRequest {
   provider: ProviderType;
   prompt: string;
   systemPrompt?: string;
+  contextDocuments?: string[];
   temperature?: number;
   maxTokens?: number;
   stopSequences?: string[];
   tenantId: string;
   deviceId: string;
   callerId: string;
+  leaseId?: string;
+  workspaceId?: string;
   leaseHeader?: Record<string, unknown>;
   correlationId: string;
   taskId?: string;
   workflowId?: string;
+  allowCpuFallback?: boolean;
+  hardwareBudget?: {
+    maxVramBytes?: number;
+    maxRamBytes?: number;
+    allowCpuFallback?: boolean;
+  };
+  isolationPolicy?: {
+    strictSeparation?: boolean;
+    neutralizeControlTokens?: boolean;
+  };
+}
+
+export interface LocalAiExecutionRequest {
+  taskId: string;
+  stepId?: string;
+  correlationId?: string;
+  capabilityId?: string;
+  action?: string;
+  operation?: string;
+  leaseId?: string;
+  tenantId?: string;
+  workspaceId?: string;
+  leaseHeader?: Record<string, unknown>;
+  payload?: Record<string, unknown>;
+  modelId?: string;
+  prompt?: string;
+  systemPrompt?: string;
+  contextDocuments?: string[];
+  provider?: ProviderType;
+  temperature?: number;
+  maxTokens?: number;
+  stopSequences?: string[];
+  hardwareBudget?: {
+    maxVramBytes?: number;
+    maxRamBytes?: number;
+    allowCpuFallback?: boolean;
+  };
+  isolationPolicy?: {
+    strictSeparation?: boolean;
+    neutralizeControlTokens?: boolean;
+  };
+  allowCpuFallback?: boolean;
+  signal?: AbortSignal;
+}
+
+export interface LocalAiExecutionResult<T = unknown> {
+  success: boolean;
+  operation?: string;
+  requestId?: string;
+  taskId?: string;
+  modelId?: string;
+  provider?: ProviderType;
+  content?: string;
+  finishReason?: 'stop' | 'length' | 'cancel' | 'error';
+  usage?: {
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+  };
+  hardwareProfileUsed?: {
+    gpuAccelerated: boolean;
+    vramAllocatedBytes: number;
+    ramAllocatedBytes: number;
+    cpuFallback: boolean;
+    fallbackReason?: string;
+  };
+  durationMs?: number;
+  evidenceChecksum?: string;
+  data?: T;
+  output?: any;
+  metadata?: any;
+  evidence?: any;
+  error?: any;
 }
 
 export interface InferenceStreamChunk {
@@ -163,6 +241,21 @@ export const InferenceRequestSchema = z.object({
   temperature: z.number().min(0).max(2).optional(),
   maxTokens: z.number().int().positive().max(MAX_OUTPUT_TOKENS).optional(),
   stopSequences: z.array(z.string()).max(10).optional(),
+  contextDocuments: z.array(z.string()).max(10).optional(),
+  allowCpuFallback: z.boolean().optional(),
+  hardwareBudget: z
+    .object({
+      maxVramBytes: z.number().nonnegative().optional(),
+      maxRamBytes: z.number().nonnegative().optional(),
+      allowCpuFallback: z.boolean().default(true),
+    })
+    .optional(),
+  isolationPolicy: z
+    .object({
+      strictSeparation: z.boolean().default(true),
+      neutralizeControlTokens: z.boolean().default(true),
+    })
+    .optional(),
   tenantId: z.string().min(1, 'tenantId cannot be empty'),
   deviceId: z.string().min(1, 'deviceId cannot be empty'),
   callerId: z.string().min(1, 'callerId cannot be empty'),
