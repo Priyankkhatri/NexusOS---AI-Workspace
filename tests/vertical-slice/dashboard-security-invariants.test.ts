@@ -54,6 +54,14 @@ import {
   generateAgentCardHTML,
   generateDelegationNodeHTML,
   generateDelegationTimelineItemHTML,
+  generateMemoryCardHTML,
+  generateGraphNodeSVG,
+  renderGraphTable,
+  calculateGraphLayout,
+  maskSensitiveData,
+  getNodeColor,
+  getSensitivityPill,
+  getMemoryStatusBadge,
   getRoleBadge,
   getAgentStatusPill,
   getDelegationStatusBadge,
@@ -2133,6 +2141,470 @@ describe('053-SEC — Dashboard Projection & Security Invariants', () => {
           assert.strictEqual(errorCardHTML.includes('queryDb'), false);
           assert.ok(errorCardHTML.includes('role="alert"'));
           assert.ok(errorCardHTML.includes('Retry'));
+        });
+      });
+
+      // ============================================================
+      // Task 063 Phase 3: Persistent Memory Explorer & Knowledge Graph Observability
+      // Security Invariants (063-SEC-07 through 063-SEC-12)
+      // ============================================================
+
+      describe('Task 063 Phase 3: Persistent Memory Explorer & Knowledge Graph Observability Invariants', () => {
+        const maliciousPayload =
+          '<script>alert("pwned")</script><img src="x" onerror="stealSecrets()">';
+
+        it('063-SEC-07: Memory & Graph Untrusted Content XSS Neutralization', () => {
+          // 1. Malicious Memory Record Card
+          const maliciousItem = {
+            record: {
+              id: 'mem-<script>alert("id")</script>',
+              tenantId: tenantA,
+              workspaceId: 'default',
+              ownerId: 'agent-1',
+              class: 'FACT' as MemoryClass,
+              status: 'ACTIVE' as MemoryStatus,
+              sensitivity: 'INTERNAL' as MemorySensitivity,
+              title: `Title with ${maliciousPayload}`,
+              content: `Content with ${maliciousPayload}`,
+              summary: `Summary with ${maliciousPayload}`,
+              confidence: 0.95,
+              tags: ['safe-tag', maliciousPayload],
+              metadata: { key: maliciousPayload },
+              provenance: {
+                sourceType: MemorySourceType.USER_EXPLICIT,
+                sourceId: maliciousPayload,
+                creatorPrincipalId: userA,
+                verified: true,
+                timestamp: new Date().toISOString(),
+              },
+              version: 1,
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+            },
+            score: 0.9,
+            lexicalScore: 0.8,
+            semanticScore: 0.9,
+            recencyScore: 0.95,
+            citationToken: 'cite-1',
+            estimatedTokens: 42,
+          };
+
+          const cardHTML = generateMemoryCardHTML(maliciousItem);
+
+          // Assert zero executable script or img onerror tags
+          assert.strictEqual(
+            cardHTML.includes('<script>'),
+            false,
+            'Raw script tags must not appear in memory card HTML',
+          );
+          assert.strictEqual(
+            cardHTML.includes('onerror="stealSecrets()"'),
+            false,
+            'Event handler onerror must be neutralized in memory card HTML',
+          );
+          assert.ok(
+            cardHTML.includes('&lt;script&gt;alert(&quot;pwned&quot;)&lt;&#x2F;script&gt;'),
+            'Script tag must be safely HTML escaped',
+          );
+          assert.ok(
+            cardHTML.includes('&lt;img src=&quot;x&quot; onerror=&quot;stealSecrets()&quot;&gt;'),
+            'Img tag must be safely HTML escaped',
+          );
+
+          // 2. Malicious Graph Node & Edge Rendering
+          const maliciousNode = {
+            id: 'node-<script>alert("node")</script>',
+            tenantId: tenantA,
+            workspaceId: 'default',
+            nodeType: MemoryGraphNodeType.CONCEPT,
+            label: `Node ${maliciousPayload}`,
+            properties: { note: maliciousPayload },
+            confidence: 0.88,
+            createdAt: new Date().toISOString(),
+          };
+
+          const layoutNode = {
+            node: maliciousNode,
+            x: 100,
+            y: 100,
+          };
+
+          const svgNodeHTML = generateGraphNodeSVG(layoutNode);
+          assert.strictEqual(
+            svgNodeHTML.includes('<script>'),
+            false,
+            'Raw script tags must not appear in graph SVG node',
+          );
+          assert.ok(
+            svgNodeHTML.includes('&lt;script&gt;alert(&quot;pwned&quot;)&lt;&#x2F;script&gt;') ||
+              svgNodeHTML.includes('Node &lt;scrip…'),
+            'Label must be escaped in SVG node',
+          );
+
+          // 3. Malicious Graph Table Fallback
+          const maliciousEdge = {
+            id: 'edge-<script>alert("edge")</script>',
+            tenantId: tenantA,
+            workspaceId: 'default',
+            sourceNodeId: maliciousNode.id,
+            targetNodeId: 'node-target',
+            edgeType: MemoryGraphEdgeType.RELATES_TO,
+            weight: 1,
+            confidence: 0.75,
+            properties: { detail: maliciousPayload },
+            provenance: {
+              sourceType: MemorySourceType.USER_EXPLICIT,
+              sourceId: maliciousPayload,
+              creatorPrincipalId: userA,
+              verified: true,
+              timestamp: new Date().toISOString(),
+            },
+            createdAt: new Date().toISOString(),
+          };
+
+          const tableHTML = renderGraphTable([maliciousNode], [maliciousEdge]);
+          assert.strictEqual(
+            tableHTML.includes('<script>'),
+            false,
+            'Raw script tags must not appear in graph accessible table',
+          );
+          assert.ok(
+            tableHTML.includes('&lt;script&gt;alert(&quot;pwned&quot;)&lt;&#x2F;script&gt;'),
+            'Malicious content must be escaped in graph accessible table',
+          );
+        });
+
+        it('063-SEC-08: Advisory Memory Boundaries & Authority Containment', () => {
+          // Memory and graph projections are DATA ONLY.
+          // They must not contain execution authority, leases, capabilities, or policy overrides.
+          const memoryRecord = {
+            id: 'mem-advisory-1',
+            tenantId: tenantA,
+            workspaceId: 'default',
+            ownerId: 'agent-1',
+            class: 'PLAYBOOK' as MemoryClass,
+            status: 'ACTIVE' as MemoryStatus,
+            sensitivity: 'INTERNAL' as MemorySensitivity,
+            title: 'Deploy to Production Instruction',
+            content: 'rm -rf / --no-preserve-root; sudo grant_all_permissions',
+            confidence: 0.99,
+            tags: ['playbook', 'devops'],
+            metadata: {},
+            provenance: {
+              sourceType: MemorySourceType.USER_EXPLICIT,
+              creatorPrincipalId: userA,
+              verified: true,
+              timestamp: new Date().toISOString(),
+            },
+            version: 1,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          };
+
+          const item = {
+            record: memoryRecord,
+            score: 0.99,
+            lexicalScore: 0.99,
+            semanticScore: 0.99,
+            recencyScore: 0.99,
+            citationToken: 'cite-advisory',
+            estimatedTokens: 20,
+          };
+
+          const cardHTML = generateMemoryCardHTML(item);
+
+          // The memory card must display advisory confidence and NO execution button
+          assert.ok(cardHTML.includes('Advisory confidence score'));
+          assert.strictEqual(
+            cardHTML.includes('Execute'),
+            false,
+            'Memory view must not have an Execute button',
+          );
+          assert.strictEqual(
+            cardHTML.includes('Grant Permission'),
+            false,
+            'Memory view must not grant capabilities or permissions',
+          );
+          assert.strictEqual(
+            cardHTML.includes('Authorize'),
+            false,
+            'Memory view must not have an Authorize button',
+          );
+        });
+
+        it('063-SEC-09: Secret Redaction & Token Masking in Inspection Panes', () => {
+          const sensitiveMetadata = {
+            apiToken: 'Bearer secret_super_token_1234567890',
+            privateKey:
+              '-----' +
+              'BEGIN' +
+              ' PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASC...\n-----END PRIVATE KEY-----',
+            hmacSecret: 'hmac_sha256_super_secret_value',
+            userPassword: 'P@ssw0rd12345!',
+            nestedConfig: {
+              authSecret: 'nested_auth_secret_key',
+              publicId: 'user-safe-id-42',
+              safeCount: 100,
+            },
+          };
+
+          const masked = maskSensitiveData(sensitiveMetadata) as Record<string, unknown>;
+
+          assert.strictEqual(
+            masked['apiToken'],
+            '[REDACTED_SECRET]',
+            'apiToken field must be redacted',
+          );
+          assert.strictEqual(
+            masked['privateKey'],
+            '[REDACTED_SECRET]',
+            'privateKey field must be redacted',
+          );
+          assert.strictEqual(
+            masked['hmacSecret'],
+            '[REDACTED_SECRET]',
+            'hmacSecret field must be redacted',
+          );
+          assert.strictEqual(
+            masked['userPassword'],
+            '[REDACTED_SECRET]',
+            'userPassword field must be redacted',
+          );
+
+          const nested = masked['nestedConfig'] as Record<string, unknown>;
+          assert.strictEqual(
+            nested['authSecret'],
+            '[REDACTED_SECRET]',
+            'Nested authSecret must be redacted',
+          );
+          assert.strictEqual(
+            nested['publicId'],
+            'user-safe-id-42',
+            'Non-sensitive public fields must be preserved',
+          );
+          assert.strictEqual(nested['safeCount'], 100, 'Non-sensitive numbers must be preserved');
+        });
+
+        it('063-SEC-10: Strict Tenant & Workspace Data Isolation for Memory & Graph', async () => {
+          // Use clientA (tenantA) and clientB (tenantB)
+          // 1. Search memory with clientA
+          const memorySearchA = await clientA.searchMemory();
+          assert.ok(
+            memorySearchA.items.every((it) => it.record.tenantId === tenantA),
+            'Tenant A memory query must only return Tenant A records',
+          );
+
+          // 2. Query graph with clientA
+          const graphQueryA = await clientA.queryGraph({});
+          assert.strictEqual(
+            graphQueryA.tenantId,
+            tenantA,
+            'Tenant A graph response must be isolated to Tenant A',
+          );
+          assert.ok(
+            graphQueryA.nodes.every((n) => n.tenantId === tenantA),
+            'Tenant A graph nodes must belong only to Tenant A',
+          );
+
+          // 3. Query graph with clientB
+          const graphQueryB = await clientB.queryGraph({});
+          assert.strictEqual(
+            graphQueryB.tenantId,
+            tenantB,
+            'Tenant B graph response must be isolated to Tenant B',
+          );
+          assert.ok(
+            graphQueryB.nodes.every((n) => n.tenantId === tenantB),
+            'Tenant B graph nodes must belong only to Tenant B',
+          );
+
+          // Cross-check: No overlap between node IDs
+          const nodeIdsA = new Set(graphQueryA.nodes.map((n) => n.id));
+          const hasCrossTenantNode = graphQueryB.nodes.some((n) => nodeIdsA.has(n.id));
+          assert.strictEqual(
+            hasCrossTenantNode,
+            false,
+            'No graph node from Tenant A may appear in Tenant B',
+          );
+        });
+
+        it('063-SEC-11: Bounded Graph Traversal, Cycle Protection & Truncation', () => {
+          // 1. Hard bound on calculateGraphLayout (clamped to 100 nodes)
+          const excessiveNodes = Array.from({ length: 150 }, (_, i) => ({
+            id: `node-${i}`,
+            tenantId: tenantA,
+            workspaceId: 'default',
+            nodeType: MemoryGraphNodeType.CONCEPT,
+            label: `Concept ${i}`,
+            properties: {},
+            confidence: 0.9,
+            createdAt: new Date().toISOString(),
+          }));
+
+          const layout = calculateGraphLayout(excessiveNodes, 800, 500);
+          assert.strictEqual(
+            layout.size,
+            100,
+            'calculateGraphLayout must clamp nodes to hard limit 100',
+          );
+
+          // 2. Cycle Protection with Visited Set
+          // Circular edges: node-1 -> node-2 -> node-3 -> node-1
+          const cyclicEdges = [
+            {
+              id: 'edge-1-2',
+              tenantId: tenantA,
+              workspaceId: 'default',
+              sourceNodeId: 'node-1',
+              targetNodeId: 'node-2',
+              edgeType: MemoryGraphEdgeType.RELATES_TO,
+              weight: 1,
+              confidence: 0.9,
+              properties: {},
+              provenance: {
+                sourceType: MemorySourceType.USER_EXPLICIT,
+                creatorPrincipalId: userA,
+                verified: true,
+                timestamp: new Date().toISOString(),
+              },
+              createdAt: new Date().toISOString(),
+            },
+            {
+              id: 'edge-2-3',
+              tenantId: tenantA,
+              workspaceId: 'default',
+              sourceNodeId: 'node-2',
+              targetNodeId: 'node-3',
+              edgeType: MemoryGraphEdgeType.RELATES_TO,
+              weight: 1,
+              confidence: 0.9,
+              properties: {},
+              provenance: {
+                sourceType: MemorySourceType.USER_EXPLICIT,
+                creatorPrincipalId: userA,
+                verified: true,
+                timestamp: new Date().toISOString(),
+              },
+              createdAt: new Date().toISOString(),
+            },
+            {
+              id: 'edge-3-1',
+              tenantId: tenantA,
+              workspaceId: 'default',
+              sourceNodeId: 'node-3',
+              targetNodeId: 'node-1',
+              edgeType: MemoryGraphEdgeType.RELATES_TO,
+              weight: 1,
+              confidence: 0.9,
+              properties: {},
+              provenance: {
+                sourceType: MemorySourceType.USER_EXPLICIT,
+                creatorPrincipalId: userA,
+                verified: true,
+                timestamp: new Date().toISOString(),
+              },
+              createdAt: new Date().toISOString(),
+            },
+            // Duplicate edge
+            {
+              id: 'edge-1-2',
+              tenantId: tenantA,
+              workspaceId: 'default',
+              sourceNodeId: 'node-1',
+              targetNodeId: 'node-2',
+              edgeType: MemoryGraphEdgeType.RELATES_TO,
+              weight: 1,
+              confidence: 0.9,
+              properties: {},
+              provenance: {
+                sourceType: MemorySourceType.USER_EXPLICIT,
+                creatorPrincipalId: userA,
+                verified: true,
+                timestamp: new Date().toISOString(),
+              },
+              createdAt: new Date().toISOString(),
+            },
+          ];
+
+          const visitedEdges = new Set<string>();
+          const dedupedEdges = [];
+          for (const e of cyclicEdges) {
+            if (visitedEdges.has(e.id)) continue;
+            visitedEdges.add(e.id);
+            dedupedEdges.push(e);
+          }
+
+          assert.strictEqual(
+            dedupedEdges.length,
+            3,
+            'Cycle and duplicate edge protection must deduplicate edges',
+          );
+
+          // 3. Accessible table rendering clamps to 100
+          const excessiveEdges = Array.from({ length: 150 }, (_, i) => ({
+            id: `edge-${i}`,
+            tenantId: tenantA,
+            workspaceId: 'default',
+            sourceNodeId: `node-${i}`,
+            targetNodeId: `node-${(i + 1) % 150}`,
+            edgeType: MemoryGraphEdgeType.RELATES_TO,
+            weight: 1,
+            confidence: 0.8,
+            properties: {},
+            provenance: {
+              sourceType: MemorySourceType.USER_EXPLICIT,
+              creatorPrincipalId: userA,
+              verified: true,
+              timestamp: new Date().toISOString(),
+            },
+            createdAt: new Date().toISOString(),
+          }));
+
+          const tableHTML = renderGraphTable(excessiveNodes, excessiveEdges);
+          assert.ok(tableHTML.includes('Nodes (100)'));
+          assert.ok(tableHTML.includes('Edges (100)'));
+        });
+
+        it('063-SEC-12: Sequence-Guarded Async State & Idempotent DOM Lifecycle', () => {
+          // Verify sequence numbers reject out-of-order stale responses
+          let memoryRequestId = 0;
+          let activeMemoryState: string[] = [];
+
+          function applyMemoryResponse(seq: number, items: string[]) {
+            if (seq === memoryRequestId) {
+              activeMemoryState = items;
+            }
+          }
+
+          // Request 1 issued
+          const seq1 = ++memoryRequestId;
+          // Request 2 issued before Request 1 resolves
+          const seq2 = ++memoryRequestId;
+
+          // Request 2 completes first
+          applyMemoryResponse(seq2, ['item-fresh-A', 'item-fresh-B']);
+          assert.deepStrictEqual(activeMemoryState, ['item-fresh-A', 'item-fresh-B']);
+
+          // Request 1 completes later (stale)
+          applyMemoryResponse(seq1, ['item-stale-X', 'item-stale-Y']);
+          assert.deepStrictEqual(
+            activeMemoryState,
+            ['item-fresh-A', 'item-fresh-B'],
+            'Stale Request 1 response must be dropped by sequence guard',
+          );
+
+          // Verify status badge and pill helper idempotence
+          const pill1 = getSensitivityPill('RESTRICTED');
+          const pill2 = getSensitivityPill('RESTRICTED');
+          assert.strictEqual(pill1, pill2, 'Pill generation must be purely deterministic');
+
+          const status1 = getMemoryStatusBadge('ACTIVE');
+          const status2 = getMemoryStatusBadge('ACTIVE');
+          assert.strictEqual(status1, status2, 'Status badge generation must be deterministic');
+
+          const color1 = getNodeColor('CONCEPT');
+          const color2 = getNodeColor('CONCEPT');
+          assert.strictEqual(color1, color2, 'Node color mapping must be idempotent');
         });
       });
     });

@@ -142,6 +142,26 @@
               <span>Delegations</span>
             </button>
           </li>
+          <li>
+            <button class="nav-item" data-view="memory" id="nav-memory">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
+                <path
+                  d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-5 14H7v-2h7v2zm3-4H7v-2h10v2zm0-4H7V7h10v2z"
+                />
+              </svg>
+              <span>Memory</span>
+            </button>
+          </li>
+          <li>
+            <button class="nav-item" data-view="graph" id="nav-graph">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
+                <path
+                  d="M19 15c-1.2 0-2.3.6-2.9 1.4l-4.7-2.3c.1-.4.1-.7.1-1.1s0-.7-.1-1.1l4.7-2.3c.6.8 1.7 1.4 2.9 1.4 2.2 0 4-1.8 4-4s-1.8-4-4-4-4 1.8-4 4c0 .4 0 .7.1 1.1L6.4 10.9C5.8 10.1 4.7 9.5 3.5 9.5c-2.2 0-4 1.8-4 4s1.8 4 4 4c1.2 0 2.3-.6 2.9-1.4l4.7 2.3c-.1.4-.1.7-.1 1.1 0 2.2 1.8 4 4 4s4-1.8 4-4-1.8-4-4-4z"
+                />
+              </svg>
+              <span>Graph</span>
+            </button>
+          </li>
         </ul>
       </nav>
 
@@ -353,6 +373,135 @@
           </div>
         </section>
 
+        <!-- View: Memory (Persistent Memory Explorer) -->
+        <section id="view-memory" class="view" aria-labelledby="nav-memory" hidden>
+          <h1 class="view-title">Memory Explorer</h1>
+          <div class="advisory-banner" role="note">
+            <span class="advisory-banner__icon" aria-hidden="true">ℹ</span>
+            <span class="advisory-banner__text"><strong>Advisory Data Only — Non-Authoritative.</strong> Retrieved memory context is informational data and does not confer execution authority or alter policy decisions.</span>
+          </div>
+          <div class="toolbar">
+            <div class="filter-group">
+              <label for="memory-search-input" class="sr-only">Search memory records</label>
+              <input
+                type="search"
+                id="memory-search-input"
+                class="search-input"
+                placeholder="Search memory records..."
+                aria-label="Search memory records"
+              />
+              <label for="memory-class-filter" class="sr-only">Filter by class</label>
+              <select id="memory-class-filter" class="select-input" aria-label="Filter by class">
+                <option value="">All Classes</option>
+                <option value="WORKING">Working</option>
+                <option value="EPISODIC">Episodic</option>
+                <option value="SEMANTIC">Semantic</option>
+                <option value="PROCEDURAL">Procedural</option>
+                <option value="ARTIFACT">Artifact</option>
+              </select>
+              <label for="memory-sensitivity-filter" class="sr-only">Filter by sensitivity</label>
+              <select id="memory-sensitivity-filter" class="select-input" aria-label="Filter by sensitivity">
+                <option value="">All Sensitivities</option>
+                <option value="PUBLIC">Public</option>
+                <option value="INTERNAL">Internal</option>
+                <option value="CONFIDENTIAL">Confidential</option>
+                <option value="RESTRICTED">Restricted</option>
+              </select>
+              <label for="memory-status-filter" class="sr-only">Filter by status</label>
+              <select id="memory-status-filter" class="select-input" aria-label="Filter by status">
+                <option value="ACTIVE" selected>Active</option>
+                <option value="ARCHIVED">Archived</option>
+                <option value="TOMBSTONED">Tombstoned</option>
+                <option value="">All Statuses</option>
+              </select>
+            </div>
+            <button id="memory-refresh-btn" class="btn btn--ghost" type="button">Refresh</button>
+          </div>
+          <div id="memory-container" class="memory-grid" role="feed" aria-label="Memory Records Feed">
+            <div class="empty-state" id="memory-empty">
+              <p>No memory records found.</p>
+            </div>
+          </div>
+        </section>
+
+        <!-- View: Graph (Knowledge Graph Observability) -->
+        <section id="view-graph" class="view" aria-labelledby="nav-graph" hidden>
+          <h1 class="view-title">Knowledge Graph</h1>
+          <div class="advisory-banner" role="note">
+            <span class="advisory-banner__icon" aria-hidden="true">ℹ</span>
+            <span class="advisory-banner__text"><strong>Advisory Relationships Only — Non-Authoritative.</strong> Bounded graph projections visualize derived correlations without conferring execution authority or policy exemptions.</span>
+          </div>
+          <div class="toolbar">
+            <div class="filter-group">
+              <label for="graph-node-type-filter" class="sr-only">Filter by node type</label>
+              <select id="graph-node-type-filter" class="select-input" aria-label="Filter by node type">
+                <option value="">All Node Types</option>
+                <option value="ENTITY">Entity</option>
+                <option value="CONCEPT">Concept</option>
+                <option value="TASK">Task</option>
+                <option value="WORKSPACE">Workspace</option>
+                <option value="DECISION">Decision</option>
+                <option value="ARTIFACT">Artifact</option>
+                <option value="ERROR_PATTERN">Error Pattern</option>
+              </select>
+              <label for="graph-edge-type-filter" class="sr-only">Filter by edge type</label>
+              <select id="graph-edge-type-filter" class="select-input" aria-label="Filter by edge type">
+                <option value="">All Edge Types</option>
+                <option value="DERIVED_FROM">Derived From</option>
+                <option value="RELATES_TO">Relates To</option>
+                <option value="SUPERSEDES">Supersedes</option>
+                <option value="DECIDED_IN">Decided In</option>
+                <option value="EXECUTED_BY">Executed By</option>
+                <option value="RESOLVED_BY">Resolved By</option>
+              </select>
+              <label for="graph-depth-filter" class="sr-only">Max traversal depth</label>
+              <select id="graph-depth-filter" class="select-input" aria-label="Max traversal depth">
+                <option value="1">Depth 1</option>
+                <option value="2" selected>Depth 2</option>
+                <option value="3">Depth 3</option>
+                <option value="4">Depth 4</option>
+              </select>
+              <button id="graph-view-toggle-btn" class="btn btn--outline btn--sm" type="button" aria-pressed="false">
+                Show Table View
+              </button>
+            </div>
+            <button id="graph-refresh-btn" class="btn btn--ghost" type="button">Refresh</button>
+          </div>
+          <div class="graph-cockpit-layout">
+            <!-- Left Panel: Graph Visualizer / Table -->
+            <section class="panel graph-canvas-panel" aria-labelledby="graph-canvas-heading">
+              <h2 id="graph-canvas-heading" class="panel-heading">Relationship Topology</h2>
+              <div id="graph-container" class="graph-container">
+                <svg id="graph-svg-canvas" class="graph-svg" viewBox="0 0 800 500" role="img" aria-label="Knowledge Graph Relationship Network">
+                  <defs>
+                    <marker id="graph-arrowhead" markerWidth="8" markerHeight="6" refX="16" refY="3" orient="auto">
+                      <polygon points="0 0, 8 3, 0 6" fill="var(--color-border-hover)" />
+                    </marker>
+                  </defs>
+                  <g id="graph-edges-group" class="graph-edges-layer"></g>
+                  <g id="graph-nodes-group" class="graph-nodes-layer"></g>
+                </svg>
+                <div id="graph-table-fallback" class="graph-table-fallback" hidden>
+                  <div id="graph-table-content"></div>
+                </div>
+                <div class="empty-state" id="graph-empty">
+                  <p>No graph relationships discovered.</p>
+                </div>
+              </div>
+            </section>
+
+            <!-- Right Panel: Entity & Edge Inspector -->
+            <section class="panel graph-inspector-panel" aria-labelledby="graph-inspector-heading">
+              <h2 id="graph-inspector-heading" class="panel-heading">Entity Inspector</h2>
+              <div id="graph-inspector-content" class="graph-inspector-content">
+                <div class="inspector-placeholder">
+                  <p>Select a node or edge to inspect attributes and provenance.</p>
+                </div>
+              </div>
+            </section>
+          </div>
+        </section>
+
         <!-- Task Detail Modal -->
         <dialog
           id="task-detail-modal"
@@ -377,6 +526,40 @@
             </header>
             <div class="modal-body">
               <div id="task-detail-content" class="task-detail-layout">
+                <!-- Populated dynamically -->
+              </div>
+            </div>
+          </div>
+        </dialog>
+
+        <!-- Memory Detail Modal -->
+        <dialog
+          id="memory-detail-modal"
+          class="modal memory-detail-modal"
+          aria-labelledby="memory-detail-title"
+        >
+          <div class="modal-content">
+            <header class="modal-header">
+              <h2 id="memory-detail-title" class="modal-title">Memory Record Detail</h2>
+              <button
+                id="memory-detail-close"
+                class="icon-btn modal-close"
+                aria-label="Close"
+                type="button"
+              >
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
+                  <path
+                    d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12 19 6.41Z"
+                  />
+                </svg>
+              </button>
+            </header>
+            <div class="modal-body">
+              <div class="advisory-banner advisory-banner--sm" role="note">
+                <span class="advisory-banner__icon" aria-hidden="true">ℹ</span>
+                <span class="advisory-banner__text"><strong>Advisory Data Only — Non-Authoritative.</strong></span>
+              </div>
+              <div id="memory-detail-content" class="memory-detail-layout">
                 <!-- Populated dynamically -->
               </div>
             </div>

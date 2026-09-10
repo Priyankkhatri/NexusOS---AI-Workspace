@@ -1617,6 +1617,365 @@ body {
 }
 
 /* ============================================================
+   26. MEMORY EXPLORER (Task 063 Phase 3)
+   ============================================================ */
+
+.advisory-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: rgba(59, 130, 246, 0.08);
+  border: 1px solid rgba(59, 130, 246, 0.25);
+  border-radius: var(--radius-md);
+  margin-bottom: var(--space-4);
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+}
+
+.advisory-banner__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--color-primary);
+  color: #fff;
+  font-weight: var(--weight-bold);
+  font-size: var(--text-xs);
+  flex-shrink: 0;
+}
+
+.advisory-banner--sm {
+  padding: var(--space-2) var(--space-3);
+  margin-bottom: var(--space-3);
+  font-size: var(--text-xs);
+}
+
+.memory-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: var(--space-4);
+}
+
+.memory-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-md);
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  cursor: pointer;
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.memory-card:hover {
+  border-color: var(--border-hover);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+
+.memory-card:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+.memory-card__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.memory-card__title {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+  line-height: var(--leading-tight);
+}
+
+.memory-card__badges {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-shrink: 0;
+}
+
+.memory-card__content {
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  line-height: var(--leading-normal);
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.memory-card__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  margin-top: auto;
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.sensitivity-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  border-radius: var(--radius-full);
+}
+
+.sensitivity-pill--public {
+  background: var(--color-success-bg);
+  color: var(--color-success);
+}
+
+.sensitivity-pill--internal {
+  background: rgba(59, 130, 246, 0.15);
+  color: #60a5fa;
+}
+
+.sensitivity-pill--confidential {
+  background: var(--color-warning-bg);
+  color: var(--color-warning);
+}
+
+.sensitivity-pill--restricted {
+  background: var(--color-danger-bg);
+  color: var(--color-danger);
+}
+
+.confidence-pill {
+  font-size: var(--text-xs);
+  font-family: var(--font-mono);
+  color: var(--text-tertiary);
+}
+
+.memory-detail-layout {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.memory-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: var(--space-3);
+  padding: var(--space-3);
+  background: var(--bg-elevated);
+  border-radius: var(--radius-sm);
+}
+
+.memory-meta-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.memory-meta-label {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wider);
+}
+
+.memory-meta-value {
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  color: var(--text-primary);
+  word-break: break-all;
+}
+
+.memory-content-box {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-sm);
+  padding: var(--space-3);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 240px;
+  overflow-y: auto;
+  color: var(--text-primary);
+}
+
+.memory-provenance-box {
+  padding: var(--space-3);
+  background: var(--bg-elevated);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+}
+
+/* ============================================================
+   27. KNOWLEDGE GRAPH OBSERVABILITY (Task 063 Phase 3)
+   ============================================================ */
+
+.graph-cockpit-layout {
+  display: grid;
+  grid-template-columns: 1fr 340px;
+  gap: var(--space-4);
+  min-height: 520px;
+}
+
+.graph-canvas-panel {
+  display: flex;
+  flex-direction: column;
+}
+
+.graph-container {
+  flex: 1;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-md);
+  position: relative;
+  overflow: hidden;
+  min-height: 460px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.graph-svg {
+  width: 100%;
+  height: 100%;
+  min-height: 460px;
+  display: block;
+}
+
+.graph-edge {
+  stroke: var(--border-hover);
+  stroke-width: 1.5;
+  stroke-opacity: 0.7;
+  transition: stroke 0.2s, stroke-width 0.2s;
+  cursor: pointer;
+}
+
+.graph-edge:hover,
+.graph-edge--selected {
+  stroke: var(--color-primary);
+  stroke-width: 2.5;
+  stroke-opacity: 1;
+}
+
+.graph-node {
+  cursor: pointer;
+  outline: none;
+}
+
+.graph-node circle {
+  fill: var(--bg-surface);
+  stroke: var(--border-primary);
+  stroke-width: 2;
+  transition: stroke 0.2s, r 0.2s;
+}
+
+.graph-node:hover circle,
+.graph-node:focus-visible circle {
+  stroke: var(--color-primary);
+  stroke-width: 3;
+}
+
+.graph-node--selected circle {
+  stroke: var(--color-primary);
+  stroke-width: 3.5;
+  fill: rgba(59, 130, 246, 0.15);
+}
+
+.graph-node text {
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: var(--weight-medium);
+  fill: var(--text-primary);
+  text-anchor: middle;
+  pointer-events: none;
+}
+
+.graph-node--entity circle { stroke: #3b82f6; }
+.graph-node--concept circle { stroke: #8b5cf6; }
+.graph-node--task circle { stroke: #10b981; }
+.graph-node--workspace circle { stroke: #f59e0b; }
+.graph-node--decision circle { stroke: #ec4899; }
+.graph-node--artifact circle { stroke: #06b6d4; }
+.graph-node--error-pattern circle { stroke: #ef4444; }
+
+.graph-table-fallback {
+  width: 100%;
+  height: 100%;
+  overflow-y: auto;
+  padding: var(--space-3);
+}
+
+/* ============================================================
+   28. GRAPH ENTITY & EDGE INSPECTOR
+   ============================================================ */
+
+.graph-inspector-panel {
+  display: flex;
+  flex-direction: column;
+}
+
+.graph-inspector-content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  font-size: var(--text-xs);
+}
+
+.inspector-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 200px;
+  text-align: center;
+  color: var(--text-tertiary);
+  padding: var(--space-4);
+}
+
+.inspector-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.inspector-section__title {
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wider);
+}
+
+.inspector-row {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.inspector-row__label {
+  color: var(--text-tertiary);
+}
+
+.inspector-row__value {
+  color: var(--text-primary);
+  font-weight: var(--weight-medium);
+  text-align: right;
+  word-break: break-all;
+}
+
+/* ============================================================
    25. RESPONSIVE
    ============================================================ */
 
@@ -1636,7 +1995,8 @@ body {
     grid-template-columns: 1fr 1fr;
   }
 
-  .delegation-cockpit-layout {
+  .delegation-cockpit-layout,
+  .graph-cockpit-layout {
     grid-template-columns: 1fr;
   }
 
@@ -1650,3 +2010,4 @@ body {
     grid-template-columns: 1fr;
   }
 }
+

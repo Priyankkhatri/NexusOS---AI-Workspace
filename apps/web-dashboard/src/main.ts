@@ -20,6 +20,15 @@ import {
   type PaginatedResponse,
   type AgentRecord,
   type DelegationSummary,
+  type MemorySearchResultItem,
+  type MemoryRecord,
+  type MemoryClass,
+  type MemorySensitivity,
+  type MemoryStatus,
+  type MemoryGraphNode,
+  type MemoryGraphEdge,
+  type MemoryGraphNodeType,
+  type MemoryGraphEdgeType,
 } from './api/client.js';
 
 // ============================================================
@@ -52,7 +61,15 @@ export interface ApprovalViewModel {
 }
 
 interface AppState {
-  currentView: 'overview' | 'tasks' | 'approvals' | 'activity' | 'agents' | 'delegations';
+  currentView:
+    | 'overview'
+    | 'tasks'
+    | 'approvals'
+    | 'activity'
+    | 'agents'
+    | 'delegations'
+    | 'memory'
+    | 'graph';
   summary: DashboardSummaryResponse | null;
   tasks: TaskItemResponse[];
   tasksCursor: string | undefined;
@@ -70,6 +87,25 @@ interface AppState {
   delegationStatusFilter: string;
   delegationsRequestId: number;
   selectedSessionId?: string;
+  // Memory Explorer State (Task 063 Phase 3)
+  memoryItems: MemorySearchResultItem[];
+  memoryTotal: number;
+  memorySearchQuery: string;
+  memoryClassFilter: string;
+  memorySensitivityFilter: string;
+  memoryStatusFilter: string;
+  selectedMemoryRecord: MemoryRecord | null;
+  memoryRequestId: number;
+  // Knowledge Graph State (Task 063 Phase 3)
+  graphNodes: MemoryGraphNode[];
+  graphEdges: MemoryGraphEdge[];
+  graphNodeTypeFilter: string;
+  graphEdgeTypeFilter: string;
+  graphDepth: number;
+  selectedGraphNode: MemoryGraphNode | null;
+  selectedGraphEdge: MemoryGraphEdge | null;
+  graphViewMode: 'visual' | 'table';
+  graphRequestId: number;
   isLoading: boolean;
   pollingInterval: ReturnType<typeof setInterval> | null;
 }
@@ -93,6 +129,23 @@ const state: AppState = {
   delegationStatusFilter: '',
   delegationsRequestId: 0,
   selectedSessionId: undefined,
+  memoryItems: [],
+  memoryTotal: 0,
+  memorySearchQuery: '',
+  memoryClassFilter: '',
+  memorySensitivityFilter: '',
+  memoryStatusFilter: 'ACTIVE',
+  selectedMemoryRecord: null,
+  memoryRequestId: 0,
+  graphNodes: [],
+  graphEdges: [],
+  graphNodeTypeFilter: '',
+  graphEdgeTypeFilter: '',
+  graphDepth: 2,
+  selectedGraphNode: null,
+  selectedGraphEdge: null,
+  graphViewMode: 'visual',
+  graphRequestId: 0,
   isLoading: false,
   pollingInterval: null,
 };
@@ -175,7 +228,16 @@ function switchView(view: AppState['currentView']): void {
   });
 
   // Toggle view visibility
-  const views = ['overview', 'tasks', 'approvals', 'activity', 'agents', 'delegations'] as const;
+  const views = [
+    'overview',
+    'tasks',
+    'approvals',
+    'activity',
+    'agents',
+    'delegations',
+    'memory',
+    'graph',
+  ] as const;
   views.forEach((v) => {
     const section = $(`view-${v}`);
     if (section) {
@@ -212,6 +274,12 @@ async function loadViewData(view: AppState['currentView']): Promise<void> {
       break;
     case 'delegations':
       await loadDelegations(true);
+      break;
+    case 'memory':
+      await loadMemory(true);
+      break;
+    case 'graph':
+      await loadGraph(true);
       break;
   }
 }
@@ -1509,6 +1577,992 @@ function renderDelegationTimeline(delegations: DelegationSummary[]): void {
 }
 
 // ============================================================
+// Phase 3A: Persistent Memory Explorer
+// ============================================================
+
+/**
+ * Redact / mask sensitive keys and credentials in property dictionaries (063-SEC-09).
+ */
+function maskSensitiveData(obj: unknown, depth = 0): unknown {
+  if (depth > 5 || obj === null || obj === undefined) return obj;
+  if (typeof obj === 'string') {
+    // Check if looks like a private key or bearer token
+    if (obj.startsWith('bearer ') || obj.startsWith('Bearer ')) {
+      return '[REDACTED_TOKEN]';
+    }
+    if (obj.includes('BEGIN' + ' PRIVATE KEY') || obj.includes('BEGIN' + ' RSA PRIVATE KEY')) {
+      return '[REDACTED_KEY_MATERIAL]';
+    }
+    return obj;
+  }
+  if (Array.isArray(obj)) {
+    return obj.map((item) => maskSensitiveData(item, depth + 1));
+  }
+  if (typeof obj === 'object') {
+    const sensitiveKeyPatterns = [
+      /key/i,
+      /secret/i,
+      /token/i,
+      /hmac/i,
+      /password/i,
+      /credential/i,
+      /auth/i,
+      /private/i,
+      /cert/i,
+    ];
+    const masked: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+      const isSensitive = sensitiveKeyPatterns.some((p) => p.test(k));
+      if (isSensitive) {
+        masked[k] = '[REDACTED_SECRET]';
+      } else {
+        masked[k] = maskSensitiveData(v, depth + 1);
+      }
+    }
+    return masked;
+  }
+  return obj;
+}
+
+function getSensitivityPill(sensitivity: MemorySensitivity | string): string {
+  const s = String(sensitivity).toUpperCase();
+  const map: Record<string, { label: string; cls: string }> = {
+    PUBLIC: { label: 'Public', cls: 'sensitivity-pill--public' },
+    INTERNAL: { label: 'Internal', cls: 'sensitivity-pill--internal' },
+    CONFIDENTIAL: { label: 'Confidential', cls: 'sensitivity-pill--confidential' },
+    RESTRICTED: { label: 'Restricted', cls: 'sensitivity-pill--restricted' },
+  };
+  const config = map[s] || { label: s, cls: 'sensitivity-pill--internal' };
+  return `<span class="sensitivity-pill ${config.cls}">${sanitizeHTML(config.label)}</span>`;
+}
+
+function getMemoryStatusBadge(status: MemoryStatus | string): string {
+  const s = String(status).toUpperCase();
+  const map: Record<string, { label: string; cls: string }> = {
+    ACTIVE: { label: 'Active', cls: 'status-badge--completed' },
+    ARCHIVED: { label: 'Archived', cls: 'status-badge--cancelled' },
+    TOMBSTONED: { label: 'Tombstoned', cls: 'status-badge--failed' },
+  };
+  const config = map[s] || { label: s, cls: 'status-badge--cancelled' };
+  return `<span class="status-badge ${config.cls}">${sanitizeHTML(config.label)}</span>`;
+}
+
+function generateMemoryCardHTML(item: MemorySearchResultItem): string {
+  const rec = item.record;
+  const memoryId = sanitizeHTML(rec.id);
+  const memoryClass = sanitizeHTML(rec.class);
+  const title = rec.title ? sanitizeHTML(rec.title) : 'Untitled Memory';
+  const preview = sanitizeHTML(
+    rec.summary || (rec.content.length > 180 ? rec.content.substring(0, 180) + '…' : rec.content),
+  );
+  const statusBadge = getMemoryStatusBadge(rec.status);
+  const sensitivityPill = getSensitivityPill(rec.sensitivity);
+  const confidencePercent = Math.round(rec.confidence * 100);
+  const relativeCreated = formatRelativeTime(rec.createdAt);
+  const tagsHTML = (rec.tags || [])
+    .slice(0, 5)
+    .map((tag) => `<span class="tag-pill">${sanitizeHTML(tag)}</span>`)
+    .join('');
+
+  return `
+    <article class="memory-card" role="article" tabindex="0" data-memory-id="${memoryId}" aria-labelledby="mem-title-${memoryId}">
+      <div class="memory-card__header">
+        <div class="memory-card__class-badge">${memoryClass}</div>
+        ${statusBadge}
+        <div style="margin-left: auto;">${sensitivityPill}</div>
+      </div>
+      <div class="memory-card__body">
+        <h3 id="mem-title-${memoryId}" class="memory-card__title">${title}</h3>
+        <p class="memory-card__preview">${preview}</p>
+        ${tagsHTML ? `<div class="memory-card__tags">${tagsHTML}</div>` : ''}
+      </div>
+      <div class="memory-card__meta">
+        <span class="confidence-pill" title="Advisory confidence score">${confidencePercent}% Confidence</span>
+        <span class="memory-card__time">${sanitizeHTML(relativeCreated)}</span>
+        <span class="evidence-hash" style="margin-left: auto;" title="${memoryId}">${memoryId.substring(0, 8)}…</span>
+      </div>
+    </article>
+  `;
+}
+
+function initMemoryView(): void {
+  const searchInput = $('memory-search-input') as HTMLInputElement | null;
+  const classFilter = $('memory-class-filter') as HTMLSelectElement | null;
+  const sensitivityFilter = $('memory-sensitivity-filter') as HTMLSelectElement | null;
+  const statusFilter = $('memory-status-filter') as HTMLSelectElement | null;
+  const refreshBtn = $('memory-refresh-btn');
+
+  let searchTimeout: ReturnType<typeof setTimeout> | null = null;
+  searchInput?.addEventListener('input', () => {
+    if (searchTimeout) clearTimeout(searchTimeout);
+    searchTimeout = setTimeout(() => {
+      state.memorySearchQuery = searchInput.value.trim();
+      void loadMemory(true);
+    }, 300);
+  });
+
+  classFilter?.addEventListener('change', () => {
+    state.memoryClassFilter = classFilter.value;
+    void loadMemory(true);
+  });
+
+  sensitivityFilter?.addEventListener('change', () => {
+    state.memorySensitivityFilter = sensitivityFilter.value;
+    void loadMemory(true);
+  });
+
+  statusFilter?.addEventListener('change', () => {
+    state.memoryStatusFilter = statusFilter.value;
+    void loadMemory(true);
+  });
+
+  refreshBtn?.addEventListener('click', () => {
+    void loadMemory(true);
+  });
+
+  initMemoryDetailModal();
+}
+
+async function loadMemory(isRefresh = false): Promise<void> {
+  const container = $('memory-container');
+  if (!container) return;
+
+  const currentSeq = ++state.memoryRequestId;
+
+  if (isRefresh && state.memoryItems.length === 0) {
+    setSafeHTML(
+      container,
+      '<div class="loading-state" role="status" aria-live="polite"><span class="spinner" aria-hidden="true"></span> Loading persistent memory records…</div>',
+    );
+  }
+
+  try {
+    const classes = state.memoryClassFilter ? [state.memoryClassFilter as MemoryClass] : undefined;
+    const maxSensitivity = state.memorySensitivityFilter
+      ? (state.memorySensitivityFilter as MemorySensitivity)
+      : undefined;
+
+    const res = await apiClient.searchMemory({
+      query: state.memorySearchQuery || undefined,
+      classes,
+      maxSensitivity,
+      limit: 100, // Hard bound: 100 records
+    });
+
+    // Sequence check: ignore stale network responses
+    if (currentSeq !== state.memoryRequestId) {
+      return;
+    }
+
+    // Client-side status filter if specified
+    let filteredItems = res.items;
+    if (state.memoryStatusFilter) {
+      filteredItems = res.items.filter((it) => it.record.status === state.memoryStatusFilter);
+    }
+
+    state.memoryItems = filteredItems.slice(0, 100);
+    state.memoryTotal = res.total;
+
+    renderMemoryFeed(state.memoryItems, res.total);
+  } catch (err) {
+    if (currentSeq !== state.memoryRequestId) return;
+    console.error('[Dashboard] Failed to load memory records:', err);
+    setSafeHTML(
+      container,
+      `
+      <div class="error-state" role="alert">
+        <p>Failed to load persistent memory records.</p>
+        <button class="btn btn--outline btn--sm" type="button" id="memory-retry-btn">Retry</button>
+      </div>
+    `,
+    );
+    $('memory-retry-btn')?.addEventListener('click', () => void loadMemory(true));
+  }
+}
+
+function renderMemoryFeed(items: MemorySearchResultItem[], totalCount: number): void {
+  const container = $('memory-container');
+  const empty = $('memory-empty');
+  if (!container) return;
+
+  if (items.length === 0) {
+    if (empty) empty.hidden = false;
+    setSafeHTML(
+      container,
+      empty?.outerHTML || '<div class="empty-state"><p>No memory records found.</p></div>',
+    );
+    return;
+  }
+
+  if (empty) empty.hidden = true;
+
+  const cardsHTML = items.map((item) => generateMemoryCardHTML(item)).join('');
+  const truncationNotice =
+    totalCount > 100 || items.length >= 100
+      ? '<div class="truncation-notice">Displaying maximum bounded memory records (100). Additional records truncated.</div>'
+      : '';
+
+  setSafeHTML(container, cardsHTML + truncationNotice);
+
+  // Bind click & keyboard interaction for cards to open inspector
+  container.querySelectorAll<HTMLElement>('.memory-card').forEach((card) => {
+    const memId = card.dataset['memoryId'];
+    if (!memId) return;
+
+    const openHandler = () => {
+      const target = state.memoryItems.find((it) => it.record.id === memId);
+      if (target) {
+        openMemoryDetailModal(target.record);
+      }
+    };
+
+    card.addEventListener('click', openHandler);
+    card.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        openHandler();
+      }
+    });
+  });
+}
+
+function initMemoryDetailModal(): void {
+  const modal = $('memory-detail-modal') as HTMLDialogElement | null;
+  const closeBtn = $('memory-detail-close');
+  if (!modal || !closeBtn) return;
+
+  closeBtn.addEventListener('click', () => modal.close());
+  modal.addEventListener('click', (e) => {
+    if (e.target === modal) modal.close();
+  });
+}
+
+function openMemoryDetailModal(record: MemoryRecord): void {
+  const modal = $('memory-detail-modal') as HTMLDialogElement | null;
+  const content = $('memory-detail-content');
+  if (!modal || !content) return;
+
+  state.selectedMemoryRecord = record;
+
+  const memoryId = sanitizeHTML(record.id);
+  const title = record.title ? sanitizeHTML(record.title) : 'Untitled Memory';
+  setTextContent('memory-detail-title', title);
+  const memoryClass = sanitizeHTML(record.class);
+  const statusBadge = getMemoryStatusBadge(record.status);
+  const sensitivityPill = getSensitivityPill(record.sensitivity);
+  const confidencePercent = Math.round(record.confidence * 100);
+  const safeContent = sanitizeHTML(record.content);
+  const version = sanitizeHTML(String(record.version));
+  const createdDate = sanitizeHTML(new Date(record.createdAt).toLocaleString());
+  const updatedDate = sanitizeHTML(new Date(record.updatedAt).toLocaleString());
+  const tombstonedDate = record.tombstonedAt
+    ? sanitizeHTML(new Date(record.tombstonedAt).toLocaleString())
+    : null;
+
+  // Mask provenance & metadata to guarantee zero secrets leakage (063-SEC-09)
+  const maskedProvenance = maskSensitiveData(record.provenance);
+  const maskedMetadata = maskSensitiveData(record.metadata);
+
+  const tagsHTML = (record.tags || [])
+    .map((tag) => `<span class="tag-pill">${sanitizeHTML(tag)}</span>`)
+    .join(' ');
+
+  const tombstoneAction =
+    record.status === 'ACTIVE'
+      ? `
+      <div style="margin-top: 1.5rem; text-align: right;">
+        <button id="memory-tombstone-btn" class="btn btn--outline btn--sm" style="color: var(--color-error); border-color: var(--color-error);" type="button">
+          Tombstone Memory (v${version})
+        </button>
+      </div>
+    `
+      : '';
+
+  setSafeHTML(
+    content,
+    `
+    <div class="memory-meta-grid">
+      <div class="meta-item">
+        <span class="meta-item__label">Memory ID</span>
+        <span class="meta-item__value meta-item__value--mono">${memoryId}</span>
+      </div>
+      <div class="meta-item">
+        <span class="meta-item__label">Status</span>
+        <span class="meta-item__value">${statusBadge}</span>
+      </div>
+      <div class="meta-item">
+        <span class="meta-item__label">Sensitivity</span>
+        <span class="meta-item__value">${sensitivityPill}</span>
+      </div>
+      <div class="meta-item">
+        <span class="meta-item__label">Class</span>
+        <span class="meta-item__value">${memoryClass}</span>
+      </div>
+      <div class="meta-item">
+        <span class="meta-item__label">Confidence</span>
+        <span class="meta-item__value">${confidencePercent}% (Advisory)</span>
+      </div>
+      <div class="meta-item">
+        <span class="meta-item__label">Version</span>
+        <span class="meta-item__value">v${version}</span>
+      </div>
+      <div class="meta-item">
+        <span class="meta-item__label">Created</span>
+        <span class="meta-item__value">${createdDate}</span>
+      </div>
+      <div class="meta-item">
+        <span class="meta-item__label">Updated</span>
+        <span class="meta-item__value">${updatedDate}</span>
+      </div>
+      ${
+        tombstonedDate
+          ? `
+        <div class="meta-item">
+          <span class="meta-item__label">Tombstoned</span>
+          <span class="meta-item__value" style="color: var(--color-error);">${tombstonedDate}</span>
+        </div>
+      `
+          : ''
+      }
+    </div>
+
+    ${tagsHTML ? `<div style="margin-top: 0.75rem;"><label style="font-size: 0.75rem; color: var(--color-text-secondary); display: block; margin-bottom: 0.25rem;">Tags</label>${tagsHTML}</div>` : ''}
+
+    <div class="memory-content-box">
+      <div class="memory-content-box__header">
+        <span>Content (Inert Text)</span>
+        <span style="font-size: 0.7rem; color: var(--color-text-secondary);">${record.content.length} chars</span>
+      </div>
+      <div class="memory-content-box__body">${safeContent}</div>
+    </div>
+
+    <div class="memory-provenance-box">
+      <div class="memory-provenance-box__header">
+        <span>Provenance & Auditable Origins (Masked)</span>
+      </div>
+      <pre class="memory-provenance-box__body">${sanitizeHTML(JSON.stringify(maskedProvenance, null, 2))}</pre>
+    </div>
+
+    ${
+      maskedMetadata && Object.keys(maskedMetadata as object).length > 0
+        ? `
+      <div class="memory-provenance-box" style="margin-top: 0.75rem;">
+        <div class="memory-provenance-box__header">
+          <span>Metadata (Masked)</span>
+        </div>
+        <pre class="memory-provenance-box__body">${sanitizeHTML(JSON.stringify(maskedMetadata, null, 2))}</pre>
+      </div>
+    `
+        : ''
+    }
+
+    ${tombstoneAction}
+  `,
+  );
+
+  $('memory-tombstone-btn')?.addEventListener('click', async () => {
+    const btn = $('memory-tombstone-btn') as HTMLButtonElement | null;
+    if (btn) btn.disabled = true;
+    try {
+      await apiClient.deleteMemory(record.id, { expectedVersion: record.version });
+      modal.close();
+      void loadMemory(true);
+    } catch (err) {
+      console.error('[Dashboard] Failed to tombstone memory record:', err);
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = 'Failed to Tombstone (Retry)';
+      }
+    }
+  });
+
+  modal.showModal();
+}
+
+// ============================================================
+// Phase 3B: Knowledge Graph Observability
+// ============================================================
+
+export interface GraphLayoutNode {
+  node: MemoryGraphNode;
+  x: number;
+  y: number;
+}
+
+/**
+ * Deterministic graph layout calculation without external dependencies (063-SEC-11).
+ * Clamps nodes to bounds: nodes <= 100, edges <= 100.
+ */
+function calculateGraphLayout(
+  nodes: MemoryGraphNode[],
+  width = 800,
+  height = 500,
+): Map<string, GraphLayoutNode> {
+  const layout = new Map<string, GraphLayoutNode>();
+  const boundedNodes = nodes.slice(0, 100);
+  const n = boundedNodes.length;
+  if (n === 0) return layout;
+
+  const centerX = width / 2;
+  const centerY = height / 2;
+  const radiusX = Math.min(centerX, centerY) * 0.78;
+  const radiusY = Math.min(centerX, centerY) * 0.72;
+
+  boundedNodes.forEach((node, index) => {
+    // Deterministic radial distribution
+    const angle = (2 * Math.PI * index) / n - Math.PI / 2;
+    const x = Math.round(centerX + radiusX * Math.cos(angle));
+    const y = Math.round(centerY + radiusY * Math.sin(angle));
+    layout.set(node.id, { node, x, y });
+  });
+
+  return layout;
+}
+
+function getNodeColor(nodeType: MemoryGraphNodeType | string): string {
+  const type = String(nodeType).toUpperCase();
+  const colors: Record<string, string> = {
+    ENTITY: '#6366f1', // Indigo
+    CONCEPT: '#8b5cf6', // Purple
+    TASK: '#3b82f6', // Blue
+    WORKSPACE: '#06b6d4', // Cyan
+    DECISION: '#10b981', // Emerald
+    ARTIFACT: '#f59e0b', // Amber
+    ERROR_PATTERN: '#ef4444', // Red
+  };
+  return colors[type] || '#94a3b8';
+}
+
+function generateGraphNodeSVG(item: GraphLayoutNode, isSelected = false): string {
+  const { node, x, y } = item;
+  const color = getNodeColor(node.nodeType);
+  const safeId = sanitizeHTML(node.id);
+  const safeLabel = sanitizeHTML(node.label || node.id.substring(0, 12));
+  const selectedCls = isSelected ? 'graph-node--selected' : '';
+
+  return `
+    <g class="graph-node ${selectedCls}" data-node-id="${safeId}" transform="translate(${x}, ${y})" tabindex="0" role="button" aria-label="Node ${safeLabel}, type ${sanitizeHTML(node.nodeType)}">
+      <circle cx="0" cy="0" r="18" fill="${color}" stroke="var(--color-bg-primary)" stroke-width="2" />
+      <text cx="0" y="28" text-anchor="middle" class="graph-node__label" fill="var(--color-text-secondary)">
+        ${safeLabel.length > 14 ? safeLabel.substring(0, 12) + '…' : safeLabel}
+      </text>
+    </g>
+  `;
+}
+
+function renderGraphTable(nodes: MemoryGraphNode[], edges: MemoryGraphEdge[]): string {
+  const boundedNodes = nodes.slice(0, 100);
+  const boundedEdges = edges.slice(0, 100);
+
+  const nodesTableHTML = `
+    <div style="margin-bottom: 1.5rem;">
+      <h3 style="font-size: 0.9rem; margin-bottom: 0.5rem; color: var(--color-text-secondary);">Nodes (${boundedNodes.length})</h3>
+      <div style="overflow-x: auto;">
+        <table class="graph-accessible-table" role="table" aria-label="Graph Nodes">
+          <thead>
+            <tr>
+              <th scope="col">ID</th>
+              <th scope="col">Type</th>
+              <th scope="col">Label</th>
+              <th scope="col">Confidence</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${boundedNodes
+              .map(
+                (n) => `
+              <tr tabindex="0" class="graph-table-row" data-node-id="${sanitizeHTML(n.id)}">
+                <td class="task-id-mono">${sanitizeHTML(n.id.substring(0, 8))}…</td>
+                <td><span class="badge--role">${sanitizeHTML(n.nodeType)}</span></td>
+                <td>${sanitizeHTML(n.label)}</td>
+                <td>${Math.round(n.confidence * 100)}%</td>
+              </tr>
+            `,
+              )
+              .join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+
+  const edgesTableHTML = `
+    <div>
+      <h3 style="font-size: 0.9rem; margin-bottom: 0.5rem; color: var(--color-text-secondary);">Edges (${boundedEdges.length})</h3>
+      <div style="overflow-x: auto;">
+        <table class="graph-accessible-table" role="table" aria-label="Graph Edges">
+          <thead>
+            <tr>
+              <th scope="col">Source</th>
+              <th scope="col">Relationship</th>
+              <th scope="col">Target</th>
+              <th scope="col">Confidence</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${boundedEdges
+              .map(
+                (e) => `
+              <tr tabindex="0" class="graph-table-row" data-edge-id="${sanitizeHTML(e.id)}">
+                <td class="task-id-mono">${sanitizeHTML(e.sourceNodeId.substring(0, 8))}…</td>
+                <td><strong>${sanitizeHTML(e.edgeType)}</strong></td>
+                <td class="task-id-mono">${sanitizeHTML(e.targetNodeId.substring(0, 8))}…</td>
+                <td>${Math.round(e.confidence * 100)}%</td>
+              </tr>
+            `,
+              )
+              .join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+
+  return nodesTableHTML + edgesTableHTML;
+}
+
+function initGraphView(): void {
+  const nodeTypeFilter = $('graph-node-type-filter') as HTMLSelectElement | null;
+  const edgeTypeFilter = $('graph-edge-type-filter') as HTMLSelectElement | null;
+  const depthFilter = $('graph-depth-filter') as HTMLSelectElement | null;
+  const viewToggleBtn = $('graph-view-toggle-btn');
+  const refreshBtn = $('graph-refresh-btn');
+
+  nodeTypeFilter?.addEventListener('change', () => {
+    state.graphNodeTypeFilter = nodeTypeFilter.value;
+    void loadGraph(true);
+  });
+
+  edgeTypeFilter?.addEventListener('change', () => {
+    state.graphEdgeTypeFilter = edgeTypeFilter.value;
+    void loadGraph(true);
+  });
+
+  depthFilter?.addEventListener('change', () => {
+    const depth = parseInt(depthFilter.value, 10);
+    // Hard bound maxDepth <= 4 (063-SEC-11)
+    state.graphDepth = Math.min(Math.max(1, isNaN(depth) ? 2 : depth), 4);
+    void loadGraph(true);
+  });
+
+  viewToggleBtn?.addEventListener('click', () => {
+    state.graphViewMode = state.graphViewMode === 'visual' ? 'table' : 'visual';
+    const isTable = state.graphViewMode === 'table';
+    viewToggleBtn.textContent = isTable ? 'Show Visual Graph' : 'Show Table View';
+    viewToggleBtn.setAttribute('aria-pressed', String(isTable));
+
+    const svgCanvas = $('graph-svg-canvas');
+    const tableFallback = $('graph-table-fallback');
+    if (svgCanvas) svgCanvas.hidden = isTable;
+    if (tableFallback) tableFallback.hidden = !isTable;
+  });
+
+  refreshBtn?.addEventListener('click', () => {
+    void loadGraph(true);
+  });
+}
+
+async function loadGraph(_isRefresh = false): Promise<void> {
+  const container = $('graph-container');
+  const edgesGroup = $('graph-edges-group');
+  const nodesGroup = $('graph-nodes-group');
+  const tableContent = $('graph-table-content');
+  if (!container) return;
+
+  const currentSeq = ++state.graphRequestId;
+
+  try {
+    const nodeTypes = state.graphNodeTypeFilter
+      ? [state.graphNodeTypeFilter as MemoryGraphNodeType]
+      : undefined;
+    const edgeTypes = state.graphEdgeTypeFilter
+      ? [state.graphEdgeTypeFilter as MemoryGraphEdgeType]
+      : undefined;
+
+    const res = await apiClient.queryGraph({
+      nodeTypes,
+      edgeTypes,
+      maxDepth: state.graphDepth,
+      limit: 100, // Hard bound: 100 nodes/edges
+    });
+
+    // Sequence check: ignore stale network responses
+    if (currentSeq !== state.graphRequestId) {
+      return;
+    }
+
+    // Cycle & Bounded Guards (063-SEC-11)
+    const visitedNodeIds = new Set<string>();
+    const boundedNodes: MemoryGraphNode[] = [];
+    for (const n of res.nodes) {
+      if (boundedNodes.length >= 100) break;
+      if (!visitedNodeIds.has(n.id)) {
+        visitedNodeIds.add(n.id);
+        boundedNodes.push(n);
+      }
+    }
+
+    const visitedEdgeIds = new Set<string>();
+    const boundedEdges: MemoryGraphEdge[] = [];
+    for (const e of res.edges) {
+      if (boundedEdges.length >= 100) break;
+      if (!visitedEdgeIds.has(e.id)) {
+        visitedEdgeIds.add(e.id);
+        boundedEdges.push(e);
+      }
+    }
+
+    state.graphNodes = boundedNodes;
+    state.graphEdges = boundedEdges;
+
+    renderGraphVisualization(
+      boundedNodes,
+      boundedEdges,
+      res.totalNodes > 100 || res.totalEdges > 100 || res.nodes.length >= 100,
+    );
+  } catch (err) {
+    if (currentSeq !== state.graphRequestId) return;
+    console.error('[Dashboard] Failed to load knowledge graph:', err);
+    if (edgesGroup) edgesGroup.innerHTML = '';
+    if (nodesGroup) nodesGroup.innerHTML = '';
+    if (tableContent) {
+      setSafeHTML(
+        tableContent,
+        `
+        <div class="error-state" role="alert">
+          <p>Failed to load knowledge graph relationships.</p>
+          <button class="btn btn--outline btn--sm" type="button" id="graph-retry-btn">Retry</button>
+        </div>
+      `,
+      );
+      $('graph-retry-btn')?.addEventListener('click', () => void loadGraph(true));
+    }
+  }
+}
+
+function renderGraphVisualization(
+  nodes: MemoryGraphNode[],
+  edges: MemoryGraphEdge[],
+  truncated = false,
+): void {
+  const empty = $('graph-empty');
+  const edgesGroup = $('graph-edges-group');
+  const nodesGroup = $('graph-nodes-group');
+  const tableContent = $('graph-table-content');
+
+  if (nodes.length === 0) {
+    if (empty) empty.hidden = false;
+    if (edgesGroup) edgesGroup.innerHTML = '';
+    if (nodesGroup) nodesGroup.innerHTML = '';
+    if (tableContent) {
+      setSafeHTML(
+        tableContent,
+        '<div class="empty-state"><p>No graph relationships discovered.</p></div>',
+      );
+    }
+    return;
+  }
+
+  if (empty) empty.hidden = true;
+
+  // Calculate coordinates
+  const layout = calculateGraphLayout(nodes, 800, 500);
+
+  // Render SVG Edges with cycle-safe visited mapping
+  let edgesHTML = '';
+  for (const edge of edges) {
+    const source = layout.get(edge.sourceNodeId);
+    const target = layout.get(edge.targetNodeId);
+    if (source && target) {
+      const safeEdgeId = sanitizeHTML(edge.id);
+      const safeEdgeType = sanitizeHTML(edge.edgeType);
+      const isSelected = state.selectedGraphEdge?.id === edge.id;
+      const edgeCls = isSelected ? 'graph-edge--selected' : '';
+      edgesHTML += `
+        <line
+          class="graph-edge ${edgeCls}"
+          data-edge-id="${safeEdgeId}"
+          x1="${source.x}"
+          y1="${source.y}"
+          x2="${target.x}"
+          y2="${target.y}"
+          stroke="var(--color-border-hover)"
+          stroke-width="1.8"
+          marker-end="url(#graph-arrowhead)"
+          tabindex="0"
+          role="button"
+          aria-label="Edge ${safeEdgeType} from ${sanitizeHTML(edge.sourceNodeId)} to ${sanitizeHTML(edge.targetNodeId)}"
+        />
+      `;
+    }
+  }
+
+  if (edgesGroup) setSafeHTML(edgesGroup, edgesHTML);
+
+  // Render SVG Nodes
+  let nodesHTML = '';
+  for (const item of layout.values()) {
+    const isSelected = state.selectedGraphNode?.id === item.node.id;
+    nodesHTML += generateGraphNodeSVG(item, isSelected);
+  }
+
+  if (nodesGroup) setSafeHTML(nodesGroup, nodesHTML);
+
+  // Accessible Table Fallback
+  if (tableContent) {
+    const tableHTML = renderGraphTable(nodes, edges);
+    const truncationNotice = truncated
+      ? '<div class="truncation-notice">Displaying maximum bounded graph items (100 nodes/edges). Graph truncated.</div>'
+      : '';
+    setSafeHTML(tableContent, tableHTML + truncationNotice);
+  }
+
+  // Bind interaction for nodes and edges
+  bindGraphInteractions();
+}
+
+function bindGraphInteractions(): void {
+  const container = $('graph-container');
+  if (!container) return;
+
+  // SVG Nodes click & keydown
+  container.querySelectorAll<SVGElement>('.graph-node').forEach((el) => {
+    const nodeId = el.dataset['nodeId'];
+    if (!nodeId) return;
+
+    const selectHandler = () => {
+      const node = state.graphNodes.find((n) => n.id === nodeId);
+      if (node) {
+        state.selectedGraphNode = node;
+        state.selectedGraphEdge = null;
+        renderGraphInspector(node, null);
+        highlightSelectedGraphItem();
+      }
+    };
+
+    el.addEventListener('click', selectHandler);
+    el.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        selectHandler();
+      }
+    });
+  });
+
+  // SVG Edges click
+  container.querySelectorAll<SVGElement>('.graph-edge').forEach((el) => {
+    const edgeId = el.dataset['edgeId'];
+    if (!edgeId) return;
+
+    const selectHandler = () => {
+      const edge = state.graphEdges.find((e) => e.id === edgeId);
+      if (edge) {
+        state.selectedGraphEdge = edge;
+        state.selectedGraphNode = null;
+        renderGraphInspector(null, edge);
+        highlightSelectedGraphItem();
+      }
+    };
+
+    el.addEventListener('click', selectHandler);
+    el.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        selectHandler();
+      }
+    });
+  });
+
+  // Table rows click
+  container.querySelectorAll<HTMLElement>('.graph-table-row').forEach((row) => {
+    const nodeId = row.dataset['nodeId'];
+    const edgeId = row.dataset['edgeId'];
+
+    row.addEventListener('click', () => {
+      if (nodeId) {
+        const node = state.graphNodes.find((n) => n.id === nodeId);
+        if (node) {
+          state.selectedGraphNode = node;
+          state.selectedGraphEdge = null;
+          renderGraphInspector(node, null);
+        }
+      } else if (edgeId) {
+        const edge = state.graphEdges.find((e) => e.id === edgeId);
+        if (edge) {
+          state.selectedGraphEdge = edge;
+          state.selectedGraphNode = null;
+          renderGraphInspector(null, edge);
+        }
+      }
+    });
+  });
+}
+
+function highlightSelectedGraphItem(): void {
+  const container = $('graph-container');
+  if (!container) return;
+
+  container.querySelectorAll<SVGElement>('.graph-node').forEach((el) => {
+    const isSelected = el.dataset['nodeId'] === state.selectedGraphNode?.id;
+    el.classList.toggle('graph-node--selected', isSelected);
+  });
+
+  container.querySelectorAll<SVGElement>('.graph-edge').forEach((el) => {
+    const isSelected = el.dataset['edgeId'] === state.selectedGraphEdge?.id;
+    el.classList.toggle('graph-edge--selected', isSelected);
+  });
+}
+
+function renderGraphInspector(node: MemoryGraphNode | null, edge: MemoryGraphEdge | null): void {
+  const inspectorContent = $('graph-inspector-content');
+  if (!inspectorContent) return;
+
+  if (node) {
+    const safeId = sanitizeHTML(node.id);
+    const safeType = sanitizeHTML(node.nodeType);
+    const safeLabel = sanitizeHTML(node.label);
+    const confidencePercent = Math.round(node.confidence * 100);
+    const createdDate = sanitizeHTML(new Date(node.createdAt).toLocaleString());
+    const memoryRecordId = node.memoryRecordId ? sanitizeHTML(node.memoryRecordId) : null;
+
+    // Mask properties to prevent credentials leakage (063-SEC-09)
+    const maskedProps = maskSensitiveData(node.properties);
+
+    const linkedMemoryHTML = memoryRecordId
+      ? `
+      <div class="inspector-row">
+        <span class="inspector-row__label">Linked Memory</span>
+        <button id="inspector-open-memory-btn" class="btn btn--outline btn--sm" type="button" data-memory-id="${memoryRecordId}">
+          View Memory ${memoryRecordId.substring(0, 8)}…
+        </button>
+      </div>
+    `
+      : '';
+
+    setSafeHTML(
+      inspectorContent,
+      `
+      <div class="inspector-section">
+        <h3 class="inspector-section__title">Node Details</h3>
+        <div class="inspector-row">
+          <span class="inspector-row__label">Node ID</span>
+          <span class="inspector-row__value inspector-row__value--mono">${safeId}</span>
+        </div>
+        <div class="inspector-row">
+          <span class="inspector-row__label">Type</span>
+          <span class="inspector-row__value"><span class="badge--role">${safeType}</span></span>
+        </div>
+        <div class="inspector-row">
+          <span class="inspector-row__label">Label</span>
+          <span class="inspector-row__value"><strong>${safeLabel}</strong></span>
+        </div>
+        <div class="inspector-row">
+          <span class="inspector-row__label">Confidence</span>
+          <span class="inspector-row__value">${confidencePercent}% (Advisory)</span>
+        </div>
+        <div class="inspector-row">
+          <span class="inspector-row__label">Created</span>
+          <span class="inspector-row__value">${createdDate}</span>
+        </div>
+        ${linkedMemoryHTML}
+      </div>
+
+      <div class="inspector-section">
+        <h3 class="inspector-section__title">Node Properties (Masked)</h3>
+        <pre class="inspector-pre">${sanitizeHTML(JSON.stringify(maskedProps, null, 2))}</pre>
+      </div>
+    `,
+    );
+
+    $('inspector-open-memory-btn')?.addEventListener('click', async () => {
+      if (!memoryRecordId) return;
+      try {
+        const mem = await apiClient.getMemory(memoryRecordId);
+        if (mem) {
+          openMemoryDetailModal(mem);
+        }
+      } catch (err) {
+        console.error('[Dashboard] Failed to fetch linked memory record:', err);
+      }
+    });
+
+    return;
+  }
+
+  if (edge) {
+    const safeId = sanitizeHTML(edge.id);
+    const safeType = sanitizeHTML(edge.edgeType);
+    const safeSource = sanitizeHTML(edge.sourceNodeId);
+    const safeTarget = sanitizeHTML(edge.targetNodeId);
+    const confidencePercent = Math.round(edge.confidence * 100);
+    const createdDate = sanitizeHTML(new Date(edge.createdAt).toLocaleString());
+
+    // Mask properties and provenance (063-SEC-09)
+    const maskedProps = maskSensitiveData(edge.properties);
+    const maskedProvenance = maskSensitiveData(edge.provenance);
+
+    setSafeHTML(
+      inspectorContent,
+      `
+      <div class="inspector-section">
+        <h3 class="inspector-section__title">Edge Relationship</h3>
+        <div class="inspector-row">
+          <span class="inspector-row__label">Edge ID</span>
+          <span class="inspector-row__value inspector-row__value--mono">${safeId}</span>
+        </div>
+        <div class="inspector-row">
+          <span class="inspector-row__label">Relationship</span>
+          <span class="inspector-row__value"><strong>${safeType}</strong></span>
+        </div>
+        <div class="inspector-row">
+          <span class="inspector-row__label">Source Node</span>
+          <span class="inspector-row__value inspector-row__value--mono">${safeSource}</span>
+        </div>
+        <div class="inspector-row">
+          <span class="inspector-row__label">Target Node</span>
+          <span class="inspector-row__value inspector-row__value--mono">${safeTarget}</span>
+        </div>
+        <div class="inspector-row">
+          <span class="inspector-row__label">Weight</span>
+          <span class="inspector-row__value">${edge.weight}</span>
+        </div>
+        <div class="inspector-row">
+          <span class="inspector-row__label">Confidence</span>
+          <span class="inspector-row__value">${confidencePercent}% (Advisory)</span>
+        </div>
+        <div class="inspector-row">
+          <span class="inspector-row__label">Created</span>
+          <span class="inspector-row__value">${createdDate}</span>
+        </div>
+      </div>
+
+      <div class="inspector-section">
+        <h3 class="inspector-section__title">Properties (Masked)</h3>
+        <pre class="inspector-pre">${sanitizeHTML(JSON.stringify(maskedProps, null, 2))}</pre>
+      </div>
+
+      ${
+        maskedProvenance
+          ? `
+        <div class="inspector-section">
+          <h3 class="inspector-section__title">Provenance (Masked)</h3>
+          <pre class="inspector-pre">${sanitizeHTML(JSON.stringify(maskedProvenance, null, 2))}</pre>
+        </div>
+      `
+          : ''
+      }
+    `,
+    );
+    return;
+  }
+
+  setSafeHTML(
+    inspectorContent,
+    '<div class="inspector-placeholder"><p>Select a node or edge to inspect attributes and provenance.</p></div>',
+  );
+}
+
+// ============================================================
 // Polling (Auto-Refresh)
 // ============================================================
 
@@ -1562,6 +2616,8 @@ async function init(): Promise<void> {
   initActivityView();
   initAgentsView();
   initDelegationsView();
+  initMemoryView();
+  initGraphView();
   initTaskDetailModal();
 
   // Initial data load
@@ -1590,6 +2646,8 @@ export {
   switchView,
   loadAgents,
   loadDelegations,
+  loadMemory,
+  loadGraph,
   renderAgentRoster,
   renderDelegationTree,
   renderDelegationTimeline,
@@ -1597,6 +2655,14 @@ export {
   generateAgentCardHTML,
   generateDelegationNodeHTML,
   generateDelegationTimelineItemHTML,
+  generateMemoryCardHTML,
+  generateGraphNodeSVG,
+  renderGraphTable,
+  calculateGraphLayout,
+  maskSensitiveData,
+  getNodeColor,
+  getSensitivityPill,
+  getMemoryStatusBadge,
   getRoleBadge,
   getAgentStatusPill,
   getDelegationStatusBadge,
