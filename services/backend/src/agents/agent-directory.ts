@@ -5,23 +5,10 @@ import {
   AgentHeartbeat,
   AgentHeartbeatSchema,
   AgentRole,
-  AgentStatus,
+  AgentRecord,
 } from '@nexusos/contracts';
 
-export interface AgentRecord {
-  agentId: string;
-  tenantId: string;
-  workspaceScope: string[];
-  role: AgentRole;
-  capabilities: string[];
-  version: string;
-  metadata: Record<string, string>;
-  registeredAt: string;
-  lastHeartbeat: string;
-  status: AgentStatus;
-  currentLoad: number;
-  activeTaskIds: string[];
-}
+export type { AgentRecord };
 
 export interface AgentDiscoveryQuery {
   tenantId: string;

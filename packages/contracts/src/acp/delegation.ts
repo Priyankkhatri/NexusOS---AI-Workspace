@@ -100,3 +100,39 @@ export const CompositeExecutionReceiptSchema = z.object({
   signature: z.string().min(1), // HMAC signature covering composite evidence
 });
 export type CompositeExecutionReceipt = z.infer<typeof CompositeExecutionReceiptSchema>;
+
+/**
+ * Delegation Summary Schema (Dashboard / Read-Model Projection)
+ * Explicitly omits HMAC signatures, lease tokens, and internal keys.
+ */
+export const DelegationSummarySchema = z.object({
+  delegationId: UUIDSchema,
+  parentTaskId: TaskIdSchema,
+  parentLeaseId: LeaseIdSchema,
+  childTaskId: TaskIdSchema,
+  childLeaseId: LeaseIdSchema,
+  delegatorAgentId: z.string().min(1).max(128),
+  assignedAgentId: z.string().min(1).max(128),
+  tenantId: TenantIdSchema,
+  workspaceId: UUIDSchema,
+  depth: z.number().int().min(1).max(DELEGATION_SAFETY_LIMITS.MAX_DEPTH),
+  status: DelegationStatusSchema,
+  requestedScopes: z.array(z.string().min(1)),
+  expiresAt: z.number().int().positive(),
+  correlationId: CorrelationIdSchema,
+  rejectionReason: z.string().optional(),
+  hasCompensation: z.boolean().default(false),
+  hasChildReceipt: z.boolean().default(false),
+});
+export type DelegationSummary = z.infer<typeof DelegationSummarySchema>;
+
+/**
+ * Delegation Listing Query Schema (Dashboard / Read-Model)
+ */
+export const DelegationQuerySchema = z.object({
+  parentTaskId: z.string().optional(),
+  workspaceId: z.string().optional(),
+  status: DelegationStatusSchema.optional(),
+  limit: z.coerce.number().int().positive().max(100).default(50),
+});
+export type DelegationQuery = z.infer<typeof DelegationQuerySchema>;

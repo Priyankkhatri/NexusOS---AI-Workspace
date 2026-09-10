@@ -11,6 +11,10 @@ import {
   AgentHeartbeatSchema,
   DelegatedLeaseHeaderSchema,
   DELEGATION_SAFETY_LIMITS,
+  AgentRecordSchema,
+  AgentQuerySchema,
+  DelegationSummarySchema,
+  DelegationQuerySchema,
 } from '../src/index.js';
 
 describe('Federated ACP & Sub-Agent Delegation Contracts Audit (Task 060)', () => {
@@ -267,6 +271,122 @@ describe('Federated ACP & Sub-Agent Delegation Contracts Audit (Task 060)', () =
 
       const parsed = DelegatedLeaseHeaderSchema.safeParse(delegatedLease);
       assert.strictEqual(parsed.success, true);
+    });
+  });
+
+  describe('Task 063 Dashboard Read-Model Projection Contracts', () => {
+    describe('AgentRecordSchema & AgentQuerySchema', () => {
+      it('validates a well-formed AgentRecord projection', () => {
+        const record = {
+          agentId: 'agent-worker-01',
+          tenantId,
+          workspaceScope: [workspaceId],
+          role: 'WORKER' as const,
+          capabilities: ['filesystem.readFile'],
+          version: '1.0.0',
+          registeredAt: new Date().toISOString(),
+          status: 'AVAILABLE' as const,
+          currentLoad: 0.1,
+          lastHeartbeat: new Date().toISOString(),
+          activeTaskIds: ['task-123'],
+        };
+
+        const parsed = AgentRecordSchema.safeParse(record);
+        assert.strictEqual(parsed.success, true);
+        if (parsed.success) {
+          assert.strictEqual(parsed.data.agentId, 'agent-worker-01');
+          assert.strictEqual(parsed.data.role, 'WORKER');
+          assert.strictEqual(parsed.data.status, 'AVAILABLE');
+        }
+      });
+
+      it('validates and applies defaults on AgentQuerySchema', () => {
+        const parsedEmpty = AgentQuerySchema.safeParse({});
+        assert.strictEqual(parsedEmpty.success, true);
+        if (parsedEmpty.success) {
+          assert.strictEqual(parsedEmpty.data.limit, 50);
+        }
+
+        const parsedCustom = AgentQuerySchema.safeParse({
+          workspaceId,
+          role: 'SPECIALIST',
+          status: 'BUSY',
+          limit: '25',
+        });
+        assert.strictEqual(parsedCustom.success, true);
+        if (parsedCustom.success) {
+          assert.strictEqual(parsedCustom.data.limit, 25);
+          assert.strictEqual(parsedCustom.data.role, 'SPECIALIST');
+          assert.strictEqual(parsedCustom.data.status, 'BUSY');
+        }
+      });
+
+      it('enforces upper bound on AgentQuery limit', () => {
+        const parsed = AgentQuerySchema.safeParse({ limit: 150 });
+        assert.strictEqual(parsed.success, false);
+      });
+    });
+
+    describe('DelegationSummarySchema & DelegationQuerySchema', () => {
+      it('validates a well-formed DelegationSummary projection without exposing secrets', () => {
+        const summary = {
+          delegationId: crypto.randomUUID(),
+          parentTaskId,
+          parentLeaseId,
+          childTaskId,
+          childLeaseId,
+          delegatorAgentId: 'agent-coordinator-01',
+          assignedAgentId: 'agent-specialist-02',
+          tenantId,
+          workspaceId,
+          depth: 1,
+          status: 'EXECUTING' as const,
+          requestedScopes: ['filesystem.readFile'],
+          expiresAt: Date.now() + 60000,
+          correlationId,
+          hasCompensation: false,
+          hasChildReceipt: false,
+        };
+
+        const parsed = DelegationSummarySchema.safeParse(summary);
+        assert.strictEqual(parsed.success, true);
+        if (parsed.success) {
+          assert.strictEqual(parsed.data.parentTaskId, parentTaskId);
+          assert.strictEqual(parsed.data.childTaskId, childTaskId);
+          assert.strictEqual(parsed.data.delegatorAgentId, 'agent-coordinator-01');
+          assert.strictEqual(parsed.data.assignedAgentId, 'agent-specialist-02');
+          assert.strictEqual(parsed.data.status, 'EXECUTING');
+          // Verify no lease secrets or HMAC keys in schema
+          assert.strictEqual('signature' in parsed.data, false);
+          assert.strictEqual('hmacKey' in parsed.data, false);
+        }
+      });
+
+      it('validates and applies defaults on DelegationQuerySchema', () => {
+        const parsedEmpty = DelegationQuerySchema.safeParse({});
+        assert.strictEqual(parsedEmpty.success, true);
+        if (parsedEmpty.success) {
+          assert.strictEqual(parsedEmpty.data.limit, 50);
+        }
+
+        const parsedCustom = DelegationQuerySchema.safeParse({
+          parentTaskId,
+          workspaceId,
+          status: 'COMPLETED',
+          limit: '10',
+        });
+        assert.strictEqual(parsedCustom.success, true);
+        if (parsedCustom.success) {
+          assert.strictEqual(parsedCustom.data.limit, 10);
+          assert.strictEqual(parsedCustom.data.parentTaskId, parentTaskId);
+          assert.strictEqual(parsedCustom.data.status, 'COMPLETED');
+        }
+      });
+
+      it('enforces upper bound on DelegationQuery limit', () => {
+        const parsed = DelegationQuerySchema.safeParse({ limit: 200 });
+        assert.strictEqual(parsed.success, false);
+      });
     });
   });
 });

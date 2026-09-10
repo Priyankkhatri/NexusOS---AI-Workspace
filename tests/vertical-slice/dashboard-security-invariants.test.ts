@@ -23,16 +23,27 @@ import {
   ReceiptVerifier,
   InMemoryEventPublisherBoundary,
   AuthenticatedIncomingMessage,
+  AgentDirectoryService,
+  DelegationCoordinator,
+  MemoryService,
+  InMemoryMemoryStore,
 } from '@nexusos/backend';
 import {
   TaskLifecycleState,
   createEventEnvelope,
   ExecutionLeaseHeader,
   ApprovalDecisionRequest,
+  MemoryClass,
+  MemoryStatus,
+  MemorySensitivity,
+  MemorySourceType,
+  MemoryGraphNodeType,
+  MemoryGraphEdgeType,
 } from '@nexusos/contracts';
 import { PolicyEffect } from '@nexusos/policy';
 import { AuthenticatedContext, PrincipalType } from '@nexusos/identity';
 import { NativeApprovalHost } from '@nexusos/desktop-agent';
+import { DashboardAPIClient, DashboardAPIError } from '../../apps/web-dashboard/src/api/client.js';
 
 // ============================================================
 // Test Fixtures
@@ -1103,6 +1114,607 @@ describe('053-SEC — Dashboard Projection & Security Invariants', () => {
           assert.ok(field in task, `Task items must include '${field}'`);
         }
       }
+    });
+  });
+
+  // ============================================================
+  // Task 063: Backend Read-Model Projections & Dashboard API Client
+  // ============================================================
+
+  describe('Task 063: Backend Read-Model Projections & Dashboard API Client (063-SEC-01 to 063-SEC-05)', () => {
+    const workspaceA1 = 'aaaaaaaa-1111-4000-8000-000000000001';
+    const workspaceA2 = 'aaaaaaaa-2222-4000-8000-000000000002';
+    const workspaceB = 'bbbbbbbb-1111-4000-8000-000000000001';
+    const parentTaskIdA1 = crypto.randomUUID();
+    const parentTaskIdA2 = crypto.randomUUID();
+    const parentTaskIdB1 = crypto.randomUUID();
+
+    let testApp: BackendApp;
+    let testBaseUrl: string;
+    let agentDir: AgentDirectoryService;
+    let delegCoord: DelegationCoordinator;
+    let memStore: InMemoryMemoryStore;
+    let memService: MemoryService;
+    let leaseIssuer63: LeaseIssuer;
+    let clientA: DashboardAPIClient;
+    let clientB: DashboardAPIClient;
+
+    before(async () => {
+      agentDir = new AgentDirectoryService();
+      leaseIssuer63 = new LeaseIssuer('lease-issuer-secret-task-063');
+      delegCoord = new DelegationCoordinator({
+        leaseIssuer: leaseIssuer63,
+        agentDirectory: agentDir,
+      });
+      memStore = new InMemoryMemoryStore();
+      memService = new MemoryService({ store: memStore });
+
+      // Seed Agents
+      agentDir.registerAgent({
+        agentId: 'agent-a1-coord',
+        tenantId: tenantA,
+        workspaceScope: [workspaceA1],
+        role: 'COORDINATOR',
+        capabilities: ['tasks.coordinate', 'filesystem.readFile'],
+        version: '1.0.0',
+        registeredAt: new Date().toISOString(),
+      });
+      agentDir.recordHeartbeat({
+        agentId: 'agent-a1-coord',
+        tenantId: tenantA,
+        status: 'AVAILABLE',
+        currentLoad: 0.1,
+        timestamp: new Date().toISOString(),
+        activeTaskIds: [],
+      });
+
+      agentDir.registerAgent({
+        agentId: 'agent-a2-worker',
+        tenantId: tenantA,
+        workspaceScope: [workspaceA2],
+        role: 'WORKER',
+        capabilities: ['filesystem.readFile'],
+        version: '1.0.0',
+        registeredAt: new Date().toISOString(),
+      });
+      agentDir.recordHeartbeat({
+        agentId: 'agent-a2-worker',
+        tenantId: tenantA,
+        status: 'BUSY',
+        currentLoad: 0.9,
+        timestamp: new Date().toISOString(),
+        activeTaskIds: ['task-busy-1'],
+      });
+
+      agentDir.registerAgent({
+        agentId: 'agent-b1-spec',
+        tenantId: tenantB,
+        workspaceScope: [workspaceB],
+        role: 'SPECIALIST',
+        capabilities: ['device.queryInfo'],
+        version: '1.0.0',
+        registeredAt: new Date().toISOString(),
+      });
+      agentDir.recordHeartbeat({
+        agentId: 'agent-b1-spec',
+        tenantId: tenantB,
+        status: 'AVAILABLE',
+        currentLoad: 0.2,
+        timestamp: new Date().toISOString(),
+        activeTaskIds: [],
+      });
+
+      // Seed Delegations
+      const parentLeaseA1 = leaseIssuer63.issueLease({
+        taskId: parentTaskIdA1,
+        agentId: 'agent-a1-coord',
+        tenantId: tenantA,
+        scopes: ['tasks.coordinate', 'filesystem.readFile'],
+        ttlSeconds: 600,
+      });
+      await delegCoord.delegateSubTask(
+        {
+          delegationId: crypto.randomUUID(),
+          parentTaskId: parentTaskIdA1,
+          parentLeaseId: parentLeaseA1.lease_id,
+          delegatorAgentId: 'agent-a1-coord',
+          targetAgentId: 'agent-a1-coord',
+          tenantId: tenantA,
+          workspaceId: workspaceA1,
+          subGoal: 'Read partition data',
+          capabilityId: 'filesystem.readFile',
+          requestedScopes: ['filesystem.readFile'],
+          parameters: { path: '/data/a1.txt' },
+          delegationDepth: 1,
+          timeoutMs: 60000,
+          idempotencyKey: 'idem-a1',
+          correlationId: crypto.randomUUID(),
+        },
+        parentLeaseA1,
+      );
+
+      const parentLeaseA2 = leaseIssuer63.issueLease({
+        taskId: parentTaskIdA2,
+        agentId: 'agent-a1-coord',
+        tenantId: tenantA,
+        scopes: ['tasks.coordinate', 'filesystem.readFile'],
+        ttlSeconds: 600,
+      });
+      await delegCoord.delegateSubTask(
+        {
+          delegationId: crypto.randomUUID(),
+          parentTaskId: parentTaskIdA2,
+          parentLeaseId: parentLeaseA2.lease_id,
+          delegatorAgentId: 'agent-a1-coord',
+          targetAgentId: 'agent-a2-worker',
+          tenantId: tenantA,
+          workspaceId: workspaceA2,
+          subGoal: 'Process archive batch',
+          capabilityId: 'filesystem.readFile',
+          requestedScopes: ['filesystem.readFile'],
+          parameters: { path: '/data/a2.txt' },
+          delegationDepth: 1,
+          timeoutMs: 60000,
+          idempotencyKey: 'idem-a2',
+          correlationId: crypto.randomUUID(),
+        },
+        parentLeaseA2,
+      );
+
+      const parentLeaseB = leaseIssuer63.issueLease({
+        taskId: parentTaskIdB1,
+        agentId: 'agent-b1-spec',
+        tenantId: tenantB,
+        scopes: ['device.queryInfo'],
+        ttlSeconds: 600,
+      });
+      await delegCoord.delegateSubTask(
+        {
+          delegationId: crypto.randomUUID(),
+          parentTaskId: parentTaskIdB1,
+          parentLeaseId: parentLeaseB.lease_id,
+          delegatorAgentId: 'agent-b1-spec',
+          targetAgentId: 'agent-b1-spec',
+          tenantId: tenantB,
+          workspaceId: workspaceB,
+          subGoal: 'Inspect device telemetry',
+          capabilityId: 'device.queryInfo',
+          requestedScopes: ['device.queryInfo'],
+          parameters: {},
+          delegationDepth: 1,
+          timeoutMs: 60000,
+          idempotencyKey: 'idem-b1',
+          correlationId: crypto.randomUUID(),
+        },
+        parentLeaseB,
+      );
+
+      // Seed Memory Records & Vectors & Graph Nodes
+      await memStore.create({
+        id: 'mem-record-063-a1',
+        tenantId: tenantA,
+        workspaceId: workspaceA1,
+        ownerId: userA,
+        class: MemoryClass.WORKING,
+        status: MemoryStatus.ACTIVE,
+        sensitivity: MemorySensitivity.INTERNAL,
+        title: 'Project Alpha Strategy',
+        content: 'Observation regarding agent collaboration workflow and graph traversal.',
+        confidence: 0.95,
+        tags: ['strategy', 'alpha'],
+        metadata: { source: 'test' },
+        provenance: {
+          sourceType: MemorySourceType.USER_EXPLICIT,
+          creatorPrincipalId: userA,
+          timestamp: new Date().toISOString(),
+          verified: true,
+        },
+        version: 1,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+
+      const embeddingValues = new Array(384).fill(0.02);
+      await memStore.saveVector({
+        id: crypto.randomUUID(),
+        memoryRecordId: 'mem-record-063-a1',
+        tenantId: tenantA,
+        workspaceId: workspaceA1,
+        values: embeddingValues,
+        dimensions: 384,
+        normalized: true,
+        metric: 'COSINE',
+        metadata: {},
+        createdAt: new Date().toISOString(),
+      });
+
+      await memStore.saveGraphNode({
+        id: 'graph-node-063-root',
+        tenantId: tenantA,
+        workspaceId: workspaceA1,
+        nodeType: MemoryGraphNodeType.CONCEPT,
+        label: 'CollaborationArchitecture',
+        properties: {},
+        confidence: 1.0,
+        createdAt: new Date().toISOString(),
+      });
+
+      await memStore.saveGraphNode({
+        id: 'graph-node-063-child',
+        tenantId: tenantA,
+        workspaceId: workspaceA1,
+        nodeType: MemoryGraphNodeType.TASK,
+        label: 'SubtaskDelegation',
+        properties: {},
+        confidence: 0.9,
+        createdAt: new Date().toISOString(),
+      });
+
+      await memStore.saveGraphEdge({
+        id: 'graph-edge-063-1',
+        tenantId: tenantA,
+        workspaceId: workspaceA1,
+        sourceNodeId: 'graph-node-063-root',
+        targetNodeId: 'graph-node-063-child',
+        edgeType: MemoryGraphEdgeType.RELATES_TO,
+        weight: 1.0,
+        confidence: 1.0,
+        properties: {},
+        provenance: {
+          sourceType: MemorySourceType.USER_EXPLICIT,
+          creatorPrincipalId: userA,
+          timestamp: new Date().toISOString(),
+          verified: true,
+        },
+        createdAt: new Date().toISOString(),
+      });
+
+      // Start test BackendApp
+      const config = loadBackendConfig({ PORT: '0', NODE_ENV: 'test' });
+      testApp = new BackendApp(config, {
+        agentDirectory: agentDir,
+        delegationCoordinator: delegCoord,
+        memoryService: memService,
+        authenticator: async (req: IncomingMessage, res: ServerResponse): Promise<boolean> => {
+          const authHeader = req.headers['authorization'];
+          if (!authHeader) {
+            res.statusCode = 401;
+            res.setHeader('Content-Type', 'application/json');
+            res.end(
+              JSON.stringify({ error: { code: 'UNAUTHENTICATED', message: 'Missing token' } }),
+            );
+            return false;
+          }
+          if (authHeader === 'Bearer token-tenant-b') {
+            (req as AuthenticatedIncomingMessage).authenticatedContext = createMockAuthContext(
+              tenantB,
+              userB,
+            );
+            return true;
+          }
+          if (authHeader === 'Bearer token-tenant-a') {
+            (req as AuthenticatedIncomingMessage).authenticatedContext = createMockAuthContext(
+              tenantA,
+              userA,
+            );
+            return true;
+          }
+          res.statusCode = 401;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ error: { code: 'UNAUTHENTICATED', message: 'Invalid token' } }));
+          return false;
+        },
+      });
+
+      const server = await testApp.start();
+      const addr = server.address();
+      const port = typeof addr === 'object' && addr ? addr.port : 0;
+      testBaseUrl = `http://127.0.0.1:${port}`;
+
+      clientA = new DashboardAPIClient({
+        baseUrl: testBaseUrl,
+        tenantId: tenantA,
+        getAuthToken: () => 'token-tenant-a',
+      });
+
+      clientB = new DashboardAPIClient({
+        baseUrl: testBaseUrl,
+        tenantId: tenantB,
+        getAuthToken: () => 'token-tenant-b',
+      });
+    });
+
+    after(async () => {
+      await testApp.stop();
+    });
+
+    // ------------------------------------------------------------
+    // 063-SEC-01: Agent projection is tenant/workspace isolated
+    // ------------------------------------------------------------
+    describe('063-SEC-01: Agent Projection Tenant & Workspace Isolation', () => {
+      it('listAgents() only returns agents registered for the authenticated tenant', async () => {
+        const resA = await clientA.listAgents();
+        assert.strictEqual(resA.total, 2);
+        assert.strictEqual(resA.items.length, 2);
+        for (const agent of resA.items) {
+          assert.strictEqual(agent.tenantId, tenantA);
+        }
+        assert.ok(
+          !resA.items.some((a) => a.agentId === 'agent-b1-spec'),
+          'Tenant B agent must not leak to Tenant A',
+        );
+
+        const resB = await clientB.listAgents();
+        assert.strictEqual(resB.total, 1);
+        assert.strictEqual(resB.items[0].agentId, 'agent-b1-spec');
+        assert.strictEqual(resB.items[0].tenantId, tenantB);
+      });
+
+      it('listAgents({ workspaceId }) strictly filters by workspace scope', async () => {
+        const resW1 = await clientA.listAgents({ workspaceId: workspaceA1 });
+        assert.strictEqual(resW1.total, 1);
+        assert.strictEqual(resW1.items[0].agentId, 'agent-a1-coord');
+
+        const resW2 = await clientA.listAgents({ workspaceId: workspaceA2 });
+        assert.strictEqual(resW2.total, 1);
+        assert.strictEqual(resW2.items[0].agentId, 'agent-a2-worker');
+      });
+
+      it('listAgents({ role, status }) correctly filters by role and status while isolated', async () => {
+        const resRole = await clientA.listAgents({ role: 'COORDINATOR' });
+        assert.strictEqual(resRole.total, 1);
+        assert.strictEqual(resRole.items[0].agentId, 'agent-a1-coord');
+
+        const resStatus = await clientA.listAgents({ status: 'BUSY' });
+        assert.strictEqual(resStatus.total, 1);
+        assert.strictEqual(resStatus.items[0].agentId, 'agent-a2-worker');
+
+        const resCrossRole = await clientA.listAgents({ role: 'SPECIALIST' });
+        assert.strictEqual(
+          resCrossRole.total,
+          0,
+          'Should return 0 since SPECIALIST belongs only to Tenant B',
+        );
+      });
+
+      it('GET /v1/agents returns 401 when request is unauthenticated', async () => {
+        const res = await fetch(`${testBaseUrl}/v1/agents`);
+        assert.strictEqual(res.status, 401);
+      });
+
+      it('GET /v1/agents enforces bounded results limit', async () => {
+        const res = await clientA.listAgents({ limit: 1 });
+        assert.strictEqual(res.items.length, 1);
+        assert.strictEqual(res.total, 2);
+
+        // Raw HTTP test: limit > 100 is rejected with 400
+        const rawRes = await fetch(`${testBaseUrl}/v1/agents?limit=150`, {
+          headers: { Authorization: 'Bearer token-tenant-a' },
+        });
+        assert.strictEqual(rawRes.status, 400);
+      });
+    });
+
+    // ------------------------------------------------------------
+    // 063-SEC-02: Delegation projection is tenant/workspace isolated
+    // ------------------------------------------------------------
+    describe('063-SEC-02: Delegation Projection Tenant & Workspace Isolation', () => {
+      it('listDelegations() only returns sessions for the authenticated tenant', async () => {
+        const resA = await clientA.listDelegations();
+        assert.strictEqual(resA.total, 2);
+        assert.strictEqual(resA.items.length, 2);
+        for (const del of resA.items) {
+          assert.strictEqual(del.tenantId, tenantA);
+        }
+        assert.ok(
+          !resA.items.some((d) => d.parentTaskId === parentTaskIdB1),
+          'Tenant B delegation must not leak',
+        );
+
+        const resB = await clientB.listDelegations();
+        assert.strictEqual(resB.total, 1);
+        assert.strictEqual(resB.items[0].tenantId, tenantB);
+        assert.strictEqual(resB.items[0].parentTaskId, parentTaskIdB1);
+      });
+
+      it('listDelegations({ workspaceId }) strictly filters sessions by workspace', async () => {
+        const resW1 = await clientA.listDelegations({ workspaceId: workspaceA1 });
+        assert.strictEqual(resW1.total, 1);
+        assert.strictEqual(resW1.items[0].parentTaskId, parentTaskIdA1);
+
+        const resW2 = await clientA.listDelegations({ workspaceId: workspaceA2 });
+        assert.strictEqual(resW2.total, 1);
+        assert.strictEqual(resW2.items[0].parentTaskId, parentTaskIdA2);
+      });
+
+      it('listDelegations({ parentTaskId }) filters by parent task ID', async () => {
+        const res = await clientA.listDelegations({ parentTaskId: parentTaskIdA1 });
+        assert.strictEqual(res.total, 1);
+        assert.strictEqual(res.items[0].parentTaskId, parentTaskIdA1);
+      });
+
+      it('GET /v1/delegations returns 401 when request is unauthenticated', async () => {
+        const res = await fetch(`${testBaseUrl}/v1/delegations`);
+        assert.strictEqual(res.status, 401);
+      });
+
+      it('GET /v1/delegations enforces bounded results limit', async () => {
+        const res = await clientA.listDelegations({ limit: 1 });
+        assert.strictEqual(res.items.length, 1);
+
+        const rawRes = await fetch(`${testBaseUrl}/v1/delegations?limit=150`, {
+          headers: { Authorization: 'Bearer token-tenant-a' },
+        });
+        assert.strictEqual(rawRes.status, 400);
+      });
+    });
+
+    // ------------------------------------------------------------
+    // 063-SEC-03: Prevention of Privilege Escalation via Query/Body
+    // ------------------------------------------------------------
+    describe('063-SEC-03: Prevention of Privilege Escalation via Client Parameters', () => {
+      it('GET /v1/agents ignores query tenantId override and strictly scopes to trusted token context', async () => {
+        const rawRes = await fetch(`${testBaseUrl}/v1/agents?tenantId=${tenantB}`, {
+          headers: { Authorization: 'Bearer token-tenant-a' },
+        });
+        assert.strictEqual(rawRes.status, 200);
+        const data = (await rawRes.json()) as { items: Array<{ tenantId: string }> };
+        for (const item of data.items) {
+          assert.strictEqual(
+            item.tenantId,
+            tenantA,
+            'Query param tenantId must not escalate authority to Tenant B',
+          );
+        }
+      });
+
+      it('GET /v1/delegations ignores query tenantId override and strictly scopes to trusted token context', async () => {
+        const rawRes = await fetch(`${testBaseUrl}/v1/delegations?tenantId=${tenantB}`, {
+          headers: { Authorization: 'Bearer token-tenant-a' },
+        });
+        assert.strictEqual(rawRes.status, 200);
+        const data = (await rawRes.json()) as { items: Array<{ tenantId: string }> };
+        for (const item of data.items) {
+          assert.strictEqual(
+            item.tenantId,
+            tenantA,
+            'Query param tenantId must not escalate authority to Tenant B',
+          );
+        }
+      });
+
+      it('querying with unauthorized cross-tenant workspace returns zero results', async () => {
+        const resAgents = await clientA.listAgents({ workspaceId: workspaceB });
+        assert.strictEqual(resAgents.total, 0, 'Cannot view Tenant B workspace agents');
+
+        const resDelegations = await clientA.listDelegations({ workspaceId: workspaceB });
+        assert.strictEqual(resDelegations.total, 0, 'Cannot view Tenant B workspace delegations');
+      });
+    });
+
+    // ------------------------------------------------------------
+    // 063-SEC-04: Secret Redaction in Projections
+    // ------------------------------------------------------------
+    describe('063-SEC-04: Secret Redaction & Safe Projection Envelopes', () => {
+      it('delegation projection does not leak child lease HMAC signatures or internal secrets', async () => {
+        const rawRes = await fetch(`${testBaseUrl}/v1/delegations`, {
+          headers: { Authorization: 'Bearer token-tenant-a' },
+        });
+        assert.strictEqual(rawRes.status, 200);
+        const data = (await rawRes.json()) as { items: Array<Record<string, unknown>> };
+
+        for (const item of data.items) {
+          assert.strictEqual('signature' in item, false, 'Lease signature must not be exposed');
+          assert.strictEqual('secretKey' in item, false, 'Secret key must not be exposed');
+          assert.strictEqual('hmacKey' in item, false, 'HMAC key must not be exposed');
+          assert.strictEqual('token' in item, false, 'Raw token must not be exposed');
+          assert.ok(
+            typeof item['childLeaseId'] === 'string',
+            'Only childLeaseId identifier should be present',
+          );
+          assert.strictEqual(typeof item['hasCompensation'], 'boolean');
+          assert.strictEqual(typeof item['hasChildReceipt'], 'boolean');
+        }
+      });
+
+      it('agent projection exposes only bounded directory metadata and zero credential tokens', async () => {
+        const rawRes = await fetch(`${testBaseUrl}/v1/agents`, {
+          headers: { Authorization: 'Bearer token-tenant-a' },
+        });
+        assert.strictEqual(rawRes.status, 200);
+        const data = (await rawRes.json()) as { items: Array<Record<string, unknown>> };
+
+        for (const item of data.items) {
+          assert.strictEqual('signature' in item, false);
+          assert.strictEqual('secretKey' in item, false);
+          assert.strictEqual('authToken' in item, false);
+          assert.ok('agentId' in item);
+          assert.ok('role' in item);
+          assert.ok('capabilities' in item);
+          assert.ok('status' in item);
+        }
+      });
+    });
+
+    // ------------------------------------------------------------
+    // 063-SEC-05: Memory, Vector, and Graph Data Remains Advisory
+    // ------------------------------------------------------------
+    describe('063-SEC-05: Memory / Vector / Graph Advisory Data Observability', () => {
+      it('DashboardAPIClient.searchMemory() returns inert retrieved context without granting execution authority', async () => {
+        const searchRes = await clientA.searchMemory({
+          query: 'Alpha',
+          workspaceId: workspaceA1,
+        });
+        assert.ok(searchRes.items.length > 0);
+        const item = searchRes.items[0];
+        assert.strictEqual(item.record.id, 'mem-record-063-a1');
+        assert.strictEqual(item.record.tenantId, tenantA);
+        assert.ok(item.citationToken);
+        // Stored memory is data, not authority: no lease header or policy decision attached
+        assert.strictEqual('leaseHeader' in item, false);
+        assert.strictEqual('policyDecision' in item, false);
+      });
+
+      it('DashboardAPIClient.getMemory() retrieves single record and returns null on 404', async () => {
+        const found = await clientA.getMemory('mem-record-063-a1', { workspaceId: workspaceA1 });
+        assert.ok(found);
+        assert.strictEqual(found.id, 'mem-record-063-a1');
+        assert.strictEqual(found.title, 'Project Alpha Strategy');
+
+        const missing = await clientA.getMemory('non-existent-memory-id', {
+          workspaceId: workspaceA1,
+        });
+        assert.strictEqual(missing, null);
+      });
+
+      it('DashboardAPIClient.searchVectors() executes bounded vector similarity search', async () => {
+        const vectorRes = await clientA.searchVectors({
+          vector: new Array(384).fill(0.02),
+          query: 'Alpha Strategy',
+          topK: 10,
+          workspaceId: workspaceA1,
+        });
+        assert.ok(vectorRes.items.length > 0);
+        assert.strictEqual(vectorRes.items[0].memoryRecordId, 'mem-record-063-a1');
+        assert.ok(typeof vectorRes.items[0].score === 'number');
+        assert.ok(typeof vectorRes.items[0].distance === 'number');
+        assert.ok(vectorRes.items[0].citationToken);
+      });
+
+      it('DashboardAPIClient.queryGraph() executes bounded graph traversal query', async () => {
+        const graphRes = await clientA.queryGraph({
+          startNodeId: 'graph-node-063-root',
+          maxDepth: 2,
+          limit: 10,
+          workspaceId: workspaceA1,
+        });
+        assert.ok(graphRes.nodes.length >= 2);
+        assert.ok(graphRes.edges.length >= 1);
+        assert.strictEqual(graphRes.tenantId, tenantA);
+        assert.strictEqual(graphRes.workspaceId, workspaceA1);
+      });
+
+      it('DashboardAPIClient.deleteMemory() safely tombstones record with optimistic concurrency', async () => {
+        const tombRes = await clientA.deleteMemory('mem-record-063-a1', {
+          expectedVersion: 1,
+          workspaceId: workspaceA1,
+        });
+        assert.strictEqual(tombRes.memoryId, 'mem-record-063-a1');
+        assert.strictEqual(tombRes.status, 'TOMBSTONED');
+        assert.strictEqual(tombRes.tenantId, tenantA);
+      });
+
+      it('DashboardAPIClient surfaces structured DashboardAPIError without leaking stack traces or credentials', async () => {
+        try {
+          await clientA.deleteMemory('non-existent-id-to-delete', { workspaceId: workspaceA1 });
+          assert.fail('Expected deletion of non-existent record to throw DashboardAPIError');
+        } catch (err) {
+          assert.ok(err instanceof DashboardAPIError);
+          assert.strictEqual(err.statusCode, 404);
+          assert.ok(err.message.includes('NOT_FOUND') || err.message.includes('not found'));
+          assert.strictEqual(err.path.includes('/v1/memory/'), true);
+        }
+      });
     });
   });
 });

@@ -4,7 +4,42 @@
  * 053-SEC-01: All mutations route through Backend REST API with authentication.
  * 053-SEC-04: Response payloads are NOT trusted; XSS sanitization happens at render.
  * 053-SEC-05: Secrets and tokens NEVER stored in localStorage or URL parameters.
+ * 063-SEC-01 - 063-SEC-05: Read-only projections for agents, delegations, and persistent memory.
  */
+
+import type {
+  AgentRecord,
+  AgentRole,
+  AgentStatus,
+  DelegationSummary,
+  DelegationStatus,
+  MemoryRecord,
+  MemorySearchResponse,
+  MemoryTombstoneResponse,
+  MemoryClass,
+  MemorySensitivity,
+  VectorSearchResponse,
+  MemoryGraphQueryResponse,
+  MemoryGraphNodeType,
+  MemoryGraphEdgeType,
+} from '@nexusos/contracts';
+
+export type {
+  AgentRecord,
+  AgentRole,
+  AgentStatus,
+  DelegationSummary,
+  DelegationStatus,
+  MemoryRecord,
+  MemorySearchResponse,
+  MemoryTombstoneResponse,
+  MemoryClass,
+  MemorySensitivity,
+  VectorSearchResponse,
+  MemoryGraphQueryResponse,
+  MemoryGraphNodeType,
+  MemoryGraphEdgeType,
+};
 
 export interface DashboardAPIConfig {
   baseUrl: string;
@@ -256,6 +291,220 @@ export class DashboardAPIClient {
         body: JSON.stringify(decision),
       },
     );
+  }
+
+  /**
+   * List registered agents within the authenticated tenant/workspace scope.
+   * Read-only projection from AgentDirectoryService.
+   */
+  async listAgents(options?: {
+    workspaceId?: string;
+    role?: AgentRole;
+    status?: AgentStatus;
+    limit?: number;
+  }): Promise<{ items: AgentRecord[]; total: number }> {
+    const params = new URLSearchParams();
+    if (options?.workspaceId) params.set('workspaceId', options.workspaceId);
+    if (options?.role) params.set('role', options.role);
+    if (options?.status) params.set('status', options.status);
+    if (options?.limit) params.set('limit', String(Math.min(Math.max(1, options.limit), 100)));
+
+    const headers: Record<string, string> = {};
+    if (options?.workspaceId) {
+      headers['X-Workspace-ID'] = options.workspaceId;
+    }
+
+    const query = params.toString();
+    return this.request<{ items: AgentRecord[]; total: number }>(
+      `/v1/agents${query ? `?${query}` : ''}`,
+      { headers },
+    );
+  }
+
+  /**
+   * List delegation sessions within the authenticated tenant/workspace scope.
+   * Read-only projection from DelegationCoordinator.
+   */
+  async listDelegations(options?: {
+    parentTaskId?: string;
+    workspaceId?: string;
+    status?: DelegationStatus;
+    limit?: number;
+  }): Promise<{ items: DelegationSummary[]; total: number }> {
+    const params = new URLSearchParams();
+    if (options?.parentTaskId) params.set('parentTaskId', options.parentTaskId);
+    if (options?.workspaceId) params.set('workspaceId', options.workspaceId);
+    if (options?.status) params.set('status', options.status);
+    if (options?.limit) params.set('limit', String(Math.min(Math.max(1, options.limit), 100)));
+
+    const headers: Record<string, string> = {};
+    if (options?.workspaceId) {
+      headers['X-Workspace-ID'] = options.workspaceId;
+    }
+
+    const query = params.toString();
+    return this.request<{ items: DelegationSummary[]; total: number }>(
+      `/v1/delegations${query ? `?${query}` : ''}`,
+      { headers },
+    );
+  }
+
+  /**
+   * Search persistent memory records (Task 056 / 062).
+   */
+  async searchMemory(options?: {
+    query?: string;
+    classes?: MemoryClass[];
+    maxSensitivity?: MemorySensitivity;
+    tags?: string[];
+    ownerId?: string;
+    limit?: number;
+    offset?: number;
+    workspaceId?: string;
+  }): Promise<MemorySearchResponse> {
+    const params = new URLSearchParams();
+    if (options?.query) params.set('query', options.query);
+    if (options?.classes && options.classes.length > 0) {
+      params.set('classes', options.classes.join(','));
+    }
+    if (options?.maxSensitivity) params.set('maxSensitivity', options.maxSensitivity);
+    if (options?.tags && options.tags.length > 0) {
+      params.set('tags', options.tags.join(','));
+    }
+    if (options?.ownerId) params.set('ownerId', options.ownerId);
+    if (options?.limit) params.set('limit', String(Math.min(Math.max(1, options.limit), 100)));
+    if (options?.offset !== undefined) params.set('offset', String(options.offset));
+    if (options?.workspaceId) params.set('workspaceId', options.workspaceId);
+
+    const headers: Record<string, string> = {};
+    if (options?.workspaceId) {
+      headers['X-Workspace-ID'] = options.workspaceId;
+    }
+
+    const query = params.toString();
+    return this.request<MemorySearchResponse>(`/v1/memory/search${query ? `?${query}` : ''}`, {
+      headers,
+    });
+  }
+
+  /**
+   * Retrieve a single persistent memory record by ID.
+   * Returns null if not found (404).
+   */
+  async getMemory(id: string, options?: { workspaceId?: string }): Promise<MemoryRecord | null> {
+    const headers: Record<string, string> = {};
+    if (options?.workspaceId) {
+      headers['X-Workspace-ID'] = options.workspaceId;
+    }
+
+    try {
+      return await this.request<MemoryRecord>(`/v1/memory/${encodeURIComponent(id)}`, { headers });
+    } catch (err) {
+      if (err instanceof DashboardAPIError && err.statusCode === 404) {
+        return null;
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Tombstone / delete a persistent memory record (with optimistic concurrency check).
+   */
+  async deleteMemory(
+    id: string,
+    options?: { expectedVersion?: number; workspaceId?: string },
+  ): Promise<MemoryTombstoneResponse> {
+    const params = new URLSearchParams();
+    if (options?.expectedVersion !== undefined) {
+      params.set('expectedVersion', String(options.expectedVersion));
+    }
+
+    const headers: Record<string, string> = {};
+    if (options?.workspaceId) {
+      headers['X-Workspace-ID'] = options.workspaceId;
+    }
+
+    const query = params.toString();
+    return this.request<MemoryTombstoneResponse>(
+      `/v1/memory/${encodeURIComponent(id)}${query ? `?${query}` : ''}`,
+      {
+        method: 'DELETE',
+        headers,
+      },
+    );
+  }
+
+  /**
+   * Perform bounded vector similarity search (Task 062).
+   * topK is bounded <= 50 per Task 062 invariants.
+   */
+  async searchVectors(options: {
+    vector?: number[];
+    query?: string;
+    topK?: number;
+    minSimilarity?: number;
+    maxSensitivity?: MemorySensitivity;
+    classes?: MemoryClass[];
+    tags?: string[];
+    workspaceId?: string;
+  }): Promise<VectorSearchResponse> {
+    const headers: Record<string, string> = {};
+    if (options.workspaceId) {
+      headers['X-Workspace-ID'] = options.workspaceId;
+    }
+
+    const body: Record<string, unknown> = {
+      vector: options.vector,
+      query: options.query,
+      topK: options.topK !== undefined ? Math.min(Math.max(1, options.topK), 50) : undefined,
+      minSimilarity: options.minSimilarity,
+      maxSensitivity: options.maxSensitivity,
+      classes: options.classes,
+      tags: options.tags,
+      workspaceId: options.workspaceId,
+    };
+
+    return this.request<VectorSearchResponse>('/v1/memory/vectors/search', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    });
+  }
+
+  /**
+   * Perform bounded graph traversal query (Task 058 / 062).
+   * maxDepth <= 4, limit <= 100 per Task 062 invariants.
+   */
+  async queryGraph(options: {
+    startNodeId?: string;
+    nodeTypes?: MemoryGraphNodeType[];
+    edgeTypes?: MemoryGraphEdgeType[];
+    maxDepth?: number;
+    minConfidence?: number;
+    limit?: number;
+    workspaceId?: string;
+  }): Promise<MemoryGraphQueryResponse> {
+    const headers: Record<string, string> = {};
+    if (options.workspaceId) {
+      headers['X-Workspace-ID'] = options.workspaceId;
+    }
+
+    const body: Record<string, unknown> = {
+      startNodeId: options.startNodeId,
+      nodeTypes: options.nodeTypes,
+      edgeTypes: options.edgeTypes,
+      maxDepth:
+        options.maxDepth !== undefined ? Math.min(Math.max(1, options.maxDepth), 4) : undefined,
+      minConfidence: options.minConfidence,
+      limit: options.limit !== undefined ? Math.min(Math.max(1, options.limit), 100) : undefined,
+      workspaceId: options.workspaceId,
+    };
+
+    return this.request<MemoryGraphQueryResponse>('/v1/memory/graph/query', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    });
   }
 }
 

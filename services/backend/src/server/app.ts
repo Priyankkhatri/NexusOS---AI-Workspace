@@ -13,6 +13,8 @@ import {
   APIErrorResponseSchema,
   TaskQuerySchema,
   ActivityQuerySchema,
+  AgentQuerySchema,
+  DelegationQuerySchema,
 } from '@nexusos/contracts';
 import { TaskController, AuthenticatedContextLike } from '../tasks/controller.js';
 import { MemoryController } from '../memory/memory-controller.js';
@@ -20,6 +22,8 @@ import { MemoryService } from '../memory/memory-service.js';
 import { IMemoryStore } from '../memory/types.js';
 import { handleMemoryRoutes } from '../memory/memory-routes.js';
 import { AmbiguousGoalException } from '../planner/index.js';
+import { AgentDirectoryService } from '../agents/agent-directory.js';
+import { DelegationCoordinator } from '../agents/delegation-coordinator.js';
 
 export interface AuthenticatedIncomingMessage extends IncomingMessage {
   authenticatedContext?: AuthenticatedContextLike;
@@ -32,6 +36,8 @@ export interface BackendAppOptions {
   memoryController?: MemoryController;
   memoryService?: MemoryService;
   memoryStore?: IMemoryStore;
+  agentDirectory?: AgentDirectoryService;
+  delegationCoordinator?: DelegationCoordinator;
   authenticator?: RequestAuthenticator;
 }
 
@@ -42,6 +48,8 @@ export class BackendApp {
   public readonly database: DatabaseBoundary;
   public readonly taskController?: TaskController;
   public readonly memoryController?: MemoryController;
+  public readonly agentDirectory?: AgentDirectoryService;
+  public readonly delegationCoordinator?: DelegationCoordinator;
   private readonly authenticator?: RequestAuthenticator;
 
   constructor(
@@ -59,6 +67,8 @@ export class BackendApp {
         : options?.memoryStore
           ? new MemoryController(new MemoryService({ store: options.memoryStore }))
           : undefined);
+    this.agentDirectory = options?.agentDirectory;
+    this.delegationCoordinator = options?.delegationCoordinator;
     this.authenticator = options?.authenticator;
   }
 
@@ -641,6 +651,85 @@ export class BackendApp {
         res.statusCode = 200;
         res.setHeader('Content-Type', 'application/json');
         res.end(JSON.stringify(plugin));
+        return;
+      }
+
+      // 8a. Agent Directory Listing Endpoint — GET /v1/agents (Task 060 / Task 063)
+      if (req.method === 'GET' && url.pathname === '/v1/agents') {
+        const dashAuth = await this.authenticateForDashboard(req, res, context);
+        if (!dashAuth) return;
+
+        if (!this.agentDirectory) {
+          res.statusCode = 200;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ items: [], total: 0 }));
+          return;
+        }
+
+        const rawQuery: Record<string, string> = {};
+        for (const [k, v] of url.searchParams) {
+          rawQuery[k] = v;
+        }
+        const query = AgentQuerySchema.parse(rawQuery);
+        const workspaceId =
+          (req.headers['x-workspace-id'] as string | undefined) ?? query.workspaceId;
+
+        // 063-SEC-01: listAgents strictly scopes to dashAuth.tenantId
+        const allAgents = this.agentDirectory.listAgents(dashAuth.tenantId);
+        let filtered = allAgents;
+
+        if (workspaceId) {
+          filtered = filtered.filter(
+            (a) => a.workspaceScope.includes('*') || a.workspaceScope.includes(workspaceId),
+          );
+        }
+        if (query.role) {
+          filtered = filtered.filter((a) => a.role === query.role);
+        }
+        if (query.status) {
+          filtered = filtered.filter((a) => a.status === query.status);
+        }
+
+        const total = filtered.length;
+        const bounded = filtered.slice(0, query.limit);
+
+        res.statusCode = 200;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ items: bounded, total }));
+        return;
+      }
+
+      // 8b. Delegation Sessions Listing Endpoint — GET /v1/delegations (Task 060 / Task 063)
+      if (req.method === 'GET' && url.pathname === '/v1/delegations') {
+        const dashAuth = await this.authenticateForDashboard(req, res, context);
+        if (!dashAuth) return;
+
+        if (!this.delegationCoordinator) {
+          res.statusCode = 200;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ items: [], total: 0 }));
+          return;
+        }
+
+        const rawQuery: Record<string, string> = {};
+        for (const [k, v] of url.searchParams) {
+          rawQuery[k] = v;
+        }
+        const query = DelegationQuerySchema.parse(rawQuery);
+        const workspaceId =
+          (req.headers['x-workspace-id'] as string | undefined) ?? query.workspaceId;
+
+        // 063-SEC-02: listSessions strictly scopes to dashAuth.tenantId
+        const sessions = this.delegationCoordinator.listSessions(dashAuth.tenantId, {
+          parentTaskId: query.parentTaskId,
+          workspaceId,
+          status: query.status,
+          limit: query.limit,
+        });
+
+        res.statusCode = 200;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ items: sessions, total: sessions.length }));
         return;
       }
 

@@ -11,6 +11,7 @@ import {
   ExecutionLeaseHeader,
   DelegatedLeaseHeader,
   DelegationStatus,
+  DelegationSummary,
   DELEGATION_SAFETY_LIMITS,
 } from '@nexusos/contracts';
 import { AgentDirectoryService } from './agent-directory.js';
@@ -501,6 +502,65 @@ export class DelegationCoordinator {
       }
     }
     return count;
+  }
+
+  /**
+   * Lists delegation sessions for a tenant (Dashboard read projection, strictly isolated)
+   * 063-SEC-02: Scoped to tenantId and optional workspaceId.
+   * 063-SEC-04: Excludes HMAC lease signatures and private credentials.
+   */
+  public listSessions(
+    tenantId: string,
+    options?: {
+      parentTaskId?: string;
+      workspaceId?: string;
+      status?: DelegationStatus;
+      limit?: number;
+    },
+  ): DelegationSummary[] {
+    const results: DelegationSummary[] = [];
+    const limit = Math.min(options?.limit ?? 50, 100);
+
+    for (const session of this.sessions.values()) {
+      if (session.tenantId !== tenantId) {
+        continue;
+      }
+      if (options?.workspaceId && session.workspaceId !== options.workspaceId) {
+        continue;
+      }
+      if (options?.parentTaskId && session.parentTaskId !== options.parentTaskId) {
+        continue;
+      }
+      if (options?.status && session.status !== options.status) {
+        continue;
+      }
+
+      results.push({
+        delegationId: session.delegationId,
+        parentTaskId: session.parentTaskId,
+        parentLeaseId: session.parentLeaseId,
+        childTaskId: session.childTaskId,
+        childLeaseId: session.childLease.lease_id,
+        delegatorAgentId: session.delegatorAgentId,
+        assignedAgentId: session.assignedAgentId,
+        tenantId: session.tenantId,
+        workspaceId: session.workspaceId,
+        depth: session.depth,
+        status: session.status,
+        requestedScopes: session.requestedScopes,
+        expiresAt: session.expiresAt,
+        correlationId: session.correlationId,
+        rejectionReason: session.rejectionReason,
+        hasCompensation: Boolean(session.compensationPayload),
+        hasChildReceipt: Boolean(session.childReceipt),
+      });
+
+      if (results.length >= limit) {
+        break;
+      }
+    }
+
+    return results;
   }
 
   public clear(): void {
