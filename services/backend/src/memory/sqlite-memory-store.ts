@@ -30,6 +30,7 @@ import { Logger } from '../observability/logger.js';
 
 export interface SqliteMemoryStoreOptions {
   dbPath?: string;
+  databasePath?: string;
   vectorDimensions?: number;
   maxVectorsPerWorkspace?: number;
   logger?: Logger;
@@ -61,7 +62,7 @@ export class SqliteMemoryStore implements IMemoryStore {
   public simulateFailureInCascade = false;
 
   constructor(options?: SqliteMemoryStoreOptions) {
-    this.dbPath = options?.dbPath ?? ':memory:';
+    this.dbPath = options?.dbPath ?? options?.databasePath ?? ':memory:';
     this.vectorDimensions = options?.vectorDimensions ?? DEFAULT_VECTOR_DIMENSION;
     this.logger = options?.logger;
     this.simulateFailure = options?.simulateFailure ?? false;

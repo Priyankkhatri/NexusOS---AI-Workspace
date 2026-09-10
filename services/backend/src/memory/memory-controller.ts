@@ -272,4 +272,68 @@ export class MemoryController {
     }
     return this.memoryService.queryGraph(payload as any, context);
   }
+
+  // -------------------------------------------------------------------------
+  // Task 062 Vector Operations (062-SEC-01, 062-SEC-06)
+  // -------------------------------------------------------------------------
+
+  public async saveVector(
+    body: unknown,
+    authContext: AuthenticatedContextLike,
+    workspaceIdHeader?: string,
+  ) {
+    const context = this.extractContext(authContext, workspaceIdHeader);
+    const payload = (body && typeof body === 'object' ? { ...body } : {}) as Record<
+      string,
+      unknown
+    >;
+    payload.tenantId = context.tenantId;
+    if (!payload.workspaceId) {
+      payload.workspaceId = context.workspaceId;
+    }
+    return this.memoryService.saveVector(payload as any, context);
+  }
+
+  public async getVector(
+    memoryRecordId: string,
+    authContext: AuthenticatedContextLike,
+    workspaceIdHeader?: string,
+  ) {
+    const context = this.extractContext(authContext, workspaceIdHeader);
+    return this.memoryService.getVector(memoryRecordId, context);
+  }
+
+  public async deleteVector(
+    memoryRecordId: string,
+    authContext: AuthenticatedContextLike,
+    workspaceIdHeader?: string,
+  ) {
+    const context = this.extractContext(authContext, workspaceIdHeader);
+    const success = await this.memoryService.deleteVector(memoryRecordId, context);
+    return { success };
+  }
+
+  public async searchVectors(
+    body: unknown,
+    authContext: AuthenticatedContextLike,
+    workspaceIdHeader?: string,
+  ) {
+    const context = this.extractContext(authContext, workspaceIdHeader);
+    const payload = (body && typeof body === 'object' ? { ...body } : {}) as Record<
+      string,
+      unknown
+    >;
+    payload.tenantId = context.tenantId;
+    if (!payload.workspaceId) {
+      payload.workspaceId = context.workspaceId;
+    }
+    if (payload.topK !== undefined) {
+      payload.topK = Math.min(Math.max(1, Number(payload.topK)), 50);
+    }
+    return this.memoryService.searchVectors(payload as any, context);
+  }
+
+  public getService(): MemoryService {
+    return this.memoryService;
+  }
 }

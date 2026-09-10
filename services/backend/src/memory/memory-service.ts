@@ -329,6 +329,42 @@ export class MemoryService {
   }
 
   /**
+   * Retrieve a vector embedding for a memory record.
+   * 062-SEC-01: Scoped to caller tenant and workspace.
+   */
+  public async getVector(
+    memoryRecordId: string,
+    context: MemoryServiceContext,
+  ): Promise<VectorEmbedding | null> {
+    if (this.store.getVector) {
+      return this.store.getVector(memoryRecordId, context.tenantId, context.workspaceId);
+    }
+    return null;
+  }
+
+  /**
+   * Delete a vector embedding for a memory record.
+   * 062-SEC-01: Scoped to caller tenant and workspace.
+   */
+  public async deleteVector(
+    memoryRecordId: string,
+    context: MemoryServiceContext,
+  ): Promise<boolean> {
+    if (this.store.deleteVector) {
+      const deleted = await this.store.deleteVector(
+        memoryRecordId,
+        context.tenantId,
+        context.workspaceId,
+      );
+      if (this.vectorIndex) {
+        this.vectorIndex.delete(memoryRecordId, context.tenantId, context.workspaceId);
+      }
+      return deleted;
+    }
+    return false;
+  }
+
+  /**
    * Search vectors using similarity metrics.
    * 062-SEC-01: Tenant and workspace scoped.
    * 062-SEC-06: Pre-filtering by caller sensitivity hierarchy.

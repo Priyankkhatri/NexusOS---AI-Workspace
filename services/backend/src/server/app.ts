@@ -16,6 +16,8 @@ import {
 } from '@nexusos/contracts';
 import { TaskController, AuthenticatedContextLike } from '../tasks/controller.js';
 import { MemoryController } from '../memory/memory-controller.js';
+import { MemoryService } from '../memory/memory-service.js';
+import { IMemoryStore } from '../memory/types.js';
 import { handleMemoryRoutes } from '../memory/memory-routes.js';
 import { AmbiguousGoalException } from '../planner/index.js';
 
@@ -28,6 +30,8 @@ export type RequestAuthenticator = (req: IncomingMessage, res: ServerResponse) =
 export interface BackendAppOptions {
   taskController?: TaskController;
   memoryController?: MemoryController;
+  memoryService?: MemoryService;
+  memoryStore?: IMemoryStore;
   authenticator?: RequestAuthenticator;
 }
 
@@ -48,7 +52,13 @@ export class BackendApp {
     this.logger = new Logger(config.logLevel);
     this.database = new DatabaseBoundary(config);
     this.taskController = options?.taskController;
-    this.memoryController = options?.memoryController;
+    this.memoryController =
+      options?.memoryController ??
+      (options?.memoryService
+        ? new MemoryController(options.memoryService)
+        : options?.memoryStore
+          ? new MemoryController(new MemoryService({ store: options.memoryStore }))
+          : undefined);
     this.authenticator = options?.authenticator;
   }
 
@@ -714,6 +724,13 @@ export class BackendApp {
       await new Promise<void>((resolve) => {
         this.server?.close(() => resolve());
       });
+    }
+
+    if (this.memoryController) {
+      const store = (this.memoryController.getService() as any)?.store;
+      if (store && typeof store.close === 'function') {
+        store.close();
+      }
     }
 
     await this.database.disconnect();
