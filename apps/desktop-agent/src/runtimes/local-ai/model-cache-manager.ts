@@ -1,21 +1,241 @@
 import crypto from 'node:crypto';
+import dns from 'node:dns';
 import fs from 'node:fs';
 import path from 'node:path';
-import { ModelArtifact, ModelArtifactSchema, ModelIdPattern } from './types.js';
+import {
+  ModelDownloadProgress,
+  ModelDownloadProgressSchema,
+  ModelManifest,
+  ModelManifestSchema,
+} from '@nexusos/contracts';
+import { ModelArtifact, ModelArtifactSchema, ModelIdPattern, ProviderType } from './types.js';
+
+export type ModelCacheErrorCode =
+  | 'INVALID_PATH'
+  | 'HASH_MISMATCH'
+  | 'QUOTA_EXCEEDED'
+  | 'MODEL_IN_USE'
+  | 'NOT_FOUND'
+  | 'UNSAFE_DESTINATION'
+  | 'INVALID_SOURCE'
+  | 'INCOMPLETE_DOWNLOAD'
+  | 'DOWNLOAD_FAILED'
+  | 'ABORTED';
 
 export class ModelCacheError extends Error {
   constructor(
     message: string,
-    public readonly code:
-      | 'INVALID_PATH'
-      | 'HASH_MISMATCH'
-      | 'QUOTA_EXCEEDED'
-      | 'MODEL_IN_USE'
-      | 'NOT_FOUND',
+    public readonly code: ModelCacheErrorCode,
   ) {
     super(message);
     this.name = 'ModelCacheError';
   }
+}
+
+/**
+ * Checks if an IP address (IPv4 or IPv6 or encoded) belongs to loopback, private RFC1918,
+ * link-local/cloud metadata, carrier-grade NAT, multicast, or reserved networks.
+ */
+export function isPrivateOrUnsafeIp(ip: string): boolean {
+  let target = ip.toLowerCase().trim();
+
+  // Handle IPv4-mapped IPv6 (e.g. ::ffff:127.0.0.1 or ::ffff:7f00:1)
+  if (target.startsWith('::ffff:')) {
+    target = target.substring(7);
+  }
+
+  // IPv4 dotted-quad check
+  const ipv4Match = target.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (ipv4Match) {
+    const p1 = parseInt(ipv4Match[1]!, 10);
+    const p2 = parseInt(ipv4Match[2]!, 10);
+    const p3 = parseInt(ipv4Match[3]!, 10);
+    const p4 = parseInt(ipv4Match[4]!, 10);
+
+    if (p1 > 255 || p2 > 255 || p3 > 255 || p4 > 255) {
+      return true; // Malformed / overflow
+    }
+
+    if (p1 === 0) return true; // 0.0.0.0/8 (Current network)
+    if (p1 === 10) return true; // 10.0.0.0/8 (Private RFC 1918)
+    if (p1 === 127) return true; // 127.0.0.0/8 (Loopback)
+    if (p1 === 169 && p2 === 254) return true; // 169.254.0.0/16 (Link-local / Cloud metadata)
+    if (p1 === 172 && p2 >= 16 && p2 <= 31) return true; // 172.16.0.0/12 (Private RFC 1918)
+    if (p1 === 192 && p2 === 168) return true; // 192.168.0.0/16 (Private RFC 1918)
+    if (p1 === 100 && p2 >= 64 && p2 <= 127) return true; // 100.64.0.0/10 (Carrier-grade NAT)
+    if (p1 === 192 && p2 === 0 && p3 === 0) return true; // 192.0.0.0/24 (IETF protocol assignments)
+    if (p1 === 192 && p2 === 0 && p3 === 2) return true; // 192.0.2.0/24 (TEST-NET-1)
+    if (p1 === 198 && p2 === 51 && p3 === 100) return true; // 198.51.100.0/24 (TEST-NET-2)
+    if (p1 === 203 && p2 === 0 && p3 === 113) return true; // 203.0.113.0/24 (TEST-NET-3)
+    if (p1 === 198 && (p2 === 18 || p2 === 19)) return true; // 198.18.0.0/15 (Benchmarking)
+    if (p1 >= 224 && p1 <= 239) return true; // 224.0.0.0/4 (Multicast)
+    if (p1 >= 240) return true; // 240.0.0.0/4 (Reserved / Broadcast)
+    return false;
+  }
+
+  // Hex or integer IP encodings (e.g. 0x7f000001 or 2130706433)
+  if (/^0x[0-9a-f]+$/i.test(target) || /^\d+$/.test(target)) {
+    const num = parseInt(target, target.startsWith('0x') || target.startsWith('0X') ? 16 : 10);
+    if (!isNaN(num) && num >= 0 && num <= 0xffffffff) {
+      const p1 = (num >>> 24) & 255;
+      const p2 = (num >>> 16) & 255;
+      if (
+        p1 === 0 ||
+        p1 === 10 ||
+        p1 === 127 ||
+        (p1 === 169 && p2 === 254) ||
+        (p1 === 172 && p2 >= 16 && p2 <= 31) ||
+        (p1 === 192 && p2 === 168) ||
+        p1 >= 224
+      ) {
+        return true;
+      }
+    }
+  }
+
+  // IPv6 checks
+  if (
+    target === '::' ||
+    target === '::1' ||
+    target.startsWith('fe80:') || // Link-local fe80::/10
+    target.startsWith('fe9') ||
+    target.startsWith('fea') ||
+    target.startsWith('feb') ||
+    target.startsWith('fc') || // Unique local address fc00::/7 (fc00:: and fd00::)
+    target.startsWith('fd') ||
+    target.startsWith('ff') || // Multicast ff00::/8
+    target.startsWith('2001:db8:') // Documentation
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+export interface SourceValidationOptions {
+  allowLocalhostForTesting?: boolean;
+}
+
+/**
+ * Validates a remote artifact acquisition URL against SSRF policy:
+ * - Requires HTTPS (unless allowLocalhostForTesting is true)
+ * - Prohibits embedded credentials
+ * - Prohibits localhost, 127.0.0.0/8, 0.0.0.0, ::1, cloud metadata (169.254.169.254), RFC1918
+ * - Resolves all DNS A/AAAA records and validates every resolved IP address
+ */
+export async function validateRemoteArtifactSource(
+  urlStr: string,
+  options?: SourceValidationOptions,
+): Promise<URL> {
+  const allowLocalhost = options?.allowLocalhostForTesting ?? false;
+
+  if (!urlStr || typeof urlStr !== 'string') {
+    throw new ModelCacheError('Artifact source URL must be a non-empty string.', 'INVALID_SOURCE');
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(urlStr);
+  } catch {
+    throw new ModelCacheError(`Invalid artifact source URL format: '${urlStr}'`, 'INVALID_SOURCE');
+  }
+
+  // 1. Prohibit embedded credentials
+  if (parsed.username || parsed.password) {
+    throw new ModelCacheError(
+      'Embedded credentials in artifact source URL are strictly prohibited.',
+      'UNSAFE_DESTINATION',
+    );
+  }
+
+  // 2. Scheme validation: HTTPS strictly required unless allowLocalhostForTesting is explicitly true
+  const protocol = parsed.protocol.toLowerCase();
+  if (protocol !== 'https:' && !(allowLocalhost && protocol === 'http:')) {
+    throw new ModelCacheError(
+      `Artifact source URL protocol '${protocol}' disallowed: HTTPS is strictly required.`,
+      'UNSAFE_DESTINATION',
+    );
+  }
+
+  const rawHost = parsed.hostname.toLowerCase().trim();
+  const hostname = rawHost.replace(/^\[|\]$/g, '').replace(/\.+$/, '');
+
+  // If local testing is explicitly enabled and target is loopback, permit
+  if (
+    allowLocalhost &&
+    (hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '::1')
+  ) {
+    return parsed;
+  }
+
+  // 3. Check prohibited hostnames & cloud metadata endpoints
+  const prohibitedHosts = new Set([
+    'localhost',
+    '127.0.0.1',
+    '0.0.0.0',
+    '::1',
+    '::',
+    '169.254.169.254',
+    '169.254.170.2',
+    'metadata.google.internal',
+    'instance-data',
+    'metadata.azure.com',
+  ]);
+
+  if (
+    prohibitedHosts.has(hostname) ||
+    hostname.endsWith('.localhost') ||
+    hostname.endsWith('.local')
+  ) {
+    throw new ModelCacheError(
+      `SSRF Violation: Access to local, loopback, or metadata destination '${rawHost}' is prohibited.`,
+      'UNSAFE_DESTINATION',
+    );
+  }
+
+  if (isPrivateOrUnsafeIp(hostname)) {
+    throw new ModelCacheError(
+      `SSRF Violation: Destination '${rawHost}' is a private, loopback, or reserved IP address.`,
+      'UNSAFE_DESTINATION',
+    );
+  }
+
+  // 4. Safe DNS Resolution Check (resolves all A/AAAA records)
+  try {
+    const addresses = await dns.promises.lookup(hostname, { all: true });
+    if (!addresses || addresses.length === 0) {
+      throw new ModelCacheError(
+        `DNS resolution returned no addresses for hostname '${hostname}'.`,
+        'UNSAFE_DESTINATION',
+      );
+    }
+    for (const addr of addresses) {
+      if (isPrivateOrUnsafeIp(addr.address)) {
+        throw new ModelCacheError(
+          `SSRF Violation: Hostname '${hostname}' resolved to prohibited IP '${addr.address}'.`,
+          'UNSAFE_DESTINATION',
+        );
+      }
+    }
+  } catch (err: any) {
+    if (err instanceof ModelCacheError) {
+      throw err;
+    }
+    throw new ModelCacheError(
+      `DNS resolution failed for hostname '${hostname}': ${err.message}`,
+      'UNSAFE_DESTINATION',
+    );
+  }
+
+  return parsed;
+}
+
+export interface DownloadArtifactOptions {
+  manifest: ModelManifest;
+  provider?: ProviderType;
+  signal?: AbortSignal;
+  onProgress?: (progress: ModelDownloadProgress) => void;
+  allowLocalhostForTesting?: boolean;
 }
 
 export class ModelCacheManager {
@@ -25,6 +245,7 @@ export class ModelCacheManager {
   private readonly activeModelIds = new Set<string>();
   private readonly catalog = new Map<string, ModelArtifact>();
   private readonly maxCacheBytes: number;
+  private readonly inFlightDownloads = new Map<string, Promise<ModelArtifact>>();
 
   constructor(baseDir: string, maxCacheBytes = 53687091200) {
     // 50 GB default quota
@@ -50,12 +271,44 @@ export class ModelCacheManager {
       );
     }
 
+    // Windows reserved device names check (CON, PRN, AUX, NUL, COM1-9, LPT1-9)
+    const rawBase = path.basename(relativeOrAbsolute);
+    if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i.test(rawBase)) {
+      throw new ModelCacheError(
+        `Windows reserved device name prohibited: '${rawBase}'.`,
+        'INVALID_PATH',
+      );
+    }
+
+    // Block alternate data streams (ADS) e.g., file:stream
+    if (rawBase.includes(':')) {
+      throw new ModelCacheError(
+        `Alternate data stream path prohibited: '${rawBase}'.`,
+        'INVALID_PATH',
+      );
+    }
+
     const resolved = path.resolve(relativeOrAbsolute);
     const normalizedBase = path.resolve(this.baseDir);
 
     if (!resolved.startsWith(normalizedBase + path.sep) && resolved !== normalizedBase) {
       throw new ModelCacheError(
         `Path traversal attack blocked: path '${relativeOrAbsolute}' escapes base directory '${this.baseDir}'.`,
+        'INVALID_PATH',
+      );
+    }
+
+    const baseName = path.basename(resolved);
+    if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i.test(baseName)) {
+      throw new ModelCacheError(
+        `Windows reserved device name prohibited: '${baseName}'.`,
+        'INVALID_PATH',
+      );
+    }
+
+    if (baseName.includes(':')) {
+      throw new ModelCacheError(
+        `Alternate data stream path prohibited: '${baseName}'.`,
         'INVALID_PATH',
       );
     }
@@ -101,7 +354,13 @@ export class ModelCacheManager {
    */
   public async verifyArtifactHash(filePath: string, expectedHash: string): Promise<boolean> {
     const actualHash = await this.computeSha256(filePath);
-    return actualHash.toLowerCase() === expectedHash.toLowerCase();
+    return (
+      actualHash.length === expectedHash.length &&
+      crypto.timingSafeEqual(
+        Buffer.from(actualHash.toLowerCase(), 'utf-8'),
+        Buffer.from(expectedHash.toLowerCase(), 'utf-8'),
+      )
+    );
   }
 
   /**
@@ -118,8 +377,8 @@ export class ModelCacheManager {
       throw new ModelCacheError(`Staged model file not found at '${stagedFilePath}'.`, 'NOT_FOUND');
     }
 
-    // 2. Validate model ID pattern
-    if (!ModelIdPattern.test(artifactMeta.modelId)) {
+    // 2. Validate model ID pattern and forbid traversal sequences
+    if (!ModelIdPattern.test(artifactMeta.modelId) || artifactMeta.modelId.includes('..')) {
       throw new ModelCacheError(
         `Invalid model ID format '${artifactMeta.modelId}'.`,
         'INVALID_PATH',
@@ -129,7 +388,7 @@ export class ModelCacheManager {
     // 3. Verify SHA-256 integrity
     const hashValid = await this.verifyArtifactHash(safeStagedPath, artifactMeta.sha256);
     if (!hashValid) {
-      // Remove corrupted staged file
+      // Remove corrupted staged file immediately
       try {
         await fs.promises.unlink(safeStagedPath);
       } catch {
@@ -146,7 +405,8 @@ export class ModelCacheManager {
     await this.ensureCapacity(stats.size);
 
     // 5. Atomic promotion (rename from staging to models directory)
-    const targetFileName = `${artifactMeta.modelId}-${artifactMeta.sha256.substring(0, 12)}.${artifactMeta.format}`;
+    const safeModelName = artifactMeta.modelId.replace(/[/\\:]/g, '_');
+    const targetFileName = `${safeModelName}-${artifactMeta.sha256.substring(0, 12)}.${artifactMeta.format}`;
     const targetPath = path.join(this.modelsDir, targetFileName);
     const safeTargetPath = this.resolveSafePath(targetPath);
 
@@ -165,6 +425,303 @@ export class ModelCacheManager {
 
     this.catalog.set(artifact.modelId, artifact);
     return artifact;
+  }
+
+  /**
+   * Secure remote model artifact acquisition lifecycle:
+   * manifest
+   *   ↓
+   * validate acquisition source (SSRF, safe IP, redirects)
+   *   ↓
+   * stream into staging
+   *   ↓
+   * enforce byte limits & cache quota
+   *   ↓
+   * compute SHA-256 while streaming
+   *   ↓
+   * verify exact digest
+   *   ↓
+   * atomically promote into active models/
+   *   ↓
+   * make artifact available in cache catalog
+   */
+  public async downloadArtifact(
+    optionsOrManifest: DownloadArtifactOptions | ModelManifest,
+    extraOptions?: Omit<DownloadArtifactOptions, 'manifest'>,
+  ): Promise<ModelArtifact> {
+    const options: DownloadArtifactOptions =
+      'manifest' in optionsOrManifest
+        ? (optionsOrManifest as DownloadArtifactOptions)
+        : { manifest: optionsOrManifest as ModelManifest, ...extraOptions };
+
+    const { manifest, signal, onProgress, allowLocalhostForTesting } = options;
+
+    // Validate manifest schema
+    ModelManifestSchema.parse(manifest);
+
+    // Check if model already exists in catalog
+    const existing = this.catalog.get(manifest.modelId);
+    if (existing && existing.state === 'Installed' && fs.existsSync(existing.storagePath)) {
+      return existing;
+    }
+
+    // Concurrency guard: deduplicate simultaneous downloads for same modelId
+    const inFlight = this.inFlightDownloads.get(manifest.modelId);
+    if (inFlight) {
+      return inFlight;
+    }
+
+    const downloadPromise = (async (): Promise<ModelArtifact> => {
+      // 1. Validate initial acquisition source
+      let currentUrl = manifest.source.url;
+      await validateRemoteArtifactSource(currentUrl, { allowLocalhostForTesting });
+
+      // 2. Pre-check cache capacity
+      await this.ensureCapacity(manifest.byteSize);
+
+      // 3. Connect with manual redirect following and per-hop SSRF validation
+      let response: Response | undefined;
+      let redirectCount = 0;
+      const MAX_REDIRECTS = 5;
+
+      while (true) {
+        if (signal?.aborted) {
+          throw new ModelCacheError('Download was aborted before connection.', 'ABORTED');
+        }
+
+        await validateRemoteArtifactSource(currentUrl, { allowLocalhostForTesting });
+
+        try {
+          response = await fetch(currentUrl, {
+            method: 'GET',
+            redirect: 'manual',
+            signal,
+          });
+        } catch (fetchErr: any) {
+          if (signal?.aborted || fetchErr?.name === 'AbortError') {
+            throw new ModelCacheError('Download was aborted by caller.', 'ABORTED');
+          }
+          throw new ModelCacheError(
+            `Connection failed while downloading artifact: ${fetchErr?.message || String(fetchErr)}`,
+            'DOWNLOAD_FAILED',
+          );
+        }
+
+        if (response.status >= 300 && response.status < 400) {
+          redirectCount++;
+          if (redirectCount > MAX_REDIRECTS) {
+            throw new ModelCacheError(
+              `Too many redirects (${redirectCount}) while downloading model artifact.`,
+              'DOWNLOAD_FAILED',
+            );
+          }
+          const location = response.headers.get('location');
+          if (!location) {
+            throw new ModelCacheError(
+              'Redirect response missing Location header.',
+              'DOWNLOAD_FAILED',
+            );
+          }
+          currentUrl = new URL(location, currentUrl).toString();
+          continue;
+        }
+
+        break;
+      }
+
+      if (!response || !response.ok) {
+        const status = response ? response.status : 0;
+        const statusText = response ? response.statusText : 'No response';
+        throw new ModelCacheError(
+          `Artifact download failed with HTTP status ${status}: ${statusText}`,
+          'DOWNLOAD_FAILED',
+        );
+      }
+
+      // 4. Check Content-Length if provided
+      const contentLengthHeader = response.headers.get('content-length');
+      if (contentLengthHeader) {
+        const declaredLength = parseInt(contentLengthHeader, 10);
+        if (!isNaN(declaredLength) && declaredLength !== manifest.byteSize) {
+          throw new ModelCacheError(
+            `Content-Length header (${declaredLength}) contradicts manifest byteSize (${manifest.byteSize}).`,
+            'INCOMPLETE_DOWNLOAD',
+          );
+        }
+      }
+
+      if (!response.body) {
+        throw new ModelCacheError('Response body is empty or null.', 'INCOMPLETE_DOWNLOAD');
+      }
+
+      // 5. Stream into staging directory with unique temporary filename
+      const sanitizedModelId = manifest.modelId.replace(/[/\\:]/g, '_');
+      const stagingFileName = `download-${sanitizedModelId}-${Date.now()}-${crypto.randomBytes(6).toString('hex')}.tmp`;
+      const stagedFilePath = path.join(this.stagingDir, stagingFileName);
+      const safeStagedPath = this.resolveSafePath(stagedFilePath);
+
+      const writeStream = fs.createWriteStream(safeStagedPath);
+      const hash = crypto.createHash('sha256');
+      let bytesTransferred = 0;
+      const totalBytes = manifest.byteSize;
+      const startTime = Date.now();
+
+      const emitProgress = (
+        status: 'PENDING' | 'DOWNLOADING' | 'VERIFYING' | 'COMPLETED' | 'FAILED',
+      ) => {
+        if (!onProgress) return;
+        const elapsedSec = (Date.now() - startTime) / 1000;
+        const rate = elapsedSec > 0 ? Math.round(bytesTransferred / elapsedSec) : 0;
+        const remaining = totalBytes - bytesTransferred;
+        const estimatedRemainingMs =
+          rate > 0 && remaining > 0 ? Math.round((remaining / rate) * 1000) : undefined;
+
+        const progressEvent: ModelDownloadProgress = {
+          modelId: manifest.modelId,
+          bytesTransferred: Math.min(bytesTransferred, totalBytes),
+          totalBytes,
+          transferRateBytesPerSec: rate,
+          estimatedRemainingMs,
+          status,
+        };
+        ModelDownloadProgressSchema.parse(progressEvent);
+        onProgress(progressEvent);
+      };
+
+      emitProgress('DOWNLOADING');
+
+      try {
+        for await (const rawChunk of response.body as any) {
+          if (signal?.aborted) {
+            throw new ModelCacheError('Download was aborted by caller.', 'ABORTED');
+          }
+
+          const chunk = Buffer.isBuffer(rawChunk) ? rawChunk : Buffer.from(rawChunk);
+          bytesTransferred += chunk.length;
+
+          // Enforce strictly bounded size: cannot exceed manifest byteSize
+          if (bytesTransferred > totalBytes) {
+            throw new ModelCacheError(
+              `Downloaded stream exceeded declared manifest byteSize of ${totalBytes} bytes.`,
+              'QUOTA_EXCEEDED',
+            );
+          }
+
+          hash.update(chunk);
+
+          // Backpressure-safe write
+          if (!writeStream.write(chunk)) {
+            await new Promise<void>((resolve, reject) => {
+              writeStream.once('drain', resolve);
+              writeStream.once('error', reject);
+            });
+          }
+
+          emitProgress('DOWNLOADING');
+        }
+
+        await new Promise<void>((resolve, reject) => {
+          writeStream.end(() => resolve());
+          writeStream.on('error', reject);
+        });
+      } catch (streamErr) {
+        writeStream.destroy();
+        try {
+          if (fs.existsSync(safeStagedPath)) {
+            await fs.promises.unlink(safeStagedPath);
+          }
+        } catch {
+          // ignore
+        }
+        emitProgress('FAILED');
+        if (streamErr instanceof ModelCacheError) {
+          throw streamErr;
+        }
+        const msg = (streamErr as Error)?.message || '';
+        if (bytesTransferred < totalBytes && !signal?.aborted) {
+          throw new ModelCacheError(
+            `Incomplete download: stream was prematurely terminated after ${bytesTransferred}/${totalBytes} bytes. Error: ${msg}`,
+            'INCOMPLETE_DOWNLOAD',
+          );
+        }
+        throw new ModelCacheError(`Download stream error: ${msg}`, 'DOWNLOAD_FAILED');
+      }
+
+      // 6. Detect premature EOF: final received byte count must equal manifest.byteSize
+      if (bytesTransferred !== totalBytes) {
+        try {
+          if (fs.existsSync(safeStagedPath)) {
+            await fs.promises.unlink(safeStagedPath);
+          }
+        } catch {
+          // ignore
+        }
+        emitProgress('FAILED');
+        throw new ModelCacheError(
+          `Incomplete download: received ${bytesTransferred} bytes, expected ${totalBytes} bytes.`,
+          'INCOMPLETE_DOWNLOAD',
+        );
+      }
+
+      // 7. SHA-256 verification
+      emitProgress('VERIFYING');
+      const computedSha256 = hash.digest('hex').toLowerCase();
+      const expectedSha256 = manifest.sha256.toLowerCase();
+
+      const hashesMatch =
+        computedSha256.length === expectedSha256.length &&
+        crypto.timingSafeEqual(
+          Buffer.from(computedSha256, 'utf-8'),
+          Buffer.from(expectedSha256, 'utf-8'),
+        );
+
+      if (!hashesMatch) {
+        try {
+          if (fs.existsSync(safeStagedPath)) {
+            await fs.promises.unlink(safeStagedPath);
+          }
+        } catch {
+          // ignore
+        }
+        emitProgress('FAILED');
+        throw new ModelCacheError(
+          `Model artifact SHA-256 verification failed for '${manifest.modelId}'. Expected ${expectedSha256}, computed ${computedSha256}. Staged file quarantined and deleted.`,
+          'HASH_MISMATCH',
+        );
+      }
+
+      // 8. Atomic promotion to active models/ directory
+      const provider: ProviderType =
+        options.provider ?? (manifest.format === 'onnx' ? 'onnx' : 'llamacpp');
+
+      const artifactMeta = {
+        modelId: manifest.modelId,
+        name: manifest.name,
+        provider,
+        sha256: computedSha256,
+        fileSizeBytes: totalBytes,
+        format: manifest.format,
+        quantization: manifest.quantization,
+        contextWindowTokens: manifest.contextLength,
+        signature: manifest.signature,
+        license:
+          typeof manifest.metadata?.license === 'string'
+            ? (manifest.metadata.license as string)
+            : undefined,
+      };
+
+      const promotedArtifact = await this.stageAndPromoteModel(safeStagedPath, artifactMeta);
+      emitProgress('COMPLETED');
+      return promotedArtifact;
+    })();
+
+    this.inFlightDownloads.set(manifest.modelId, downloadPromise);
+
+    try {
+      return await downloadPromise;
+    } finally {
+      this.inFlightDownloads.delete(manifest.modelId);
+    }
   }
 
   /**

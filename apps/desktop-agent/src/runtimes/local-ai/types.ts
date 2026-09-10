@@ -223,7 +223,7 @@ export interface ILocalModelProvider {
 // Zod Validation Schemas
 // ============================================================
 
-export const ModelIdPattern = /^[a-zA-Z0-9_.:-]+$/;
+export const ModelIdPattern = new RegExp('^[a-zA-Z0-9_.:/-]+$');
 
 export const InferenceRequestSchema = z.object({
   requestId: z.string().min(1, 'requestId cannot be empty'),
@@ -231,7 +231,10 @@ export const InferenceRequestSchema = z.object({
     .string()
     .min(1, 'modelId cannot be empty')
     .max(128, 'modelId too long')
-    .regex(ModelIdPattern, 'modelId contains invalid characters'),
+    .regex(ModelIdPattern, 'modelId contains invalid characters')
+    .refine((id) => !id.includes('..'), {
+      message: 'modelId cannot contain directory traversal sequence (..)',
+    }),
   provider: z.enum(['ollama', 'llamacpp', 'lmstudio', 'onnx', 'cpu_fallback']),
   prompt: z
     .string()
@@ -275,7 +278,14 @@ export const InferenceRequestSchema = z.object({
 });
 
 export const ModelArtifactSchema = z.object({
-  modelId: z.string().min(1).max(128).regex(ModelIdPattern, 'modelId contains invalid characters'),
+  modelId: z
+    .string()
+    .min(1)
+    .max(128)
+    .regex(ModelIdPattern, 'modelId contains invalid characters')
+    .refine((id) => !id.includes('..'), {
+      message: 'modelId cannot contain directory traversal sequence (..)',
+    }),
   name: z.string().min(1).max(256),
   provider: z.enum(['ollama', 'llamacpp', 'lmstudio', 'onnx', 'cpu_fallback']),
   sha256: z
