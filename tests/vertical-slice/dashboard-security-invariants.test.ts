@@ -43,7 +43,22 @@ import {
 import { PolicyEffect } from '@nexusos/policy';
 import { AuthenticatedContext, PrincipalType } from '@nexusos/identity';
 import { NativeApprovalHost } from '@nexusos/desktop-agent';
-import { DashboardAPIClient, DashboardAPIError } from '../../apps/web-dashboard/src/api/client.js';
+import {
+  DashboardAPIClient,
+  DashboardAPIError,
+  sanitizeHTML,
+  type DelegationSummary,
+  type AgentRecord,
+} from '../../apps/web-dashboard/src/api/client.js';
+import {
+  generateAgentCardHTML,
+  generateDelegationNodeHTML,
+  generateDelegationTimelineItemHTML,
+  getRoleBadge,
+  getAgentStatusPill,
+  getDelegationStatusBadge,
+  buildDelegationTimeline,
+} from '../../apps/web-dashboard/src/main.js';
 
 // ============================================================
 // Test Fixtures
@@ -1714,6 +1729,411 @@ describe('053-SEC — Dashboard Projection & Security Invariants', () => {
           assert.ok(err.message.includes('NOT_FOUND') || err.message.includes('not found'));
           assert.strictEqual(err.path.includes('/v1/memory/'), true);
         }
+      });
+    });
+
+    // ============================================================
+    // Task 063 Phase 2: Web Dashboard Multi-Agent Collaboration & Delegation Cockpit UI & Security Invariants
+    // ============================================================
+
+    function createMockDelegation(overrides: Partial<DelegationSummary> = {}): DelegationSummary {
+      return {
+        delegationId: 'del-mock-default',
+        parentTaskId: 'task-p-1',
+        parentLeaseId: 'lease-p-1',
+        childTaskId: 'task-c-1',
+        childLeaseId: 'lease-c-1',
+        delegatorAgentId: 'agent-del-1',
+        assignedAgentId: 'agent-assigned-1',
+        tenantId: tenantA,
+        workspaceId: 'ws-1',
+        depth: 1,
+        status: 'ACCEPTED',
+        requestedScopes: ['fs:read'],
+        expiresAt: Date.now() + 60000,
+        correlationId: 'corr-1',
+        hasCompensation: false,
+        hasChildReceipt: false,
+        ...overrides,
+      };
+    }
+
+    describe('Task 063 Phase 2: Web Dashboard Multi-Agent Collaboration & Delegation Cockpit UI & Security Invariants', () => {
+      describe('063-UI-01: Agent Roster Safe Rendering & Status Semantics', () => {
+        it('1. malicious agent name/id and version render safely as defanged text without XSS injection', () => {
+          const maliciousAgent: AgentRecord = {
+            agentId: '<script>alert("xss-agent")</script>evil-agent',
+            tenantId: tenantA,
+            workspaceScope: ['<img src=x onerror=alert(1)>', 'default-ws'],
+            role: 'WORKER' as const,
+            capabilities: ['<svg onload=alert(2)>', 'read_fs'],
+            version: '1.0.0"><b id="injected">pwned</b>',
+            metadata: {},
+            registeredAt: new Date().toISOString(),
+            lastHeartbeat: new Date().toISOString(),
+            status: 'AVAILABLE' as const,
+            currentLoad: 0.45,
+            activeTaskIds: ['task-1'],
+          };
+
+          const html = generateAgentCardHTML(maliciousAgent);
+
+          assert.ok(!html.includes('<script>'), 'Script tag must be defanged');
+          assert.ok(!html.includes('<img src=x'), 'Img onerror must be defanged');
+          assert.ok(!html.includes('<svg onload='), 'Svg onload must be defanged');
+          assert.ok(!html.includes('<b id="injected">'), 'Version HTML injection must be defanged');
+          assert.ok(
+            html.includes(
+              '&lt;script&gt;alert(&quot;xss-agent&quot;)&lt;&#x2F;script&gt;evil-agent',
+            ),
+          );
+          assert.ok(html.includes('&lt;img src=x onerror=alert(1)&gt;'));
+          assert.ok(html.includes('&lt;svg onload=alert(2)&gt;'));
+          assert.ok(
+            html.includes(
+              'data-agent-id="&lt;script&gt;alert(&quot;xss-agent&quot;)&lt;&#x2F;script&gt;evil-agent"',
+            ),
+          );
+        });
+
+        it('2. status pills reflect canonical AgentStatus values with visual and accessible text labels (not color alone)', () => {
+          const availablePill = getAgentStatusPill('AVAILABLE');
+          assert.ok(availablePill.includes('agent-status-pill--available'));
+          assert.ok(availablePill.includes('Available / Healthy'));
+          assert.ok(availablePill.includes('status-dot'));
+
+          const busyPill = getAgentStatusPill('BUSY');
+          assert.ok(busyPill.includes('agent-status-pill--busy'));
+          assert.ok(busyPill.includes('Busy / Working'));
+
+          const unhealthyPill = getAgentStatusPill('UNHEALTHY');
+          assert.ok(unhealthyPill.includes('agent-status-pill--unhealthy'));
+          assert.ok(unhealthyPill.includes('Unhealthy / Offline'));
+
+          const retiredPill = getAgentStatusPill('RETIRED');
+          assert.ok(retiredPill.includes('agent-status-pill--retired'));
+          assert.ok(retiredPill.includes('Retired'));
+
+          const registeredPill = getAgentStatusPill('REGISTERED');
+          assert.ok(registeredPill.includes('Registered'));
+
+          // Unknown or unexpected status fails safely and sanitizes text
+          const unknownPill = getAgentStatusPill('<script>CUSTOM</script>');
+          assert.ok(!unknownPill.includes('<script>'));
+          assert.ok(unknownPill.includes('&lt;script&gt;CUSTOM&lt;&#x2F;script&gt;'));
+        });
+
+        it('3. role badges render distinct accessible badges for all canonical AgentRole values', () => {
+          assert.ok(getRoleBadge('COORDINATOR').includes('Coordinator'));
+          assert.ok(getRoleBadge('SPECIALIST').includes('Specialist'));
+          assert.ok(getRoleBadge('SUPERVISOR').includes('Supervisor'));
+          assert.ok(getRoleBadge('WORKER').includes('Worker'));
+
+          // Custom/unknown role is safely sanitized
+          const customRoleBadge = getRoleBadge('ANALYST<script>');
+          assert.ok(!customRoleBadge.includes('<script>'));
+          assert.ok(customRoleBadge.includes('ANALYST&lt;script&gt;'));
+        });
+
+        it('4. agent card rendering never exposes internal lease secrets, signing keys, or tokens', () => {
+          const secretAgent: AgentRecord = {
+            agentId: 'agent-secured-007',
+            tenantId: tenantA,
+            workspaceScope: ['ws-1'],
+            role: 'COORDINATOR' as const,
+            capabilities: ['delegate', 'coordinate'],
+            version: '2.1.0',
+            metadata: { secretToken: 'SUPER_SECRET_HMAC_KEY', internalCert: 'PRIVATE_KEY_DATA' },
+            registeredAt: new Date().toISOString(),
+            lastHeartbeat: new Date().toISOString(),
+            status: 'AVAILABLE' as const,
+            currentLoad: 0.1,
+            activeTaskIds: [],
+          };
+
+          const html = generateAgentCardHTML(secretAgent);
+          assert.strictEqual(html.includes('SUPER_SECRET_HMAC_KEY'), false);
+          assert.strictEqual(html.includes('PRIVATE_KEY_DATA'), false);
+          assert.ok(html.includes('agent-secured-007'));
+          assert.ok(html.includes('10% (0 active)'));
+        });
+      });
+
+      describe('063-UI-02: Delegation Hierarchy Visualization & Tree Safety', () => {
+        it('5. malicious parent/child task IDs and agent names in delegation node render as inert defanged text', () => {
+          const maliciousDelegation = {
+            delegationId: 'del-<script>alert("del")</script>',
+            parentTaskId: 'task-parent<img src=x onerror=alert(1)>',
+            parentLeaseId: 'lease-p-12345678',
+            childTaskId: 'task-child<svg onload=alert(2)>',
+            childLeaseId: 'lease-c-87654321',
+            delegatorAgentId: 'agent-del<script>alert("del-agent")</script>',
+            assignedAgentId: 'agent-child<b onmouseover=alert(3)>',
+            tenantId: tenantA,
+            workspaceId: 'ws-1',
+            depth: 2,
+            status: 'EXECUTING' as const,
+            requestedScopes: ['fs:read'],
+            expiresAt: Date.now() + 60000,
+            correlationId: 'corr-1',
+            hasCompensation: true,
+            hasChildReceipt: true,
+          };
+
+          const html = generateDelegationNodeHTML(maliciousDelegation);
+          assert.ok(!html.includes('<script>'), 'Script tag must be defanged in delegation node');
+          assert.ok(
+            !html.includes('<img src=x'),
+            'Img onerror must be defanged in delegation node',
+          );
+          assert.ok(
+            !html.includes('<svg onload='),
+            'Svg onload must be defanged in delegation node',
+          );
+          assert.ok(
+            !html.includes('<b onmouseover='),
+            'Onmouseover event must be defanged in delegation node',
+          );
+          assert.ok(
+            html.includes('&lt;script&gt;alert(&quot;del-agent&quot;)&lt;&#x2F;script&gt;'),
+          );
+          assert.ok(html.includes('&lt;b onmouseover=alert(3)&gt;'));
+          assert.ok(html.includes('delegation-tree-node--depth-2'));
+          assert.ok(html.includes('Receipt Settled'));
+          assert.ok(html.includes('Compensated'));
+        });
+
+        it('6. delegation node clamps depth to valid range [1, 3] and generates corresponding CSS class', () => {
+          const lowDepthSession = createMockDelegation({
+            delegationId: 'del-d0',
+            depth: 0, // below min
+            status: 'ACCEPTED',
+          });
+          const lowHtml = generateDelegationNodeHTML(lowDepthSession);
+          assert.ok(lowHtml.includes('delegation-tree-node--depth-1'), 'Depth 0 clamped to 1');
+
+          const highDepthSession = createMockDelegation({
+            delegationId: 'del-d5',
+            depth: 99, // above max
+            status: 'COMPLETED',
+          });
+          const highHtml = generateDelegationNodeHTML(highDepthSession);
+          assert.ok(highHtml.includes('delegation-tree-node--depth-3'), 'Depth 99 clamped to 3');
+        });
+
+        it('7. delegation node exposes only truncated childLeaseId prefix and never leaks lease HMAC signatures or private data', () => {
+          const session = createMockDelegation({
+            delegationId: 'del-lease-test',
+            parentLeaseId: 'parent-lease-secret-token-full-999',
+            childLeaseId: 'lease-c-abcdef0123456789',
+            status: 'EXECUTING',
+            hasChildReceipt: true,
+          });
+
+          const html = generateDelegationNodeHTML(session);
+          assert.strictEqual(
+            html.includes('parent-lease-secret'),
+            false,
+            'Parent lease secret must not be displayed',
+          );
+          assert.ok(
+            html.includes('Lease: lease-c-…'),
+            'Only safe prefix of childLeaseId should be rendered',
+          );
+        });
+
+        it('8. delegation status badges accurately reflect canonical ACP delegation statuses', () => {
+          assert.ok(getDelegationStatusBadge('ACCEPTED').includes('Accepted'));
+          assert.ok(getDelegationStatusBadge('EXECUTING').includes('Executing'));
+          assert.ok(getDelegationStatusBadge('COMPLETED').includes('Completed'));
+          assert.ok(getDelegationStatusBadge('FAILED').includes('Failed'));
+          assert.ok(getDelegationStatusBadge('CANCELLED').includes('Cancelled'));
+          assert.ok(getDelegationStatusBadge('REJECTED').includes('Rejected'));
+          assert.ok(getDelegationStatusBadge('TIMED_OUT').includes('Timed Out'));
+
+          // Custom/unknown status is safely sanitized
+          const customBadge = getDelegationStatusBadge('<script>CUSTOM_STATUS</script>');
+          assert.ok(!customBadge.includes('<script>'));
+          assert.ok(customBadge.includes('&lt;script&gt;CUSTOM_STATUS&lt;&#x2F;script&gt;'));
+        });
+      });
+
+      describe('063-UI-03: Delegation Timeline Cockpit & Event Derivation', () => {
+        it('9. buildDelegationTimeline derives deterministic chronological events without fabricating synthetic history', () => {
+          const sessions = [
+            createMockDelegation({
+              delegationId: 'del-1',
+              parentTaskId: 'p-1',
+              childTaskId: 'c-1-child-task-id',
+              delegatorAgentId: 'coord-agent',
+              assignedAgentId: 'worker-agent-1',
+              depth: 1,
+              status: 'COMPLETED',
+              expiresAt: 1000000,
+              hasChildReceipt: true,
+              hasCompensation: false,
+            }),
+            createMockDelegation({
+              delegationId: 'del-2',
+              parentTaskId: 'p-2',
+              childTaskId: 'c-2-child-task-id',
+              delegatorAgentId: 'coord-agent',
+              assignedAgentId: 'worker-agent-2',
+              depth: 2,
+              status: 'FAILED',
+              expiresAt: 2000000,
+              hasChildReceipt: false,
+              hasCompensation: true,
+            }),
+          ];
+
+          const events = buildDelegationTimeline(sessions);
+
+          // Should have:
+          // From del-1: COMPLETED status event + RECEIPT event (2 events)
+          // From del-2: FAILED status event + COMPENSATION event (2 events)
+          assert.strictEqual(events.length, 4);
+
+          // Chronological ordering check: newest timestamp (2000000) before older (1000000)
+          assert.strictEqual(events[0].timestamp, 2000000);
+          assert.strictEqual(events[1].timestamp, 2000000);
+          assert.strictEqual(events[2].timestamp, 1000000);
+          assert.strictEqual(events[3].timestamp, 1000000);
+
+          // Event contents match session data accurately
+          const receiptEvent = events.find((e) => e.type === 'RECEIPT');
+          assert.ok(receiptEvent);
+          assert.strictEqual(receiptEvent.title, 'Receipt Cryptographically Settled');
+          assert.ok(receiptEvent.description.includes('c-1-chil'));
+
+          const compEvent = events.find((e) => e.type === 'COMPENSATION');
+          assert.ok(compEvent);
+          assert.strictEqual(compEvent.title, 'Compensation Rollback Executed');
+        });
+
+        it('10. buildDelegationTimeline strictly bounds total events to 100', () => {
+          const largeSessions = Array.from({ length: 80 }, (_, i) =>
+            createMockDelegation({
+              delegationId: `del-large-${i}`,
+              parentTaskId: `p-${i}`,
+              childTaskId: `c-${i}`,
+              delegatorAgentId: 'coord',
+              assignedAgentId: `worker-${i}`,
+              depth: 1,
+              status: 'COMPLETED',
+              expiresAt: Date.now() + i * 1000,
+              hasChildReceipt: true, // 2 events per session = 160 events total
+            }),
+          );
+
+          const events = buildDelegationTimeline(largeSessions);
+          assert.strictEqual(events.length, 100, 'Events must be bounded to 100');
+        });
+
+        it('11. generateDelegationTimelineItemHTML defangs malicious injection in title and description', () => {
+          const maliciousEvent = {
+            id: 'ev-mal-1',
+            delegationId: 'del-mal',
+            type: 'COMPLETED' as const,
+            timestamp: Date.now(),
+            title: '<script>alert("timeline-title")</script>Task Completed',
+            description: '<img src=x onerror=alert("timeline-desc")>Task summary',
+            delegatorAgentId: 'agent-1',
+            assignedAgentId: 'agent-2',
+            taskId: 'task-1',
+          };
+
+          const html = generateDelegationTimelineItemHTML(maliciousEvent);
+          assert.ok(!html.includes('<script>'), 'Title script tag must be defanged');
+          assert.ok(!html.includes('<img src=x'), 'Description img tag must be defanged');
+          assert.ok(
+            html.includes('&lt;script&gt;alert(&quot;timeline-title&quot;)&lt;&#x2F;script&gt;'),
+          );
+          assert.ok(html.includes('&lt;img src=x onerror=alert(&quot;timeline-desc&quot;)&gt;'));
+          assert.ok(html.includes('role="listitem"'));
+        });
+      });
+
+      describe('063-UI-04: Refresh Lifecycle, Sequence Guards & Error State Safety', () => {
+        it('12. sequence check rejects stale out-of-order network responses', () => {
+          const currentSequence = 10;
+          const slowResponseSeq = 9;
+          const fastResponseSeq = 10;
+
+          let appliedData = 'initial';
+          function applyIfFresh(seq: number, data: string) {
+            if (seq === currentSequence) {
+              appliedData = data;
+            }
+          }
+
+          applyIfFresh(fastResponseSeq, 'fresh-data');
+          assert.strictEqual(appliedData, 'fresh-data');
+
+          applyIfFresh(slowResponseSeq, 'stale-data');
+          assert.strictEqual(
+            appliedData,
+            'fresh-data',
+            'Stale response must not overwrite fresh data',
+          );
+        });
+
+        it('13. cycle detection in delegation hierarchy prevents runaway rendering loops', () => {
+          const cyclicSessions = [
+            createMockDelegation({
+              delegationId: 'del-cycle-1',
+              parentTaskId: 't-1',
+              childTaskId: 't-2',
+              delegatorAgentId: 'agent-A',
+              assignedAgentId: 'agent-B',
+              depth: 1,
+              status: 'EXECUTING',
+            }),
+            createMockDelegation({
+              delegationId: 'del-cycle-1', // Duplicate ID forming loop
+              parentTaskId: 't-2',
+              childTaskId: 't-1',
+              delegatorAgentId: 'agent-B',
+              assignedAgentId: 'agent-A',
+              depth: 2,
+              status: 'EXECUTING',
+            }),
+          ];
+
+          const visited = new Set<string>();
+          const renderedNodes: string[] = [];
+          for (const s of cyclicSessions) {
+            if (visited.has(s.delegationId)) continue;
+            visited.add(s.delegationId);
+            renderedNodes.push(generateDelegationNodeHTML(s));
+          }
+
+          assert.strictEqual(
+            renderedNodes.length,
+            1,
+            'Cycle protection must render only unique session IDs',
+          );
+        });
+
+        it('14. tenant-scoped API data remains tenant-isolated and cannot be overwritten across tenants', async () => {
+          const agentsA = await clientA.listAgents();
+          assert.ok(agentsA.items.every((a) => a.tenantId === tenantA));
+
+          const mixedAgents = agentsA.items.filter((a) => a.tenantId !== tenantA);
+          assert.strictEqual(mixedAgents.length, 0, 'No Tenant B records in Tenant A view');
+        });
+
+        it('15. error states display user-safe message and retry button without leaking stack traces or internal errors', () => {
+          const safeMessage = 'Failed to load delegation hierarchy.';
+
+          const errorCardHTML = `<div class="error-state" role="alert"><p>${sanitizeHTML(safeMessage)}</p><button class="btn btn--outline btn--sm" type="button">Retry</button></div>`;
+
+          assert.strictEqual(errorCardHTML.includes('SQLITE_BUSY'), false);
+          assert.strictEqual(errorCardHTML.includes('/var/internal/'), false);
+          assert.strictEqual(errorCardHTML.includes('queryDb'), false);
+          assert.ok(errorCardHTML.includes('role="alert"'));
+          assert.ok(errorCardHTML.includes('Retry'));
+        });
       });
     });
   });

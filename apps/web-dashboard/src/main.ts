@@ -18,6 +18,8 @@ import {
   type TaskItemResponse,
   type ActivityItemResponse,
   type PaginatedResponse,
+  type AgentRecord,
+  type DelegationSummary,
 } from './api/client.js';
 
 // ============================================================
@@ -50,7 +52,7 @@ export interface ApprovalViewModel {
 }
 
 interface AppState {
-  currentView: 'overview' | 'tasks' | 'approvals' | 'activity';
+  currentView: 'overview' | 'tasks' | 'approvals' | 'activity' | 'agents' | 'delegations';
   summary: DashboardSummaryResponse | null;
   tasks: TaskItemResponse[];
   tasksCursor: string | undefined;
@@ -60,6 +62,14 @@ interface AppState {
   activity: ActivityItemResponse[];
   activityCursor: string | undefined;
   activityTotal: number;
+  agents: AgentRecord[];
+  agentRoleFilter: string;
+  agentStatusFilter: string;
+  agentsRequestId: number;
+  delegations: DelegationSummary[];
+  delegationStatusFilter: string;
+  delegationsRequestId: number;
+  selectedSessionId?: string;
   isLoading: boolean;
   pollingInterval: ReturnType<typeof setInterval> | null;
 }
@@ -75,6 +85,14 @@ const state: AppState = {
   activity: [],
   activityCursor: undefined,
   activityTotal: 0,
+  agents: [],
+  agentRoleFilter: '',
+  agentStatusFilter: '',
+  agentsRequestId: 0,
+  delegations: [],
+  delegationStatusFilter: '',
+  delegationsRequestId: 0,
+  selectedSessionId: undefined,
   isLoading: false,
   pollingInterval: null,
 };
@@ -157,7 +175,7 @@ function switchView(view: AppState['currentView']): void {
   });
 
   // Toggle view visibility
-  const views = ['overview', 'tasks', 'approvals', 'activity'] as const;
+  const views = ['overview', 'tasks', 'approvals', 'activity', 'agents', 'delegations'] as const;
   views.forEach((v) => {
     const section = $(`view-${v}`);
     if (section) {
@@ -188,6 +206,12 @@ async function loadViewData(view: AppState['currentView']): Promise<void> {
       break;
     case 'activity':
       await loadActivityStream(true);
+      break;
+    case 'agents':
+      await loadAgents(true);
+      break;
+    case 'delegations':
+      await loadDelegations(true);
       break;
   }
 }
@@ -992,6 +1016,499 @@ function summarizePayload(payload: Record<string, unknown>): string {
 }
 
 // ============================================================
+// Agent Roster View
+// ============================================================
+
+function initAgentsView(): void {
+  const roleSelect = $('agent-role-filter') as HTMLSelectElement | null;
+  if (roleSelect) {
+    roleSelect.addEventListener('change', () => {
+      state.agentRoleFilter = roleSelect.value;
+      void loadAgents(true);
+    });
+  }
+
+  const statusSelect = $('agent-status-filter') as HTMLSelectElement | null;
+  if (statusSelect) {
+    statusSelect.addEventListener('change', () => {
+      state.agentStatusFilter = statusSelect.value;
+      void loadAgents(true);
+    });
+  }
+
+  const refreshBtn = $('agent-refresh-btn');
+  if (refreshBtn) {
+    refreshBtn.addEventListener('click', () => void loadAgents(true));
+  }
+}
+
+async function loadAgents(reset: boolean = false): Promise<void> {
+  const container = $('agent-roster-container');
+  const reqId = ++state.agentsRequestId;
+
+  if (reset && container) {
+    setSafeHTML(
+      container,
+      '<div class="loading-state" role="status" aria-live="polite"><div class="loading-spinner"></div><p>Loading agent roster…</p></div>',
+    );
+  }
+
+  try {
+    const res = await apiClient.listAgents({
+      role: (state.agentRoleFilter as any) || undefined,
+      status: (state.agentStatusFilter as any) || undefined,
+      limit: 100,
+    });
+
+    // Guard against stale response overwriting newer response
+    if (reqId !== state.agentsRequestId) return;
+
+    state.agents = res.items;
+    renderAgentRoster(res.items);
+  } catch (err) {
+    if (reqId !== state.agentsRequestId) return;
+    console.error('[Dashboard] Failed to load agents:', err);
+    if (container) {
+      setSafeHTML(
+        container,
+        `<div class="error-state" role="alert"><p>Failed to load agent roster.</p><button id="agent-retry-btn" class="btn btn--outline btn--sm" type="button">Retry</button></div>`,
+      );
+      const retryBtn = $('agent-retry-btn');
+      if (retryBtn) {
+        retryBtn.addEventListener('click', () => void loadAgents(true));
+      }
+    }
+  }
+}
+
+function renderAgentRoster(agents: AgentRecord[]): void {
+  const container = $('agent-roster-container');
+  const empty = $('agent-roster-empty');
+  if (!container) return;
+
+  if (agents.length === 0) {
+    if (empty) empty.hidden = false;
+    setSafeHTML(
+      container,
+      empty?.outerHTML ||
+        '<div class="empty-state"><p>No agents registered in this workspace.</p></div>',
+    );
+    return;
+  }
+
+  if (empty) empty.hidden = true;
+
+  // Bounded rendering: maximum 100 agents
+  const boundedAgents = agents.slice(0, 100);
+  const cardsHTML = boundedAgents.map((agent) => generateAgentCardHTML(agent)).join('');
+  const truncationNotice =
+    agents.length >= 100
+      ? '<div class="truncation-notice">Displaying maximum bounded items (100).</div>'
+      : '';
+
+  setSafeHTML(container, cardsHTML + truncationNotice);
+}
+
+function getRoleBadge(role: string): string {
+  switch (role) {
+    case 'COORDINATOR':
+      return '<span class="role-badge role-badge--coordinator">🎯 Coordinator</span>';
+    case 'SPECIALIST':
+      return '<span class="role-badge role-badge--specialist">🔬 Specialist</span>';
+    case 'SUPERVISOR':
+      return '<span class="role-badge role-badge--supervisor">👁 Supervisor</span>';
+    case 'WORKER':
+      return '<span class="role-badge role-badge--worker">⚙ Worker</span>';
+    default:
+      return `<span class="role-badge">${sanitizeHTML(role)}</span>`;
+  }
+}
+
+function getAgentStatusPill(status: string): string {
+  switch (status) {
+    case 'AVAILABLE':
+      return '<span class="agent-status-pill agent-status-pill--available"><span class="status-dot"></span>Available / Healthy</span>';
+    case 'BUSY':
+      return '<span class="agent-status-pill agent-status-pill--busy"><span class="status-dot"></span>Busy / Working</span>';
+    case 'UNHEALTHY':
+      return '<span class="agent-status-pill agent-status-pill--unhealthy"><span class="status-dot"></span>Unhealthy / Offline</span>';
+    case 'RETIRED':
+      return '<span class="agent-status-pill agent-status-pill--retired"><span class="status-dot"></span>Retired</span>';
+    case 'REGISTERED':
+      return '<span class="agent-status-pill"><span class="status-dot"></span>Registered</span>';
+    default:
+      return `<span class="agent-status-pill"><span class="status-dot"></span>${sanitizeHTML(status)}</span>`;
+  }
+}
+
+function generateAgentCardHTML(agent: AgentRecord): string {
+  const agentId = sanitizeHTML(agent.agentId);
+  const roleBadge = getRoleBadge(agent.role);
+  const statusPill = getAgentStatusPill(agent.status);
+  const relativeHeartbeat = formatRelativeTime(agent.lastHeartbeat);
+  const version = sanitizeHTML(agent.version || '1.0.0');
+  const activeCount = agent.activeTaskIds ? agent.activeTaskIds.length : 0;
+  const loadPct = Math.round((agent.currentLoad || 0) * 100);
+  const loadText = `${loadPct}% (${activeCount} active)`;
+  const workspaceText = sanitizeHTML(agent.workspaceScope.join(', ') || 'all');
+  const caps = (agent.capabilities || [])
+    .map((c) => `<span class="cap-tag">${sanitizeHTML(c)}</span>`)
+    .join('');
+
+  return `
+    <div class="agent-card" role="listitem" tabindex="0" data-agent-id="${agentId}">
+      <div class="agent-card__header">
+        <div class="agent-card__title-group">
+          <span class="agent-card__name">${agentId}</span>
+          <span class="agent-card__id">v${version}</span>
+        </div>
+        <div class="agent-card__badges">
+          ${roleBadge}
+          ${statusPill}
+        </div>
+      </div>
+      <div class="agent-card__meta">
+        <div class="agent-card__meta-item">
+          <span class="agent-card__meta-label">Task Load</span>
+          <span class="agent-card__meta-value">${loadText}</span>
+        </div>
+        <div class="agent-card__meta-item">
+          <span class="agent-card__meta-label">Heartbeat</span>
+          <span class="agent-card__meta-value">${sanitizeHTML(relativeHeartbeat)}</span>
+        </div>
+        <div class="agent-card__meta-item">
+          <span class="agent-card__meta-label">Workspaces</span>
+          <span class="agent-card__meta-value">${workspaceText}</span>
+        </div>
+        <div class="agent-card__meta-item">
+          <span class="agent-card__meta-label">Capabilities</span>
+          <span class="agent-card__meta-value">${(agent.capabilities || []).length} declared</span>
+        </div>
+      </div>
+      <div class="agent-capabilities" aria-label="Capabilities">
+        ${caps || '<span class="cap-tag">none</span>'}
+      </div>
+    </div>
+  `;
+}
+
+// ============================================================
+// Delegation Cockpit View (Hierarchy & Timeline)
+// ============================================================
+
+function initDelegationsView(): void {
+  const statusSelect = $('delegation-status-filter') as HTMLSelectElement | null;
+  if (statusSelect) {
+    statusSelect.addEventListener('change', () => {
+      state.delegationStatusFilter = statusSelect.value;
+      void loadDelegations(true);
+    });
+  }
+
+  const refreshBtn = $('delegation-refresh-btn');
+  if (refreshBtn) {
+    refreshBtn.addEventListener('click', () => void loadDelegations(true));
+  }
+}
+
+async function loadDelegations(reset: boolean = false): Promise<void> {
+  const treeContainer = $('delegation-tree-container');
+  const timelineContainer = $('delegation-timeline-container');
+  const reqId = ++state.delegationsRequestId;
+
+  if (reset) {
+    if (treeContainer) {
+      setSafeHTML(
+        treeContainer,
+        '<div class="loading-state" role="status" aria-live="polite"><div class="loading-spinner"></div><p>Loading delegation hierarchy…</p></div>',
+      );
+    }
+    if (timelineContainer) {
+      setSafeHTML(
+        timelineContainer,
+        '<div class="loading-state" role="status" aria-live="polite"><div class="loading-spinner"></div><p>Loading activity timeline…</p></div>',
+      );
+    }
+  }
+
+  try {
+    const res = await apiClient.listDelegations({
+      status: (state.delegationStatusFilter as any) || undefined,
+      limit: 100,
+    });
+
+    // Guard against stale response
+    if (reqId !== state.delegationsRequestId) return;
+
+    state.delegations = res.items;
+    renderDelegationTree(res.items);
+    renderDelegationTimeline(res.items);
+  } catch (err) {
+    if (reqId !== state.delegationsRequestId) return;
+    console.error('[Dashboard] Failed to load delegations:', err);
+    if (treeContainer) {
+      setSafeHTML(
+        treeContainer,
+        `<div class="error-state" role="alert"><p>Failed to load delegation hierarchy.</p><button id="delegation-retry-btn" class="btn btn--outline btn--sm" type="button">Retry</button></div>`,
+      );
+      const retryBtn = $('delegation-retry-btn');
+      if (retryBtn) {
+        retryBtn.addEventListener('click', () => void loadDelegations(true));
+      }
+    }
+    if (timelineContainer) {
+      setSafeHTML(
+        timelineContainer,
+        `<div class="error-state" role="alert"><p>Failed to load timeline.</p></div>`,
+      );
+    }
+  }
+}
+
+function renderDelegationTree(delegations: DelegationSummary[]): void {
+  const container = $('delegation-tree-container');
+  const empty = $('delegation-tree-empty');
+  if (!container) return;
+
+  if (delegations.length === 0) {
+    if (empty) empty.hidden = false;
+    setSafeHTML(
+      container,
+      empty?.outerHTML || '<div class="empty-state"><p>No delegation sessions recorded.</p></div>',
+    );
+    return;
+  }
+
+  if (empty) empty.hidden = true;
+
+  // Stable ordering: sort deterministically by depth, then by delegationId ascending
+  const sorted = [...delegations].sort((a, b) => {
+    if (a.depth !== b.depth) return a.depth - b.depth;
+    return a.delegationId.localeCompare(b.delegationId);
+  });
+
+  // Bound to 100 nodes with cycle protection
+  const bounded = sorted.slice(0, 100);
+  const visited = new Set<string>();
+  const nodesHTML: string[] = [];
+
+  for (const session of bounded) {
+    if (visited.has(session.delegationId)) continue;
+    visited.add(session.delegationId);
+    nodesHTML.push(generateDelegationNodeHTML(session));
+  }
+
+  const truncationNotice =
+    delegations.length >= 100
+      ? '<div class="truncation-notice">Displaying maximum bounded sessions (100).</div>'
+      : '';
+
+  setSafeHTML(container, nodesHTML.join('') + truncationNotice);
+}
+
+function getDelegationStatusBadge(status: string): string {
+  switch (status) {
+    case 'ACCEPTED':
+      return '<span class="status-badge status-badge--submitted">Accepted</span>';
+    case 'EXECUTING':
+      return '<span class="status-badge status-badge--executing">Executing</span>';
+    case 'COMPLETED':
+      return '<span class="status-badge status-badge--completed">Completed</span>';
+    case 'FAILED':
+      return '<span class="status-badge status-badge--failed">Failed</span>';
+    case 'CANCELLED':
+      return '<span class="status-badge status-badge--cancelled">Cancelled</span>';
+    case 'REJECTED':
+      return '<span class="status-badge status-badge--failed">Rejected</span>';
+    case 'TIMED_OUT':
+      return '<span class="status-badge status-badge--failed">Timed Out</span>';
+    default:
+      return `<span class="status-badge">${sanitizeHTML(status)}</span>`;
+  }
+}
+
+function generateDelegationNodeHTML(session: DelegationSummary): string {
+  const delegationId = sanitizeHTML(session.delegationId);
+  const delegatorAgent = sanitizeHTML(session.delegatorAgentId);
+  const assignedAgent = sanitizeHTML(session.assignedAgentId);
+  const parentTask = sanitizeHTML(session.parentTaskId);
+  const childTask = sanitizeHTML(session.childTaskId);
+  const depth = Math.min(Math.max(session.depth || 1, 1), 3);
+  const depthClass = `delegation-tree-node--depth-${depth}`;
+  const statusBadge = getDelegationStatusBadge(session.status);
+  const relativeExpiry = formatRelativeTime(new Date(session.expiresAt).toISOString());
+
+  const receiptBadge = session.hasChildReceipt
+    ? `<span class="badge--receipt" title="Cryptographically verified child receipt">✓ Receipt Settled</span>`
+    : '';
+  const compensationBadge = session.hasCompensation
+    ? `<span class="badge--compensation" title="Compensation / rollback recorded">↺ Compensated</span>`
+    : '';
+  const leaseBadge = session.childLeaseId
+    ? `<span class="badge--lease" title="Child Execution Lease ID">Lease: ${sanitizeHTML(session.childLeaseId.substring(0, 8))}…</span>`
+    : '';
+
+  return `
+    <div class="delegation-tree-node ${depthClass}" role="treeitem" tabindex="0" data-delegation-id="${delegationId}" aria-expanded="true">
+      <div class="delegation-tree-node__header">
+        <div class="delegation-tree-node__agents">
+          <span class="agent-id-pill" title="Parent Delegator Agent">${delegatorAgent}</span>
+          <span class="delegation-arrow" aria-hidden="true">➔</span>
+          <span class="agent-id-pill" title="Assigned Child Agent">${assignedAgent}</span>
+        </div>
+        ${statusBadge}
+      </div>
+      <div class="delegation-tree-node__tasks">
+        <span>Task <span class="task-id-mono">${parentTask.substring(0, 8)}…</span></span>
+        <span class="delegation-arrow" aria-hidden="true">➔</span>
+        <span>Sub-Task <span class="task-id-mono">${childTask.substring(0, 8)}…</span></span>
+      </div>
+      <div class="delegation-tree-node__meta">
+        <span class="badge--depth">Depth ${depth}</span>
+        ${leaseBadge}
+        ${receiptBadge}
+        ${compensationBadge}
+        <span class="task-id-mono" style="margin-left: auto;">Expires: ${sanitizeHTML(relativeExpiry)}</span>
+      </div>
+    </div>
+  `;
+}
+
+export interface DelegationTimelineEvent {
+  id: string;
+  delegationId: string;
+  type:
+    | 'ACCEPTED'
+    | 'EXECUTING'
+    | 'COMPLETED'
+    | 'FAILED'
+    | 'CANCELLED'
+    | 'REJECTED'
+    | 'TIMED_OUT'
+    | 'RECEIPT'
+    | 'COMPENSATION';
+  timestamp: number;
+  title: string;
+  description: string;
+  delegatorAgentId: string;
+  assignedAgentId: string;
+  taskId: string;
+}
+
+function buildDelegationTimeline(delegations: DelegationSummary[]): DelegationTimelineEvent[] {
+  const events: DelegationTimelineEvent[] = [];
+
+  for (const session of delegations) {
+    // Event: Status event
+    const statusType = session.status as DelegationTimelineEvent['type'];
+    events.push({
+      id: `${session.delegationId}-${session.status.toLowerCase()}`,
+      delegationId: session.delegationId,
+      type: statusType,
+      timestamp: session.expiresAt,
+      title: `Delegation ${formatState(session.status)}`,
+      description: `${session.delegatorAgentId} ➔ ${session.assignedAgentId} (Sub-Task ${session.childTaskId.substring(0, 8)}…)`,
+      delegatorAgentId: session.delegatorAgentId,
+      assignedAgentId: session.assignedAgentId,
+      taskId: session.childTaskId,
+    });
+
+    // Event: Cryptographic settlement
+    if (session.hasChildReceipt) {
+      events.push({
+        id: `${session.delegationId}-receipt`,
+        delegationId: session.delegationId,
+        type: 'RECEIPT',
+        timestamp: session.expiresAt,
+        title: 'Receipt Cryptographically Settled',
+        description: `Evidence verified for child task ${session.childTaskId.substring(0, 8)}…`,
+        delegatorAgentId: session.delegatorAgentId,
+        assignedAgentId: session.assignedAgentId,
+        taskId: session.childTaskId,
+      });
+    }
+
+    // Event: Compensation / rollback
+    if (session.hasCompensation) {
+      events.push({
+        id: `${session.delegationId}-compensation`,
+        delegationId: session.delegationId,
+        type: 'COMPENSATION',
+        timestamp: session.expiresAt,
+        title: 'Compensation Rollback Executed',
+        description: `Compensating action settled for task ${session.childTaskId.substring(0, 8)}…`,
+        delegatorAgentId: session.delegatorAgentId,
+        assignedAgentId: session.assignedAgentId,
+        taskId: session.childTaskId,
+      });
+    }
+  }
+
+  // Sort descending by timestamp (newest first)
+  events.sort((a, b) => b.timestamp - a.timestamp);
+
+  // Bounded to 100 events
+  return events.slice(0, 100);
+}
+
+function generateDelegationTimelineItemHTML(event: DelegationTimelineEvent): string {
+  const iconMap: Record<DelegationTimelineEvent['type'], { icon: string; cls: string }> = {
+    ACCEPTED: { icon: '➕', cls: 'delegation-timeline-item__icon--created' },
+    EXECUTING: { icon: '⚡', cls: 'delegation-timeline-item__icon--executing' },
+    COMPLETED: { icon: '✓', cls: 'delegation-timeline-item__icon--completed' },
+    FAILED: { icon: '✗', cls: 'delegation-timeline-item__icon--failed' },
+    CANCELLED: { icon: '⊘', cls: 'delegation-timeline-item__icon--cancelled' },
+    REJECTED: { icon: '✗', cls: 'delegation-timeline-item__icon--failed' },
+    TIMED_OUT: { icon: '⏱', cls: 'delegation-timeline-item__icon--failed' },
+    RECEIPT: { icon: '🛡', cls: 'delegation-timeline-item__icon--receipt' },
+    COMPENSATION: { icon: '↺', cls: 'delegation-timeline-item__icon--compensation' },
+  };
+
+  const { icon, cls } = iconMap[event.type] || { icon: '•', cls: '' };
+  const relativeTime = formatRelativeTime(new Date(event.timestamp).toISOString());
+
+  return `
+    <div class="delegation-timeline-item" role="listitem">
+      <div class="delegation-timeline-item__icon ${cls}" aria-hidden="true">
+        ${icon}
+      </div>
+      <div class="delegation-timeline-item__body">
+        <span class="delegation-timeline-item__title">${sanitizeHTML(event.title)}</span>
+        <span class="delegation-timeline-item__desc">${sanitizeHTML(event.description)}</span>
+        <span class="delegation-timeline-item__time">${sanitizeHTML(relativeTime)} · Delegation ${sanitizeHTML(event.delegationId.substring(0, 8))}…</span>
+      </div>
+    </div>
+  `;
+}
+
+function renderDelegationTimeline(delegations: DelegationSummary[]): void {
+  const container = $('delegation-timeline-container');
+  const empty = $('delegation-timeline-empty');
+  if (!container) return;
+
+  const events = buildDelegationTimeline(delegations);
+
+  if (events.length === 0) {
+    if (empty) empty.hidden = false;
+    setSafeHTML(
+      container,
+      empty?.outerHTML || '<div class="empty-state"><p>No timeline events available.</p></div>',
+    );
+    return;
+  }
+
+  if (empty) empty.hidden = true;
+
+  const itemsHTML = events.map((ev) => generateDelegationTimelineItemHTML(ev)).join('');
+  const truncationNotice =
+    events.length >= 100
+      ? '<div class="truncation-notice">Displaying maximum bounded events (100).</div>'
+      : '';
+
+  setSafeHTML(container, itemsHTML + truncationNotice);
+}
+
+// ============================================================
 // Polling (Auto-Refresh)
 // ============================================================
 
@@ -1043,6 +1560,8 @@ async function init(): Promise<void> {
   initThemeToggle();
   initTasksView();
   initActivityView();
+  initAgentsView();
+  initDelegationsView();
   initTaskDetailModal();
 
   // Initial data load
@@ -1065,4 +1584,22 @@ if (typeof document !== 'undefined') {
 }
 
 // Export for testing
-export { state, apiClient, switchView, formatState, sanitizeHTML as _sanitizeHTML };
+export {
+  state,
+  apiClient,
+  switchView,
+  loadAgents,
+  loadDelegations,
+  renderAgentRoster,
+  renderDelegationTree,
+  renderDelegationTimeline,
+  buildDelegationTimeline,
+  generateAgentCardHTML,
+  generateDelegationNodeHTML,
+  generateDelegationTimelineItemHTML,
+  getRoleBadge,
+  getAgentStatusPill,
+  getDelegationStatusBadge,
+  formatState,
+  sanitizeHTML as _sanitizeHTML,
+};
