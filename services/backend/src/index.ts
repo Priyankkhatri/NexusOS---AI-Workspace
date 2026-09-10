@@ -19,3 +19,4 @@ export * from './server/app.js';
 export * from './security/redaction-filter.js';
 export * from './memory/index.js';
 export * from './planner/index.js';
+export * from './agents/index.js';

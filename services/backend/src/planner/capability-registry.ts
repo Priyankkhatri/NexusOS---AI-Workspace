@@ -157,6 +157,15 @@ export class DefaultCapabilityRegistry implements ICapabilityRegistryBoundary {
       riskTier: 'MEDIUM',
       description: 'Execute registered plugin action',
     });
+
+    // Agent Delegation Runtime (Task 060)
+    this.register({
+      id: 'agent.delegate',
+      category: 'agent',
+      riskTier: 'MEDIUM',
+      description:
+        'Delegate bounded sub-task to specialized logical sub-agent with attenuated lease',
+    });
   }
 
   public register(meta: CapabilityMetadata): void {
