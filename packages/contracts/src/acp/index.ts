@@ -1,6 +1,10 @@
 import { z } from 'zod';
 import { CorrelationIdSchema, UUIDSchema } from '../identity/index.js';
 
+export * from './federation.js';
+export * from './delegation.js';
+export * from './directory.js';
+
 /**
  * Agent Communication Protocol (ACP) Message Envelope Schema matching PRD Section 1284 and API Contract Specification
  */
