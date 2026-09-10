@@ -12,6 +12,9 @@ import {
   MemoryGraphEdge,
   MemoryGraphQueryRequest,
   MemoryGraphQueryResponse,
+  VectorEmbedding,
+  VectorSearchRequest,
+  VectorSearchResponse,
 } from '@nexusos/contracts';
 
 export interface MemoryServiceContext {
@@ -95,6 +98,16 @@ export interface IMemoryStore {
     tenantId: string,
     workspaceId: string,
   ): Promise<number>;
+
+  // Task 062 Vector Store Extensions (062-SEC-01, 062-SEC-05, 062-SEC-06)
+  saveVector?(vector: VectorEmbedding): Promise<VectorEmbedding>;
+  getVector?(
+    memoryRecordId: string,
+    tenantId: string,
+    workspaceId: string,
+  ): Promise<VectorEmbedding | null>;
+  deleteVector?(memoryRecordId: string, tenantId: string, workspaceId: string): Promise<boolean>;
+  searchVectors?(request: VectorSearchRequest): Promise<VectorSearchResponse>;
 }
 
 export interface IMemoryCompressor {
@@ -178,5 +191,23 @@ export class MemorySecretDetectedError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'MemorySecretDetectedError';
+  }
+}
+
+export class VectorDimensionMismatchError extends Error {
+  public readonly code = 'VECTOR_DIMENSION_MISMATCH';
+  constructor(expected: number, actual: number) {
+    super(
+      `062-SEC-05: Vector dimension mismatch: expected dimension ${expected}, but got ${actual}.`,
+    );
+    this.name = 'VectorDimensionMismatchError';
+  }
+}
+
+export class VectorIndexError extends Error {
+  public readonly code = 'VECTOR_INDEX_ERROR';
+  constructor(message: string) {
+    super(message);
+    this.name = 'VectorIndexError';
   }
 }

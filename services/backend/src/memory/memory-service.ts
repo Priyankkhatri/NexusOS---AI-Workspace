@@ -23,6 +23,11 @@ import {
   MemoryGraphEdge,
   MemoryGraphQueryRequest,
   MemoryGraphQueryResponse,
+  VectorEmbedding,
+  VectorEmbeddingSchema,
+  VectorSearchRequest,
+  VectorSearchRequestSchema,
+  VectorSearchResponse,
 } from '@nexusos/contracts';
 import {
   IMemoryStore,
@@ -35,6 +40,7 @@ import { Logger } from '../observability/logger.js';
 import { MemoryCompressor } from './memory-compressor.js';
 import { EpisodicLearner } from './episodic-learner.js';
 import { GraphProjectionEngine } from './graph-projection-engine.js';
+import { IVectorIndex } from './vector-index.js';
 
 export interface MemoryServiceOptions {
   store: IMemoryStore;
@@ -42,6 +48,7 @@ export interface MemoryServiceOptions {
   learner?: EpisodicLearner;
   episodicLearner?: EpisodicLearner;
   graphEngine?: GraphProjectionEngine;
+  vectorIndex?: IVectorIndex;
   logger?: Logger;
   nowProvider?: () => string;
 }
@@ -51,11 +58,13 @@ export class MemoryService {
   private readonly compressor: MemoryCompressor;
   private readonly learner: EpisodicLearner;
   private readonly graphEngine: GraphProjectionEngine;
+  private readonly vectorIndex?: IVectorIndex;
   private readonly logger: Logger;
   private readonly now: () => string;
 
   constructor(options: MemoryServiceOptions) {
     this.store = options.store;
+    this.vectorIndex = options.vectorIndex;
     this.logger = options.logger ?? new Logger('info');
     this.now = options.nowProvider ?? (() => new Date().toISOString());
     this.compressor =
@@ -79,6 +88,10 @@ export class MemoryService {
 
   public getGraphEngine(): GraphProjectionEngine {
     return this.graphEngine;
+  }
+
+  public getVectorIndex(): IVectorIndex | undefined {
+    return this.vectorIndex;
   }
 
   /**
@@ -280,6 +293,66 @@ export class MemoryService {
       retrievalMode: 'LEXICAL',
       query: validated.query,
       consumedTokenBudget: consumedTokens,
+    };
+  }
+
+  /**
+   * Save a vector embedding associated with a memory record.
+   * 062-SEC-01: Partitioned by tenant and workspace.
+   */
+  public async saveVector(
+    vector: VectorEmbedding,
+    context: MemoryServiceContext,
+  ): Promise<VectorEmbedding> {
+    const validated = VectorEmbeddingSchema.parse(vector);
+    this.assertTenantAndWorkspaceMatch(context, validated);
+
+    if (this.store.saveVector) {
+      return this.store.saveVector(validated);
+    }
+    if (this.vectorIndex) {
+      this.vectorIndex.upsert({
+        id: validated.id,
+        memoryRecordId: validated.memoryRecordId,
+        tenantId: validated.tenantId,
+        workspaceId: validated.workspaceId,
+        values: validated.values,
+        dimensions: validated.dimensions,
+        normalized: validated.normalized,
+        metric: validated.metric,
+        metadata: validated.metadata,
+        createdAt: validated.createdAt,
+      });
+      return validated;
+    }
+    return validated;
+  }
+
+  /**
+   * Search vectors using similarity metrics.
+   * 062-SEC-01: Tenant and workspace scoped.
+   * 062-SEC-06: Pre-filtering by caller sensitivity hierarchy.
+   * 062-SEC-07: Results are non-authoritative advisory data.
+   */
+  public async searchVectors(
+    request: VectorSearchRequest,
+    context: MemoryServiceContext,
+  ): Promise<VectorSearchResponse> {
+    const validated = VectorSearchRequestSchema.parse(request);
+    this.assertTenantAndWorkspaceMatch(context, validated);
+
+    if (this.store.searchVectors) {
+      return this.store.searchVectors(validated);
+    }
+    if (this.vectorIndex) {
+      return this.vectorIndex.search(validated);
+    }
+
+    return {
+      items: [],
+      total: 0,
+      metric: validated.metric ?? 'COSINE',
+      retrievalMode: 'SEMANTIC_DEGRADED',
     };
   }
 

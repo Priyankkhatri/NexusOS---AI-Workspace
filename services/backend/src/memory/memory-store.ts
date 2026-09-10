@@ -12,6 +12,10 @@ import {
   MemoryGraphQueryRequest,
   MemoryGraphQueryResponse,
   isPlaybookPlanningEligible,
+  VectorEmbedding,
+  VectorSearchRequest,
+  VectorSearchResponse,
+  DEFAULT_VECTOR_DIMENSION,
 } from '@nexusos/contracts';
 import {
   IMemoryStore,
@@ -19,9 +23,11 @@ import {
   MemoryVersionConflictError,
   MemorySecurityViolationError,
 } from './types.js';
+import { VectorIndex } from './vector-index.js';
 
 export interface InMemoryStoreOptions {
   simulateFailure?: boolean;
+  vectorDimensions?: number;
 }
 
 /**
@@ -42,6 +48,9 @@ export class InMemoryMemoryStore implements IMemoryStore {
   private readonly graphNodes = new Map<string, MemoryGraphNode>();
   // Graph edges: "tenantId:workspaceId:edgeId" -> MemoryGraphEdge
   private readonly graphEdges = new Map<string, MemoryGraphEdge>();
+  // Vector embeddings: "tenantId:workspaceId:memoryRecordId" -> VectorEmbedding
+  private readonly vectorEmbeddings = new Map<string, VectorEmbedding>();
+  private readonly vectorIndex: VectorIndex;
 
   public simulateFailure = false;
 
@@ -49,6 +58,9 @@ export class InMemoryMemoryStore implements IMemoryStore {
     if (options?.simulateFailure) {
       this.simulateFailure = true;
     }
+    this.vectorIndex = new VectorIndex({
+      dimensions: options?.vectorDimensions ?? DEFAULT_VECTOR_DIMENSION,
+    });
   }
 
   private getKey(tenantId: string, workspaceId: string, id: string): string {
@@ -187,6 +199,10 @@ export class InMemoryMemoryStore implements IMemoryStore {
     // 058-SEC-05: Cascading tombstone to graph projections and derived compressions
     await this.revokeGraphForMemory(id, tenantId, workspaceId);
     await this.markDerivedCompressionsTombstoned(id, tenantId, workspaceId);
+
+    // 062-SEC-01 / 062-SEC-05: Cascading deletion of vector index entry on tombstone
+    this.vectorIndex.delete(id, tenantId, workspaceId);
+    this.vectorEmbeddings.delete(key);
 
     return JSON.parse(JSON.stringify(tombstoned));
   }
@@ -719,6 +735,66 @@ export class InMemoryMemoryStore implements IMemoryStore {
     return false;
   }
 
+  // -------------------------------------------------------------------------
+  // Task 062 Store: Vector Embedding Storage & Similarity Search
+  // -------------------------------------------------------------------------
+
+  public async saveVector(vector: VectorEmbedding): Promise<VectorEmbedding> {
+    this.checkFailure();
+    const key = this.getKey(vector.tenantId, vector.workspaceId, vector.memoryRecordId);
+    const cloned = JSON.parse(JSON.stringify(vector)) as VectorEmbedding;
+    this.vectorEmbeddings.set(key, cloned);
+
+    // Synchronize to in-process vector similarity index
+    const existingRecord = this.records.get(key);
+    this.vectorIndex.upsert({
+      id: vector.id,
+      memoryRecordId: vector.memoryRecordId,
+      tenantId: vector.tenantId,
+      workspaceId: vector.workspaceId,
+      values: vector.values,
+      dimensions: vector.dimensions,
+      normalized: vector.normalized,
+      metric: vector.metric,
+      sensitivity: existingRecord?.sensitivity,
+      status: existingRecord?.status ?? MemoryStatus.ACTIVE,
+      classes: existingRecord?.class ? [existingRecord.class] : undefined,
+      tags: existingRecord?.tags,
+      metadata: vector.metadata,
+      createdAt: vector.createdAt,
+    });
+
+    return JSON.parse(JSON.stringify(cloned));
+  }
+
+  public async getVector(
+    memoryRecordId: string,
+    tenantId: string,
+    workspaceId: string,
+  ): Promise<VectorEmbedding | null> {
+    this.checkFailure();
+    const key = this.getKey(tenantId, workspaceId, memoryRecordId);
+    const existing = this.vectorEmbeddings.get(key);
+    if (!existing) return null;
+    return JSON.parse(JSON.stringify(existing));
+  }
+
+  public async deleteVector(
+    memoryRecordId: string,
+    tenantId: string,
+    workspaceId: string,
+  ): Promise<boolean> {
+    this.checkFailure();
+    const key = this.getKey(tenantId, workspaceId, memoryRecordId);
+    this.vectorIndex.delete(memoryRecordId, tenantId, workspaceId);
+    return this.vectorEmbeddings.delete(key);
+  }
+
+  public async searchVectors(request: VectorSearchRequest): Promise<VectorSearchResponse> {
+    this.checkFailure();
+    return this.vectorIndex.search(request);
+  }
+
   public clear(): void {
     this.records.clear();
     this.proposals.clear();
@@ -726,5 +802,7 @@ export class InMemoryMemoryStore implements IMemoryStore {
     this.playbooks.clear();
     this.graphNodes.clear();
     this.graphEdges.clear();
+    this.vectorEmbeddings.clear();
+    this.vectorIndex.clear();
   }
 }
