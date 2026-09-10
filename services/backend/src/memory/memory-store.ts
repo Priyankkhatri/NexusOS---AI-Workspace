@@ -5,6 +5,13 @@ import {
   MemoryStatus,
   MemorySensitivity,
   SENSITIVITY_HIERARCHY,
+  EpisodicEpisode,
+  ProceduralPlaybookProposal,
+  MemoryGraphNode,
+  MemoryGraphEdge,
+  MemoryGraphQueryRequest,
+  MemoryGraphQueryResponse,
+  isPlaybookPlanningEligible,
 } from '@nexusos/contracts';
 import {
   IMemoryStore,
@@ -19,13 +26,23 @@ export interface InMemoryStoreOptions {
 
 /**
  * Governed Persistent Memory Store Implementation
- * Provides multi-tenant partitioning, version-aware atomic updates, tombstones, and safe search.
+ * Provides multi-tenant partitioning, version-aware atomic updates, tombstones, safe search,
+ * episodic episode persistence, procedural playbooks, and knowledge graph projections.
  */
 export class InMemoryMemoryStore implements IMemoryStore {
   // Primary storage: composite key "tenantId:workspaceId:memoryId" -> MemoryRecord
   private readonly records = new Map<string, MemoryRecord>();
   // Proposals storage: "tenantId:workspaceId:proposalId" -> MemoryProposal
   private readonly proposals = new Map<string, MemoryProposal>();
+  // Episodes storage: "tenantId:workspaceId:episodeId" -> EpisodicEpisode
+  private readonly episodes = new Map<string, EpisodicEpisode>();
+  // Playbooks storage: "tenantId:workspaceId:playbookId" -> ProceduralPlaybookProposal
+  private readonly playbooks = new Map<string, ProceduralPlaybookProposal>();
+  // Graph nodes: "tenantId:workspaceId:nodeId" -> MemoryGraphNode
+  private readonly graphNodes = new Map<string, MemoryGraphNode>();
+  // Graph edges: "tenantId:workspaceId:edgeId" -> MemoryGraphEdge
+  private readonly graphEdges = new Map<string, MemoryGraphEdge>();
+
   public simulateFailure = false;
 
   constructor(options?: InMemoryStoreOptions) {
@@ -43,6 +60,10 @@ export class InMemoryMemoryStore implements IMemoryStore {
       throw new Error('056-STORE-FAIL: Persistent memory storage backend unreachable.');
     }
   }
+
+  // -------------------------------------------------------------------------
+  // Core Memory CRUD
+  // -------------------------------------------------------------------------
 
   public async create(record: MemoryRecord): Promise<MemoryRecord> {
     this.checkFailure();
@@ -107,17 +128,18 @@ export class InMemoryMemoryStore implements IMemoryStore {
 
     const key = this.getKey(tenantId, workspaceId, id);
     const existing = this.records.get(key);
-    if (!existing || existing.status === MemoryStatus.TOMBSTONED || this.isExpired(existing)) {
+    if (!existing) {
       throw new MemoryNotFoundError(id);
     }
 
-    // Enforce 056-SEC-06: Monotonic versioning and optimistic lock
+    if (existing.status === MemoryStatus.TOMBSTONED) {
+      throw new MemoryNotFoundError(id);
+    }
+
+    // Optimistic locking
     if (existing.version !== expectedVersion) {
       throw new MemoryVersionConflictError(id, existing.version, expectedVersion);
     }
-
-    const nextVersion = existing.version + 1;
-    const now = new Date().toISOString();
 
     const updated: MemoryRecord = {
       ...existing,
@@ -125,8 +147,8 @@ export class InMemoryMemoryStore implements IMemoryStore {
       id: existing.id,
       tenantId: existing.tenantId,
       workspaceId: existing.workspaceId,
-      version: nextVersion,
-      updatedAt: now,
+      version: existing.version + 1,
+      updatedAt: new Date().toISOString(),
     };
 
     this.records.set(key, JSON.parse(JSON.stringify(updated)));
@@ -144,7 +166,7 @@ export class InMemoryMemoryStore implements IMemoryStore {
 
     const key = this.getKey(tenantId, workspaceId, id);
     const existing = this.records.get(key);
-    if (!existing || existing.status === MemoryStatus.TOMBSTONED) {
+    if (!existing) {
       throw new MemoryNotFoundError(id);
     }
 
@@ -152,16 +174,20 @@ export class InMemoryMemoryStore implements IMemoryStore {
       throw new MemoryVersionConflictError(id, existing.version, expectedVersion);
     }
 
-    const nextVersion = existing.version + 1;
     const tombstoned: MemoryRecord = {
       ...existing,
       status: MemoryStatus.TOMBSTONED,
       tombstonedAt,
-      version: nextVersion,
+      version: existing.version + 1,
       updatedAt: tombstonedAt,
     };
 
     this.records.set(key, JSON.parse(JSON.stringify(tombstoned)));
+
+    // 058-SEC-05: Cascading tombstone to graph projections and derived compressions
+    await this.revokeGraphForMemory(id, tenantId, workspaceId);
+    await this.markDerivedCompressionsTombstoned(id, tenantId, workspaceId);
+
     return JSON.parse(JSON.stringify(tombstoned));
   }
 
@@ -170,47 +196,48 @@ export class InMemoryMemoryStore implements IMemoryStore {
   ): Promise<{ records: MemoryRecord[]; total: number }> {
     this.checkFailure();
 
-    const { tenantId, workspaceId } = request;
-    if (!tenantId || !workspaceId) {
-      return { records: [], total: 0 };
-    }
-
-    const matched: MemoryRecord[] = [];
+    const tenantId = request.tenantId;
+    const workspaceId = request.workspaceId;
     const allowedStatuses = new Set(request.status ?? [MemoryStatus.ACTIVE]);
-    const allowedClasses = request.classes ? new Set(request.classes) : null;
-    const allowedMaxSensHierarchy = request.maxSensitivity
+    const classes = request.classes ? new Set(request.classes) : null;
+    const tags = request.tags ? new Set(request.tags) : null;
+    const maxSensitivityRank = request.maxSensitivity
       ? SENSITIVITY_HIERARCHY[request.maxSensitivity]
       : SENSITIVITY_HIERARCHY[MemorySensitivity.RESTRICTED];
+    const minConfidence = request.minConfidence ?? 0.0;
+    const nowMs = Date.now();
+
+    const matching: MemoryRecord[] = [];
 
     for (const record of this.records.values()) {
-      // 1. Mandatory Tenant and Workspace boundary check
+      // 1. Strict Tenant and Workspace Isolation (056-SEC-02)
       if (record.tenantId !== tenantId || record.workspaceId !== workspaceId) {
         continue;
       }
 
-      // 2. Tombstone & Expiry defense
-      if (record.status === MemoryStatus.TOMBSTONED || this.isExpired(record)) {
-        continue;
-      }
-
-      // 3. Status check
+      // 2. Status check
       if (!allowedStatuses.has(record.status)) {
         continue;
       }
 
-      // 4. Sensitivity ceiling check
-      const recordSensHierarchy = SENSITIVITY_HIERARCHY[record.sensitivity];
-      if (recordSensHierarchy > allowedMaxSensHierarchy) {
+      // 3. Expiry check
+      if (this.isExpired(record, nowMs)) {
         continue;
       }
 
-      // 5. Class filter check
-      if (allowedClasses && !allowedClasses.has(record.class)) {
+      // 4. Sensitivity hierarchy check
+      const recordRank = SENSITIVITY_HIERARCHY[record.sensitivity] ?? 0;
+      if (recordRank > maxSensitivityRank) {
         continue;
       }
 
-      // 6. Confidence filter check
-      if (request.minConfidence !== undefined && record.confidence < request.minConfidence) {
+      // 5. Confidence check
+      if (record.confidence < minConfidence) {
+        continue;
+      }
+
+      // 6. Memory class check
+      if (classes && !classes.has(record.class)) {
         continue;
       }
 
@@ -219,41 +246,47 @@ export class InMemoryMemoryStore implements IMemoryStore {
         continue;
       }
 
-      // 8. Tags filter check
-      if (request.tags && request.tags.length > 0) {
-        const hasAllTags = request.tags.every((t) => record.tags.includes(t));
-        if (!hasAllTags) {
+      // 8. Tag check
+      if (tags) {
+        const hasMatchingTag = record.tags.some((t) => tags.has(t));
+        if (!hasMatchingTag) {
           continue;
         }
       }
 
-      // 9. Query text search filter
-      if (request.query && request.query.trim()) {
-        const terms = request.query.toLowerCase().split(/\s+/).filter(Boolean);
-        const searchableText =
-          `${record.title ?? ''} ${record.content} ${record.summary ?? ''} ${record.tags.join(' ')}`.toLowerCase();
-        const hasMatch = terms.some((term) => searchableText.includes(term));
-        if (!hasMatch) {
+      // 9. Lexical query match
+      if (request.query && request.query.trim().length > 0) {
+        const q = request.query.toLowerCase();
+        const contentMatch = record.content.toLowerCase().includes(q);
+        const titleMatch = record.title ? record.title.toLowerCase().includes(q) : false;
+        const tagMatch = record.tags.some((t) => t.toLowerCase().includes(q));
+
+        if (!contentMatch && !titleMatch && !tagMatch) {
           continue;
         }
       }
 
-      matched.push(JSON.parse(JSON.stringify(record)));
+      matching.push(JSON.parse(JSON.stringify(record)));
     }
 
-    const total = matched.length;
+    const total = matching.length;
     const offset = request.offset ?? 0;
     const limit = request.limit ?? 10;
-    const paginated = matched.slice(offset, offset + limit);
+    const paginated = matching.slice(offset, offset + limit);
 
     return { records: paginated, total };
   }
 
+  // -------------------------------------------------------------------------
+  // Proposals
+  // -------------------------------------------------------------------------
+
   public async saveProposal(proposal: MemoryProposal): Promise<MemoryProposal> {
     this.checkFailure();
     const key = this.getKey(proposal.tenantId, proposal.workspaceId, proposal.proposalId);
-    this.proposals.set(key, JSON.parse(JSON.stringify(proposal)));
-    return JSON.parse(JSON.stringify(proposal));
+    const cloned = JSON.parse(JSON.stringify(proposal)) as MemoryProposal;
+    this.proposals.set(key, cloned);
+    return JSON.parse(JSON.stringify(cloned));
   }
 
   public async getProposal(
@@ -263,9 +296,9 @@ export class InMemoryMemoryStore implements IMemoryStore {
   ): Promise<MemoryProposal | null> {
     this.checkFailure();
     const key = this.getKey(tenantId, workspaceId, proposalId);
-    const found = this.proposals.get(key);
-    if (!found) return null;
-    return JSON.parse(JSON.stringify(found));
+    const existing = this.proposals.get(key);
+    if (!existing) return null;
+    return JSON.parse(JSON.stringify(existing));
   }
 
   public async updateProposal(
@@ -279,19 +312,18 @@ export class InMemoryMemoryStore implements IMemoryStore {
   ): Promise<MemoryProposal> {
     this.checkFailure();
     const key = this.getKey(tenantId, workspaceId, proposalId);
-    const found = this.proposals.get(key);
-    if (!found) {
-      throw new Error(`Proposal '${proposalId}' not found.`);
+    const existing = this.proposals.get(key);
+    if (!existing) {
+      throw new MemoryNotFoundError(`Proposal '${proposalId}' not found.`);
     }
 
     const updated: MemoryProposal = {
-      ...found,
+      ...existing,
       status,
       resolvedBy,
       resolvedAt,
-      reason: reason ?? found.reason,
+      reason,
     };
-
     this.proposals.set(key, JSON.parse(JSON.stringify(updated)));
     return JSON.parse(JSON.stringify(updated));
   }
@@ -315,6 +347,353 @@ export class InMemoryMemoryStore implements IMemoryStore {
       }
     }
     return purged;
+  }
+
+  // -------------------------------------------------------------------------
+  // Task 058 Store: Episodic Episodes
+  // -------------------------------------------------------------------------
+
+  public async saveEpisode(episode: EpisodicEpisode): Promise<EpisodicEpisode> {
+    this.checkFailure();
+    const key = this.getKey(episode.tenantId, episode.workspaceId, episode.id);
+    const cloned = JSON.parse(JSON.stringify(episode)) as EpisodicEpisode;
+    this.episodes.set(key, cloned);
+    return JSON.parse(JSON.stringify(cloned));
+  }
+
+  public async getEpisode(
+    id: string,
+    tenantId: string,
+    workspaceId: string,
+  ): Promise<EpisodicEpisode | null> {
+    this.checkFailure();
+    const key = this.getKey(tenantId, workspaceId, id);
+    const existing = this.episodes.get(key);
+    if (!existing) return null;
+    return JSON.parse(JSON.stringify(existing));
+  }
+
+  public async listEpisodes(
+    tenantId: string,
+    workspaceId: string,
+    limit: number = 50,
+    offset: number = 0,
+  ): Promise<{ episodes: EpisodicEpisode[]; total: number }> {
+    this.checkFailure();
+    const matching: EpisodicEpisode[] = [];
+    for (const ep of this.episodes.values()) {
+      if (ep.tenantId === tenantId && ep.workspaceId === workspaceId) {
+        matching.push(JSON.parse(JSON.stringify(ep)));
+      }
+    }
+    matching.sort((a, b) => new Date(b.completedAt).getTime() - new Date(a.completedAt).getTime());
+    const total = matching.length;
+    const paginated = matching.slice(offset, offset + limit);
+    return { episodes: paginated, total };
+  }
+
+  // -------------------------------------------------------------------------
+  // Task 058 Store: Procedural Playbooks
+  // -------------------------------------------------------------------------
+
+  public async savePlaybook(
+    playbook: ProceduralPlaybookProposal,
+  ): Promise<ProceduralPlaybookProposal> {
+    this.checkFailure();
+    const key = this.getKey(playbook.tenantId, playbook.workspaceId, playbook.id);
+    const cloned = JSON.parse(JSON.stringify(playbook)) as ProceduralPlaybookProposal;
+    this.playbooks.set(key, cloned);
+    return JSON.parse(JSON.stringify(cloned));
+  }
+
+  public async getPlaybook(
+    id: string,
+    tenantId: string,
+    workspaceId: string,
+  ): Promise<ProceduralPlaybookProposal | null> {
+    this.checkFailure();
+    const key = this.getKey(tenantId, workspaceId, id);
+    const existing = this.playbooks.get(key);
+    if (!existing) return null;
+    return JSON.parse(JSON.stringify(existing));
+  }
+
+  public async listPlaybooks(
+    tenantId: string,
+    workspaceId: string,
+    options?: { planningEligibleOnly?: boolean },
+  ): Promise<ProceduralPlaybookProposal[]> {
+    this.checkFailure();
+    const result: ProceduralPlaybookProposal[] = [];
+    for (const pb of this.playbooks.values()) {
+      if (pb.tenantId === tenantId && pb.workspaceId === workspaceId) {
+        if (options?.planningEligibleOnly) {
+          if (isPlaybookPlanningEligible(pb)) {
+            result.push(JSON.parse(JSON.stringify(pb)));
+          }
+        } else {
+          result.push(JSON.parse(JSON.stringify(pb)));
+        }
+      }
+    }
+    return result;
+  }
+
+  // -------------------------------------------------------------------------
+  // Task 058 Store: Knowledge Graph Projections (058-SEC-03)
+  // -------------------------------------------------------------------------
+
+  public async saveGraphNode(node: MemoryGraphNode): Promise<MemoryGraphNode> {
+    this.checkFailure();
+    const key = this.getKey(node.tenantId, node.workspaceId, node.id);
+    const cloned = JSON.parse(JSON.stringify(node)) as MemoryGraphNode;
+    this.graphNodes.set(key, cloned);
+    return JSON.parse(JSON.stringify(cloned));
+  }
+
+  public async getGraphNode(
+    id: string,
+    tenantId: string,
+    workspaceId: string,
+  ): Promise<MemoryGraphNode | null> {
+    this.checkFailure();
+    const key = this.getKey(tenantId, workspaceId, id);
+    const node = this.graphNodes.get(key);
+    if (!node) return null;
+    return JSON.parse(JSON.stringify(node));
+  }
+
+  public async saveGraphEdge(edge: MemoryGraphEdge): Promise<MemoryGraphEdge> {
+    this.checkFailure();
+    const key = this.getKey(edge.tenantId, edge.workspaceId, edge.id);
+    const cloned = JSON.parse(JSON.stringify(edge)) as MemoryGraphEdge;
+    this.graphEdges.set(key, cloned);
+    return JSON.parse(JSON.stringify(cloned));
+  }
+
+  public async getGraphEdge(
+    id: string,
+    tenantId: string,
+    workspaceId: string,
+  ): Promise<MemoryGraphEdge | null> {
+    this.checkFailure();
+    const key = this.getKey(tenantId, workspaceId, id);
+    const edge = this.graphEdges.get(key);
+    if (!edge) return null;
+    return JSON.parse(JSON.stringify(edge));
+  }
+
+  public async queryGraph(request: MemoryGraphQueryRequest): Promise<MemoryGraphQueryResponse> {
+    this.checkFailure();
+
+    const tenantId = request.tenantId;
+    const workspaceId = request.workspaceId;
+    const startNodeId = request.startNodeId;
+    const maxDepth = request.maxDepth ?? 2;
+    const minConfidence = request.minConfidence ?? 0.0;
+    const limit = request.limit ?? 25;
+    const allowedNodeTypes = request.nodeTypes ? new Set(request.nodeTypes) : null;
+    const allowedEdgeTypes = request.edgeTypes ? new Set(request.edgeTypes) : null;
+
+    // Collect all nodes and edges belonging strictly to this tenant and workspace (058-SEC-03)
+    const wsNodes = new Map<string, MemoryGraphNode>();
+    for (const n of this.graphNodes.values()) {
+      if (n.tenantId === tenantId && n.workspaceId === workspaceId) {
+        if (!allowedNodeTypes || allowedNodeTypes.has(n.nodeType)) {
+          if (n.confidence >= minConfidence) {
+            wsNodes.set(n.id, JSON.parse(JSON.stringify(n)));
+          }
+        }
+      }
+    }
+
+    const wsEdges: MemoryGraphEdge[] = [];
+    for (const e of this.graphEdges.values()) {
+      if (e.tenantId === tenantId && e.workspaceId === workspaceId) {
+        if (!allowedEdgeTypes || allowedEdgeTypes.has(e.edgeType)) {
+          if (e.confidence >= minConfidence) {
+            wsEdges.push(JSON.parse(JSON.stringify(e)));
+          }
+        }
+      }
+    }
+
+    // Traversal logic
+    if (startNodeId) {
+      // Start node must exist within workspace
+      if (!wsNodes.has(startNodeId)) {
+        return {
+          nodes: [],
+          edges: [],
+          traversalDepth: 0,
+          tenantId,
+          workspaceId,
+          totalNodes: 0,
+          totalEdges: 0,
+        };
+      }
+
+      const visitedNodes = new Set<string>([startNodeId]);
+      const visitedEdgeIds = new Set<string>();
+      const resultEdges: MemoryGraphEdge[] = [];
+      let currentFrontier = new Set<string>([startNodeId]);
+      let currentDepth = 0;
+
+      while (currentFrontier.size > 0 && currentDepth < maxDepth) {
+        const nextFrontier = new Set<string>();
+        let progressed = false;
+
+        for (const edge of wsEdges) {
+          if (visitedEdgeIds.has(edge.id)) {
+            continue;
+          }
+          if (currentFrontier.has(edge.sourceNodeId)) {
+            const targetId = edge.targetNodeId;
+            if (wsNodes.has(targetId)) {
+              visitedEdgeIds.add(edge.id);
+              resultEdges.push(edge);
+              progressed = true;
+              if (!visitedNodes.has(targetId)) {
+                visitedNodes.add(targetId);
+                nextFrontier.add(targetId);
+              }
+            }
+          } else if (currentFrontier.has(edge.targetNodeId)) {
+            const sourceId = edge.sourceNodeId;
+            if (wsNodes.has(sourceId)) {
+              visitedEdgeIds.add(edge.id);
+              resultEdges.push(edge);
+              progressed = true;
+              if (!visitedNodes.has(sourceId)) {
+                visitedNodes.add(sourceId);
+                nextFrontier.add(sourceId);
+              }
+            }
+          }
+        }
+
+        if (progressed || nextFrontier.size > 0) {
+          currentDepth++;
+        }
+        currentFrontier = nextFrontier;
+      }
+
+      const selectedNodes = Array.from(visitedNodes)
+        .map((id) => wsNodes.get(id)!)
+        .filter(Boolean)
+        .slice(0, limit);
+
+      const nodeIds = new Set(selectedNodes.map((n) => n.id));
+      const selectedEdges = resultEdges
+        .filter((e) => nodeIds.has(e.sourceNodeId) && nodeIds.has(e.targetNodeId))
+        .slice(0, limit);
+
+      return {
+        nodes: selectedNodes,
+        edges: selectedEdges,
+        traversalDepth: currentDepth,
+        tenantId,
+        workspaceId,
+        totalNodes: selectedNodes.length,
+        totalEdges: selectedEdges.length,
+      };
+    }
+
+    // Unanchored query: return all workspace nodes and matching edges up to limit
+    const allNodes = Array.from(wsNodes.values()).slice(0, limit);
+    const nodeIds = new Set(allNodes.map((n) => n.id));
+    const allEdges = wsEdges
+      .filter((e) => nodeIds.has(e.sourceNodeId) && nodeIds.has(e.targetNodeId))
+      .slice(0, limit);
+
+    return {
+      nodes: allNodes,
+      edges: allEdges,
+      traversalDepth: 1,
+      tenantId,
+      workspaceId,
+      totalNodes: allNodes.length,
+      totalEdges: allEdges.length,
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // Task 058 Store: Atomic Forgetting & Graph Revocation (058-SEC-05)
+  // -------------------------------------------------------------------------
+
+  public async revokeGraphForMemory(
+    memoryRecordId: string,
+    tenantId: string,
+    workspaceId: string,
+  ): Promise<{ revokedNodes: number; revokedEdges: number }> {
+    this.checkFailure();
+
+    // 1. Find nodes associated with this memoryRecordId
+    const targetNodeIds = new Set<string>();
+    for (const [key, node] of this.graphNodes.entries()) {
+      if (
+        node.tenantId === tenantId &&
+        node.workspaceId === workspaceId &&
+        node.memoryRecordId === memoryRecordId
+      ) {
+        targetNodeIds.add(node.id);
+        this.graphNodes.delete(key);
+      }
+    }
+
+    // 2. Find and delete edges referencing these nodes
+    let deletedEdgesCount = 0;
+    for (const [key, edge] of this.graphEdges.entries()) {
+      if (edge.tenantId === tenantId && edge.workspaceId === workspaceId) {
+        if (targetNodeIds.has(edge.sourceNodeId) || targetNodeIds.has(edge.targetNodeId)) {
+          this.graphEdges.delete(key);
+          deletedEdgesCount++;
+        }
+      }
+    }
+
+    return {
+      revokedNodes: targetNodeIds.size,
+      revokedEdges: deletedEdgesCount,
+    };
+  }
+
+  public async markDerivedCompressionsTombstoned(
+    sourceMemoryId: string,
+    tenantId: string,
+    workspaceId: string,
+  ): Promise<number> {
+    this.checkFailure();
+    let updatedCount = 0;
+    const now = new Date().toISOString();
+
+    for (const [key, record] of this.records.entries()) {
+      if (record.tenantId === tenantId && record.workspaceId === workspaceId) {
+        if (record.status === MemoryStatus.TOMBSTONED) {
+          continue;
+        }
+
+        // Check if metadata contains sourceMemoryIds array citing this memory
+        const srcIds = (record.metadata?.sourceMemoryIds as string[] | undefined) ?? [];
+        const isCitedInSourceIds = Array.isArray(srcIds) && srcIds.includes(sourceMemoryId);
+        const isCitedInSummary =
+          record.summary?.includes(sourceMemoryId) || record.content.includes(sourceMemoryId);
+
+        if (isCitedInSourceIds || (record.class === 'EPISODIC' && isCitedInSummary)) {
+          const tombstoned: MemoryRecord = {
+            ...record,
+            status: MemoryStatus.TOMBSTONED,
+            tombstonedAt: now,
+            version: record.version + 1,
+            updatedAt: now,
+          };
+          this.records.set(key, tombstoned);
+          updatedCount++;
+        }
+      }
+    }
+
+    return updatedCount;
   }
 
   private isExpired(record: MemoryRecord, nowMs: number = Date.now()): boolean {
@@ -343,5 +722,9 @@ export class InMemoryMemoryStore implements IMemoryStore {
   public clear(): void {
     this.records.clear();
     this.proposals.clear();
+    this.episodes.clear();
+    this.playbooks.clear();
+    this.graphNodes.clear();
+    this.graphEdges.clear();
   }
 }

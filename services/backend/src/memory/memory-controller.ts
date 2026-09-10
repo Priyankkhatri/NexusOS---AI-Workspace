@@ -154,4 +154,122 @@ export class MemoryController {
     const { status, reason } = (body || {}) as { status: 'APPROVED' | 'REJECTED'; reason?: string };
     return this.memoryService.resolveProposal(proposalId, status, context, reason);
   }
+
+  // -------------------------------------------------------------------------
+  // Task 058 Controller Handlers
+  // -------------------------------------------------------------------------
+
+  public async compressMemories(
+    body: unknown,
+    authContext: AuthenticatedContextLike,
+    workspaceIdHeader?: string,
+  ) {
+    const context = this.extractContext(authContext, workspaceIdHeader);
+    const payload = (body && typeof body === 'object' ? { ...body } : {}) as Record<
+      string,
+      unknown
+    >;
+    payload.tenantId = context.tenantId;
+    if (!payload.workspaceId) {
+      payload.workspaceId = context.workspaceId;
+    }
+    return this.memoryService.compressMemories(payload as any, context);
+  }
+
+  public async recordEpisode(
+    body: unknown,
+    authContext: AuthenticatedContextLike,
+    workspaceIdHeader?: string,
+  ) {
+    const context = this.extractContext(authContext, workspaceIdHeader);
+    const payload = (body && typeof body === 'object' ? { ...body } : {}) as Record<
+      string,
+      unknown
+    >;
+    payload.tenantId = context.tenantId;
+    if (!payload.workspaceId) {
+      payload.workspaceId = context.workspaceId;
+    }
+    return this.memoryService.recordEpisode(payload as any, context);
+  }
+
+  public async getEpisode(
+    id: string,
+    authContext: AuthenticatedContextLike,
+    workspaceIdHeader?: string,
+  ) {
+    const context = this.extractContext(authContext, workspaceIdHeader);
+    return this.memoryService.getEpisode(id, context);
+  }
+
+  public async listEpisodes(
+    query: Record<string, unknown>,
+    authContext: AuthenticatedContextLike,
+    workspaceIdHeader?: string,
+  ) {
+    const context = this.extractContext(authContext, workspaceIdHeader);
+    const limit = query.limit ? parseInt(String(query.limit), 10) : undefined;
+    const offset = query.offset ? parseInt(String(query.offset), 10) : undefined;
+    return this.memoryService.listEpisodes(context, { limit, offset });
+  }
+
+  public async proposePlaybook(
+    body: unknown,
+    authContext: AuthenticatedContextLike,
+    workspaceIdHeader?: string,
+  ) {
+    const context = this.extractContext(authContext, workspaceIdHeader);
+    const payload = (body && typeof body === 'object' ? { ...body } : {}) as Record<
+      string,
+      unknown
+    >;
+    payload.tenantId = context.tenantId;
+    if (!payload.workspaceId) {
+      payload.workspaceId = context.workspaceId;
+    }
+    return this.memoryService.proposePlaybook(payload as any, context);
+  }
+
+  public async approvePlaybook(
+    id: string,
+    body: unknown,
+    authContext: AuthenticatedContextLike,
+    workspaceIdHeader?: string,
+  ) {
+    const context = this.extractContext(authContext, workspaceIdHeader);
+    const { approvedBy, notes } = (body || {}) as { approvedBy?: string; notes?: string };
+    return this.memoryService.approvePlaybook(
+      id,
+      { approvedBy: approvedBy || context.principalId, notes },
+      context,
+    );
+  }
+
+  public async listPlaybooks(
+    query: Record<string, unknown>,
+    authContext: AuthenticatedContextLike,
+    workspaceIdHeader?: string,
+  ) {
+    const context = this.extractContext(authContext, workspaceIdHeader);
+    const planningEligibleOnly =
+      query.planningEligibleOnly === 'true' || query.planningEligibleOnly === true;
+    return this.memoryService.listPlaybooks(context, { planningEligibleOnly });
+  }
+
+  public async queryGraph(
+    body: unknown,
+    authContext: AuthenticatedContextLike,
+    workspaceIdHeader?: string,
+  ) {
+    const context = this.extractContext(authContext, workspaceIdHeader);
+    const payload = (body && typeof body === 'object' ? { ...body } : {}) as Record<
+      string,
+      unknown
+    >;
+    payload.tenantId = context.tenantId;
+    if (!payload.workspaceId) {
+      payload.workspaceId = context.workspaceId;
+    }
+    return this.memoryService.queryGraph(payload as any, context);
+  }
 }

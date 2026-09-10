@@ -13,6 +13,16 @@ import {
   MemoryTombstoneResponse,
   MemoryStatus,
   estimateTokenCount,
+  MemoryCompressionRequest,
+  MemoryCompressionResponse,
+  EpisodicEpisode,
+  EpisodicEpisodeInput,
+  ProceduralPlaybookProposal,
+  ProceduralPlaybookProposalInput,
+  MemoryGraphNode,
+  MemoryGraphEdge,
+  MemoryGraphQueryRequest,
+  MemoryGraphQueryResponse,
 } from '@nexusos/contracts';
 import {
   IMemoryStore,
@@ -22,15 +32,25 @@ import {
 } from './types.js';
 import { RedactionFilter } from '../security/redaction-filter.js';
 import { Logger } from '../observability/logger.js';
+import { MemoryCompressor } from './memory-compressor.js';
+import { EpisodicLearner } from './episodic-learner.js';
+import { GraphProjectionEngine } from './graph-projection-engine.js';
 
 export interface MemoryServiceOptions {
   store: IMemoryStore;
+  compressor?: MemoryCompressor;
+  learner?: EpisodicLearner;
+  episodicLearner?: EpisodicLearner;
+  graphEngine?: GraphProjectionEngine;
   logger?: Logger;
   nowProvider?: () => string;
 }
 
 export class MemoryService {
   private readonly store: IMemoryStore;
+  private readonly compressor: MemoryCompressor;
+  private readonly learner: EpisodicLearner;
+  private readonly graphEngine: GraphProjectionEngine;
   private readonly logger: Logger;
   private readonly now: () => string;
 
@@ -38,6 +58,27 @@ export class MemoryService {
     this.store = options.store;
     this.logger = options.logger ?? new Logger('info');
     this.now = options.nowProvider ?? (() => new Date().toISOString());
+    this.compressor =
+      options.compressor ??
+      new MemoryCompressor({ store: this.store, logger: this.logger, nowProvider: this.now });
+    this.learner =
+      options.learner ??
+      options.episodicLearner ??
+      new EpisodicLearner({ store: this.store, logger: this.logger, nowProvider: this.now });
+    this.graphEngine =
+      options.graphEngine ?? new GraphProjectionEngine({ store: this.store, logger: this.logger });
+  }
+
+  public getCompressor(): MemoryCompressor {
+    return this.compressor;
+  }
+
+  public getLearner(): EpisodicLearner {
+    return this.learner;
+  }
+
+  public getGraphEngine(): GraphProjectionEngine {
+    return this.graphEngine;
   }
 
   /**
@@ -306,6 +347,18 @@ export class MemoryService {
       expectedVersion,
     );
 
+    // 058-SEC-05: Atomic Forgetting cascade across graph projections and derived compressions
+    const revokedGraph = await this.graphEngine.revokeProjectionsForMemory(
+      id,
+      context.tenantId,
+      context.workspaceId,
+    );
+    const tombstonedDerived = await this.store.markDerivedCompressionsTombstoned(
+      id,
+      context.tenantId,
+      context.workspaceId,
+    );
+
     this.logger.info(`Persistent memory record tombstoned: ${result.id}`, {
       details: {
         memoryId: result.id,
@@ -313,6 +366,9 @@ export class MemoryService {
         workspaceId: result.workspaceId,
         tombstonedAt,
         version: result.version,
+        revokedGraphNodes: revokedGraph.revokedNodes,
+        revokedGraphEdges: revokedGraph.revokedEdges,
+        tombstonedDerivedRecords: tombstonedDerived,
       },
     });
 
@@ -418,5 +474,101 @@ export class MemoryService {
     }
 
     return { proposal: updatedProposal, memoryRecord: createdRecord };
+  }
+
+  // -------------------------------------------------------------------------
+  // Task 058: Memory Compression Subsystem (058-SEC-02, 058-SEC-04)
+  // -------------------------------------------------------------------------
+
+  public async compressMemories(
+    request: MemoryCompressionRequest,
+    context: MemoryServiceContext,
+  ): Promise<MemoryCompressionResponse> {
+    this.assertTenantAndWorkspaceMatch(context, request);
+    return this.compressor.compress(request, context);
+  }
+
+  // -------------------------------------------------------------------------
+  // Task 058: Episodic Learning & Procedural Playbooks (058-SEC-01, 058-SEC-06)
+  // -------------------------------------------------------------------------
+
+  public async recordEpisode(
+    input: Omit<EpisodicEpisodeInput, 'id' | 'createdAt'>,
+    context: MemoryServiceContext,
+  ): Promise<EpisodicEpisode> {
+    this.assertTenantAndWorkspaceMatch(context, input);
+    return this.learner.recordEpisode(input, context);
+  }
+
+  public async getEpisode(
+    id: string,
+    context: MemoryServiceContext,
+  ): Promise<EpisodicEpisode | null> {
+    return this.learner.getEpisode(id, context);
+  }
+
+  public async listEpisodes(
+    context: MemoryServiceContext,
+    options?: { limit?: number; offset?: number },
+  ): Promise<{ episodes: EpisodicEpisode[]; total: number }> {
+    return this.learner.listEpisodes(context, options);
+  }
+
+  public async proposePlaybook(
+    input: Omit<ProceduralPlaybookProposalInput, 'id' | 'createdAt' | 'updatedAt'>,
+    context: MemoryServiceContext,
+  ): Promise<ProceduralPlaybookProposal> {
+    this.assertTenantAndWorkspaceMatch(context, input);
+    return this.learner.proposePlaybook(input, context);
+  }
+
+  public async approvePlaybook(
+    playbookId: string,
+    approval: { approvedBy: string; notes?: string },
+    context: MemoryServiceContext,
+  ): Promise<ProceduralPlaybookProposal> {
+    return this.learner.approvePlaybook(playbookId, approval, context);
+  }
+
+  public async getPlaybook(
+    playbookId: string,
+    context: MemoryServiceContext,
+  ): Promise<ProceduralPlaybookProposal | null> {
+    return this.learner.getPlaybook(playbookId, context);
+  }
+
+  public async listPlaybooks(
+    context: MemoryServiceContext,
+    options?: { planningEligibleOnly?: boolean },
+  ): Promise<ProceduralPlaybookProposal[]> {
+    return this.learner.listPlaybooks(context, options);
+  }
+
+  // -------------------------------------------------------------------------
+  // Task 058: Knowledge Graph Projections (058-SEC-03, 058-SEC-05)
+  // -------------------------------------------------------------------------
+
+  public async upsertGraphNode(
+    node: MemoryGraphNode,
+    context: MemoryServiceContext,
+  ): Promise<MemoryGraphNode> {
+    this.assertTenantAndWorkspaceMatch(context, node);
+    return this.graphEngine.upsertNode(node, context);
+  }
+
+  public async upsertGraphEdge(
+    edge: MemoryGraphEdge,
+    context: MemoryServiceContext,
+  ): Promise<MemoryGraphEdge> {
+    this.assertTenantAndWorkspaceMatch(context, edge);
+    return this.graphEngine.upsertEdge(edge, context);
+  }
+
+  public async queryGraph(
+    request: MemoryGraphQueryRequest,
+    context: MemoryServiceContext,
+  ): Promise<MemoryGraphQueryResponse> {
+    this.assertTenantAndWorkspaceMatch(context, request);
+    return this.graphEngine.query(request, context);
   }
 }

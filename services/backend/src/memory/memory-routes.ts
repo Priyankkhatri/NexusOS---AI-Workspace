@@ -70,7 +70,113 @@ export async function handleMemoryRoutes(
       return true;
     }
 
-    // 5. GET /v1/memory/:id
+    // -----------------------------------------------------------------------
+    // Task 058 Routes
+    // -----------------------------------------------------------------------
+
+    // 5. POST /v1/memory/compress
+    if (req.method === 'POST' && url.pathname === '/v1/memory/compress') {
+      const body = await readJsonBody(req);
+      const result = await controller.compressMemories(body, authContext, workspaceHeader);
+      res.statusCode = 200;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify(result));
+      return true;
+    }
+
+    // 6. POST & GET /v1/memory/episodes
+    if (req.method === 'POST' && url.pathname === '/v1/memory/episodes') {
+      const body = await readJsonBody(req);
+      const result = await controller.recordEpisode(body, authContext, workspaceHeader);
+      res.statusCode = 201;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify(result));
+      return true;
+    }
+
+    if (req.method === 'GET' && url.pathname === '/v1/memory/episodes') {
+      const query: Record<string, unknown> = {};
+      for (const [k, v] of url.searchParams.entries()) {
+        query[k] = v;
+      }
+      const result = await controller.listEpisodes(query, authContext, workspaceHeader);
+      res.statusCode = 200;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify(result));
+      return true;
+    }
+
+    // 7. GET /v1/memory/episodes/:id
+    const epMatch = url.pathname.match(/^\/v1\/memory\/episodes\/([^/]+)$/);
+    if (req.method === 'GET' && epMatch) {
+      const epId = decodeURIComponent(epMatch[1]);
+      const result = await controller.getEpisode(epId, authContext, workspaceHeader);
+      if (!result) {
+        res.statusCode = 404;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(
+          JSON.stringify({
+            error: {
+              code: 'EPISODE_NOT_FOUND',
+              message: `Episode '${epId}' not found.`,
+              requestId: context.requestId,
+              correlationId: context.correlationId,
+            },
+          }),
+        );
+        return true;
+      }
+      res.statusCode = 200;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify(result));
+      return true;
+    }
+
+    // 8. POST & GET /v1/memory/playbooks
+    if (req.method === 'POST' && url.pathname === '/v1/memory/playbooks') {
+      const body = await readJsonBody(req);
+      const result = await controller.proposePlaybook(body, authContext, workspaceHeader);
+      res.statusCode = 201;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify(result));
+      return true;
+    }
+
+    if (req.method === 'GET' && url.pathname === '/v1/memory/playbooks') {
+      const query: Record<string, unknown> = {};
+      for (const [k, v] of url.searchParams.entries()) {
+        query[k] = v;
+      }
+      const result = await controller.listPlaybooks(query, authContext, workspaceHeader);
+      res.statusCode = 200;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify(result));
+      return true;
+    }
+
+    // 9. POST /v1/memory/playbooks/:id/approve
+    const pbApproveMatch = url.pathname.match(/^\/v1\/memory\/playbooks\/([^/]+)\/approve$/);
+    if (req.method === 'POST' && pbApproveMatch) {
+      const pbId = decodeURIComponent(pbApproveMatch[1]);
+      const body = await readJsonBody(req);
+      const result = await controller.approvePlaybook(pbId, body, authContext, workspaceHeader);
+      res.statusCode = 200;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify(result));
+      return true;
+    }
+
+    // 10. POST /v1/memory/graph/query
+    if (req.method === 'POST' && url.pathname === '/v1/memory/graph/query') {
+      const body = await readJsonBody(req);
+      const result = await controller.queryGraph(body, authContext, workspaceHeader);
+      res.statusCode = 200;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify(result));
+      return true;
+    }
+
+    // 11. GET /v1/memory/:id
     const idMatch = url.pathname.match(/^\/v1\/memory\/([^/]+)$/);
     if (idMatch) {
       const id = decodeURIComponent(idMatch[1]);
