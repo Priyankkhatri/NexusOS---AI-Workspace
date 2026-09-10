@@ -46,7 +46,15 @@ Welcome to the central documentation navigation hub for NexusOS. This index prov
 - 🔒 **[Security Baseline Guide](SECURITY.md)**: Secret hygiene, vulnerability scanner, and security requirements.
 - 📊 **[Observability & Audit Guide](OBSERVABILITY.md)**: Structured logging, secret redaction, telemetry spooling, and evidence receipts.
 - 🚢 **[Deployment & Release Guide](DEPLOYMENT.md)**: Multi-environment topologies, containerization, and safe migrations.
-- 🚨 **[Operational Runbooks Index](RUNBOOKS.md)**: Master index for all 10 failure-domain runbooks (`RB-001` through `RB-010`).
+- 🚨 **[Operational Runbooks Index](RUNBOOKS.md)**: Master index for all 20 failure-domain runbooks (`RB-001` through `RB-020`).
 - 🔧 **[Troubleshooting Guide](TROUBLESHOOTING.md)**: Quick diagnostic tables, triage commands, and issue resolution workflows.
-- 📈 **[Resource Baseline Report](RESOURCE_BASELINE.md)**: Sprint 0 local hardware resource baseline measurements.
-- 🏁 **[Sprint 1 Readiness & Backlog](SPRINT_1_READINESS_AND_BACKLOG.md)**: Transition assessment and candidate backlog for Sprint 1.
+- 📈 **[Resource Baseline Report](RESOURCE_BASELINE.md)**: Sprint 0 and Sprint 1 hardware resource baseline measurements.
+
+---
+
+## 🏁 Sprint Completion Reports & Transition Backlogs
+
+- 🏆 **[Sprint 0 Completion Report](../SPRINT_0_COMPLETION_REPORT.md)**: Formal closure audit and verification for Sprint 0 (Milestones M0–M7).
+- 📋 **[Sprint 1 Readiness & Backlog](SPRINT_1_READINESS_AND_BACKLOG.md)**: Transition assessment and candidate backlog for Sprint 1.
+- 🏆 **[Sprint 1 Completion Report](../SPRINT_1_COMPLETION_REPORT.md)**: Formal closure audit and verification for Sprint 1 (Milestones 1–11 / Tasks 049–059).
+- 📋 **[Sprint 2 Readiness & Backlog](SPRINT_2_READINESS_AND_BACKLOG.md)**: Transition assessment and candidate backlog for Sprint 2.
