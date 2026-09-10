@@ -38,7 +38,17 @@ Each runbook follows a strict 8-section incident response schema designed for ra
 | [RB-019](runbooks/RB-019-autonomous-decomposer-replan-exhaustion.md)         | **Goal Decomposer Ambiguity & Replan Exhaustion**      | Autonomous Goal Decomposer & Adaptive Replanner    | HIGH (P1) / MEDIUM (P2)   | Backend Planner Subsystem                  | `PlannerService`, `ReplanCoordinator`       |
 | [RB-020](runbooks/RB-020-episodic-graph-cycle-forgetting-cascade-failure.md) | **Memory Graph Explosion & Forgetting Failure**        | Episodic Knowledge Graph & Atomic Forgetting       | HIGH (P1) / MEDIUM (P2)   | Backend Memory Subsystem & Graph Engine    | `GraphProjectionEngine`, `MemoryStore`      |
 
+### Sprint 2 Subsystem Runbooks (RB-021 through RB-024)
+
+| Runbook ID                                                                                 | Title                                                       | Failure Domain                                              | Severity                  | Owning Subsystem                              | Target Component                                     |
+| :----------------------------------------------------------------------------------------- | :---------------------------------------------------------- | :---------------------------------------------------------- | :------------------------ | :-------------------------------------------- | :--------------------------------------------------- |
+| [RB-021](runbooks/RB-021-multi-agent-delegation-failure.md)                                | **Multi-Agent Delegation Failure & Cascade Cancellation**   | Autonomous Sub-Agent Delegation, Lease Revocation & Fan-Out | HIGH (P1)                 | Backend Agent Subsystem                       | `DelegationCoordinator`, `AgentDirectoryService`     |
+| [RB-022](runbooks/RB-022-native-ai-vram-exhaustion.md)                                     | **Native AI Engine VRAM Exhaustion & Hardware Fault**       | VRAM Exhaustion, CPU Fallback & Model Quarantine            | HIGH (P1)                 | Desktop Agent Local-AI Runtime                | `VramOffloader`, `HardwareDetector`, `ModelRuntime`  |
+| [RB-023](runbooks/RB-023-sqlite-memory-corruption.md)                                      | **SQLite Memory Store ACID Failure & Vector Index Corruption** | SQLite Persistence, WAL Recovery & VectorIndex Divergence | CRITICAL (P0) / HIGH (P1) | Backend Memory Subsystem                      | `SqliteMemoryStore`, `VectorIndex`                   |
+| [RB-024](runbooks/RB-024-knowledge-graph-traversal-explosion.md)                           | **Knowledge Graph Traversal Explosion & Dashboard Disruption** | Graph Traversal Bounds, Cycle Handling & Dashboard Feed   | HIGH (P1)                 | Backend Graph Engine & Web Dashboard          | `GraphProjectionEngine`, `DashboardAPIClient`        |
+
 ---
+
 
 ## 2. Standard Incident Response Lifecycle
 
