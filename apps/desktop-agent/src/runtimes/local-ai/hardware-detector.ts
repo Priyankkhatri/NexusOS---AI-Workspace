@@ -1,3 +1,4 @@
+import { execSync } from 'node:child_process';
 import os from 'node:os';
 import { HardwareProfile, GpuAdapterInfo } from './types.js';
 
@@ -10,18 +11,47 @@ export interface IHardwareSampler {
 export class DefaultHardwareSampler implements IHardwareSampler {
   public async sampleGpuAdapters(): Promise<GpuAdapterInfo[]> {
     try {
-      // In production Node.js environment on Windows, default to fallback detection
-      // unless specific GPU environment information or native adapters are present
-      return [
-        {
-          name: 'System Software / Integrated Adapter',
-          vramBytes: 2147483648, // 2 GB shared default fallback
-          freeVramBytes: 1073741824, // 1 GB free fallback
-        },
-      ];
+      if (process.platform === 'win32' || process.platform === 'linux') {
+        try {
+          const nvidiaOut = execSync(
+            'nvidia-smi --query-gpu=gpu_name,memory.total,memory.free --format=csv,noheader',
+            { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'], timeout: 3000 },
+          );
+          if (nvidiaOut && nvidiaOut.trim()) {
+            const lines = nvidiaOut.trim().split(/\r?\n/).filter(Boolean);
+            const gpus: GpuAdapterInfo[] = [];
+            for (const line of lines) {
+              const parts = line.split(',').map((p) => p.trim());
+              if (parts.length >= 3) {
+                const name = parts[0]!;
+                const totalMatch = parts[1]!.match(/^(\d+)/);
+                const freeMatch = parts[2]!.match(/^(\d+)/);
+                const totalMb = totalMatch ? parseInt(totalMatch[1]!, 10) : 0;
+                const freeMb = freeMatch ? parseInt(freeMatch[1]!, 10) : 0;
+                gpus.push({
+                  name,
+                  vramBytes: totalMb * 1024 * 1024,
+                  freeVramBytes: freeMb * 1024 * 1024,
+                });
+              }
+            }
+            if (gpus.length > 0) return gpus;
+          }
+        } catch {
+          // nvidia-smi unavailable or timed out
+        }
+      }
     } catch {
-      return [];
+      // Fallback
     }
+
+    return [
+      {
+        name: 'System Software / Integrated Adapter',
+        vramBytes: 2147483648, // 2 GB shared default fallback
+        freeVramBytes: 1073741824, // 1 GB free fallback
+      },
+    ];
   }
 
   public async sampleNpuPresence(): Promise<boolean> {

@@ -6,13 +6,28 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { AddressInfo } from 'node:net';
-import { ModelManifest, ModelManifestSchema } from '@nexusos/contracts';
+import {
+  ModelManifest,
+  ModelManifestSchema,
+  InferenceBenchmarkResultSchema,
+  ExecutionLeaseHeader,
+  computeModelEvidenceChecksum,
+} from '@nexusos/contracts';
+import { computeLeaseSignature } from '@nexusos/backend';
 import {
   ModelCacheError,
   ModelCacheManager,
   isPrivateOrUnsafeIp,
   validateRemoteArtifactSource,
 } from '../../apps/desktop-agent/src/runtimes/local-ai/model-cache-manager.js';
+import {
+  VramOffloader,
+  ExecutionLeaseBoundary,
+  ProviderAdapterFactory,
+  LlamaCppAdapter,
+  INativeEngineBackend,
+} from '@nexusos/desktop-agent';
+import { runBenchmark } from '../../scripts/benchmark-local-ai.js';
 
 describe('Task 065 — Local-AI Model Manifest Security Hardening Suite', () => {
   let tmpDir: string;
@@ -444,12 +459,378 @@ describe('Task 065 — Local-AI Model Manifest Security Hardening Suite', () => 
   });
 
   // ============================================================
-  // 065-SEC-06 / 07 / 08: Future Phasing Placeholders
+  // 065-SEC-06: VRAM Safety Ceiling & Layer Offload Integrity
   // ============================================================
 
-  describe('065-SEC-06..08: Inference & Benchmarking Invariants (Phase 3)', () => {
-    it.skip('065-SEC-06: VRAM Safety Ceiling & Layer Offload Integrity [PENDING PHASE 3 BENCHMARKING]', () => {});
-    it.skip('065-SEC-07: Cryptographic Lease Binding for Model Execution [PENDING PHASE 3 INFERENCE HARNESS]', () => {});
-    it.skip('065-SEC-08: Non-Repudiable Evidence Integrity & Truthful Capability Reporting [PENDING PHASE 3 BENCHMARKING]', () => {});
+  describe('065-SEC-06: VRAM Safety Ceiling & Layer Offload Integrity', () => {
+    it('enforces hard 80% VRAM ceiling during layer offloading and never allocates above limit', () => {
+      // 10 GB VRAM -> 80% ceiling is 8 GB
+      const hardware = {
+        deviceModel: 'Test-Rig',
+        gpuAdapters: [
+          {
+            name: 'NVIDIA RTX Test',
+            vramBytes: 10 * 1024 * 1024 * 1024,
+            freeVramBytes: 10 * 1024 * 1024 * 1024,
+          },
+        ],
+        npuPresent: false,
+        thermalState: 'normal' as const,
+        totalRamBytes: 32 * 1024 * 1024 * 1024,
+        cpuCores: 8,
+        cpuArch: 'x64',
+      };
+
+      // Model weight: 12 GB, 32 layers
+      const plan = VramOffloader.planLayerOffload(
+        hardware as any,
+        {
+          modelId: 'test-model-large',
+          fileSizeBytes: 12 * 1024 * 1024 * 1024,
+          format: 'gguf',
+          quantization: 'Q4_K_M',
+          totalLayers: 32,
+        },
+        { allowCpuFallback: true },
+      );
+
+      assert.equal(plan.status, 'SUPPORTED');
+      // VRAM allocated must NOT exceed 8 GB (80% of 10 GB)
+      assert.ok(plan.placement.vramAllocatedBytes <= 8 * 1024 * 1024 * 1024);
+      assert.ok(plan.placement.gpuLayers < 32);
+      assert.ok(plan.placement.cpuLayers > 0);
+      assert.equal(plan.placement.gpuLayers + plan.placement.cpuLayers, 32);
+    });
+
+    it('enforces hard 70% RAM ceiling and fails closed if model exceeds capacity', () => {
+      // 8 GB RAM -> 70% ceiling is 5.6 GB, 0 GPU
+      const hardware = {
+        deviceModel: 'Test-Rig-No-GPU',
+        gpuAdapters: [],
+        npuPresent: false,
+        thermalState: 'normal' as const,
+        totalRamBytes: 8 * 1024 * 1024 * 1024,
+        cpuCores: 8,
+        cpuArch: 'x64',
+      };
+
+      // Model requires 10 GB (exceeds 8 GB * 0.7 = 5.6 GB RAM ceiling)
+      const plan = VramOffloader.planLayerOffload(
+        hardware as any,
+        {
+          modelId: 'test-model-oversized-ram',
+          fileSizeBytes: 10 * 1024 * 1024 * 1024,
+          format: 'gguf',
+          quantization: 'Q4_K_M',
+          totalLayers: 32,
+        },
+        { allowCpuFallback: true },
+      );
+
+      assert.equal(plan.status, 'FAILED');
+      assert.match(plan.fallbackReason || '', /exceeds safety ceiling/i);
+    });
+
+    it('prevents oversized models from bypassing safety limits during benchmark execution', async () => {
+      const oversizedModel = {
+        modelId: 'oversized-sec-06',
+        name: 'Oversized Sec Model',
+        provider: 'llamacpp' as const,
+        sha256: '0'.repeat(64),
+        fileSizeBytes: 100 * 1024 * 1024 * 1024, // 100 GB
+        format: 'gguf' as const,
+        quantization: 'Q4_K_M',
+        contextWindowTokens: 4096,
+        state: 'Installed' as const,
+        installedPath: path.join(tmpDir, 'models', 'oversized-sec-06.gguf'),
+        lastVerifiedAt: new Date().toISOString(),
+      };
+
+      const result = await runBenchmark({
+        modelId: 'oversized-sec-06',
+        baseDir: tmpDir,
+        customModelArtifact: oversizedModel,
+      });
+
+      assert.equal(result.success, false);
+      assert.equal(result.status, 'RESOURCE_LIMIT_EXCEEDED');
+      assert.match(result.message || '', /safety ceiling/i);
+    });
+  });
+
+  // ============================================================
+  // 065-SEC-07: Cryptographic Lease Binding for Model Execution
+  // ============================================================
+
+  describe('065-SEC-07: Cryptographic Lease Binding for Model Execution', () => {
+    class DenyAllPolicyEvaluator {
+      async evaluate() {
+        return {
+          decisionId: crypto.randomUUID(),
+          effect: 'DENY',
+          allowed: false,
+          policyVersion: '1.0.0',
+          policyHash: 'deny-hash',
+          reason: 'Denied by security policy',
+          evaluatedAt: new Date().toISOString(),
+        };
+      }
+      getSnapshot() {
+        return {
+          policyVersion: '1.0.0',
+          policyHash: 'deny-hash',
+          createdAt: new Date().toISOString(),
+          rules: [],
+        };
+      }
+    }
+
+    it('fails closed when inference is executed without valid authorization signature', async () => {
+      const key = 'test-secret-key-32b-length-secure!';
+      const boundary = new ExecutionLeaseBoundary(new DenyAllPolicyEvaluator() as any, key);
+
+      const forgedLease: ExecutionLeaseHeader = {
+        lease_id: crypto.randomUUID(),
+        task_id: crypto.randomUUID(),
+        tenant_id: '00000000-0000-4000-8000-000000000001',
+        agent_id: '00000000-0000-4000-8000-000000000002',
+        issued_at: new Date().toISOString(),
+        expires_at: new Date(Date.now() + 60000).toISOString(),
+        scopes: ['ai:inference'],
+        signature: 'forged-invalid-signature',
+        nonce: crypto.randomUUID(),
+      };
+
+      const valid = await boundary.validateLease(forgedLease);
+      assert.equal(valid.valid, false);
+    });
+
+    it('fails closed when execution lease is expired', async () => {
+      const key = 'test-secret-key-32b-length-secure!';
+      const boundary = new ExecutionLeaseBoundary(
+        {
+          evaluate: async () => ({
+            decisionId: 'd',
+            effect: 'ALLOW',
+            allowed: true,
+            policyVersion: '1',
+            policyHash: 'h',
+            reason: 'ok',
+            evaluatedAt: new Date().toISOString(),
+          }),
+          getSnapshot: () => ({
+            policyVersion: '1',
+            policyHash: 'h',
+            createdAt: new Date().toISOString(),
+            rules: [],
+          }),
+        } as any,
+        key,
+      );
+
+      const expiredLease: ExecutionLeaseHeader = {
+        lease_id: crypto.randomUUID(),
+        task_id: crypto.randomUUID(),
+        tenant_id: '00000000-0000-4000-8000-000000000001',
+        agent_id: '00000000-0000-4000-8000-000000000002',
+        issued_at: new Date(Date.now() - 120000).toISOString(),
+        expires_at: new Date(Date.now() - 60000).toISOString(), // Expired 1 min ago
+        scopes: ['ai:inference'],
+        signature: '',
+        nonce: crypto.randomUUID(),
+      };
+      expiredLease.signature = computeLeaseSignature(expiredLease, key);
+
+      const valid = await boundary.validateLease(expiredLease);
+      assert.equal(valid.valid, false);
+    });
+
+    it('benchmark runner strictly enforces lease boundary authorization and cannot bypass it', async () => {
+      const key = 'test-secret-key-32b-length-secure!';
+      const boundary = new ExecutionLeaseBoundary(new DenyAllPolicyEvaluator() as any, key);
+
+      // Model exists
+      const testModel = {
+        modelId: 'auth-test-model',
+        name: 'Auth Test Model',
+        provider: 'llamacpp' as const,
+        sha256: '0'.repeat(64),
+        fileSizeBytes: 1024 * 1024,
+        format: 'gguf' as const,
+        quantization: 'Q4_K_M',
+        contextWindowTokens: 2048,
+        state: 'Installed' as const,
+        installedPath: path.join(tmpDir, 'models', 'auth-test.gguf'),
+        lastVerifiedAt: new Date().toISOString(),
+      };
+
+      const result = await runBenchmark({
+        modelId: 'auth-test-model',
+        baseDir: tmpDir,
+        customModelArtifact: testModel,
+        leaseBoundary: boundary,
+      });
+
+      assert.equal(result.success, false);
+      assert.equal(result.status, 'LEASE_DENIED');
+      assert.match(
+        result.message || '',
+        /Lease signature verification failed|Cryptographic execution lease validation failed/i,
+      );
+    });
+  });
+
+  // ============================================================
+  // 065-SEC-08: Non-Repudiable Evidence Integrity & Truthful Capability Reporting
+  // ============================================================
+
+  describe('065-SEC-08: Non-Repudiable Evidence Integrity & Truthful Capability Reporting', () => {
+    it('strictly forbids CPU fallback from claiming GPU acceleration', () => {
+      const contradictory = {
+        benchmarkId: crypto.randomUUID(),
+        modelId: 'truth-model',
+        quantization: 'Q4_K_M' as const,
+        modelFormat: 'gguf' as const,
+        hardwareProfile: {
+          deviceModel: 'Test-Host',
+          gpuName: 'None',
+          totalVramBytes: 0,
+          totalRamBytes: 16000000000,
+          cpuCores: 8,
+          cpuArch: 'x64',
+        },
+        timeToFirstTokenMs: 15.0,
+        tokensPerSecond: 30.0,
+        promptTokens: 10,
+        completionTokens: 20,
+        totalDurationMs: 600.0,
+        peakVramBytes: 0,
+        peakRamBytes: 1000000000,
+        gpuLayers: 0,
+        cpuLayers: 32,
+        cpuFallback: true,
+        gpuAccelerated: true, // Contradiction
+        timestamp: new Date().toISOString(),
+      };
+
+      assert.throws(
+        () => InferenceBenchmarkResultSchema.parse(contradictory),
+        /Truthfulness invariant violation: cpuFallback and gpuAccelerated cannot both be true/,
+      );
+    });
+
+    it('strictly forbids claiming gpuAccelerated=true when gpuLayers is 0', () => {
+      const contradictory = {
+        benchmarkId: crypto.randomUUID(),
+        modelId: 'truth-model-2',
+        quantization: 'Q4_K_M' as const,
+        modelFormat: 'gguf' as const,
+        hardwareProfile: {
+          deviceModel: 'Test-Host',
+          gpuName: 'NVIDIA RTX',
+          totalVramBytes: 6000000000,
+          totalRamBytes: 16000000000,
+          cpuCores: 8,
+          cpuArch: 'x64',
+        },
+        timeToFirstTokenMs: 15.0,
+        tokensPerSecond: 30.0,
+        promptTokens: 10,
+        completionTokens: 20,
+        totalDurationMs: 600.0,
+        peakVramBytes: 1000000000,
+        peakRamBytes: 1000000000,
+        gpuLayers: 0, // Contradiction with gpuAccelerated: true
+        cpuLayers: 32,
+        cpuFallback: false,
+        gpuAccelerated: true,
+        timestamp: new Date().toISOString(),
+      };
+
+      assert.throws(
+        () => InferenceBenchmarkResultSchema.parse(contradictory),
+        /Truthfulness invariant violation: gpuAccelerated is true but gpuLayers is 0/,
+      );
+    });
+
+    it('ensures evidence checksums are deterministic and tamper-detectable', () => {
+      const baseEvidenceParams = {
+        taskId: 'task-sec-08',
+        leaseId: 'lease-sec-08',
+        modelId: 'qwen-2.5-coder',
+        provider: 'llamacpp',
+        output: 'Original untampered output content from inference',
+        cpuFallback: false,
+      };
+
+      const originalChecksum = computeModelEvidenceChecksum(baseEvidenceParams);
+      assert.ok(/^[a-f0-9]{64}$/.test(originalChecksum));
+
+      // Deterministic: repeating with exact same inputs yields identical hash
+      const repeatedChecksum = computeModelEvidenceChecksum(baseEvidenceParams);
+      assert.equal(originalChecksum, repeatedChecksum);
+
+      // Tamper output
+      const tamperedOutputChecksum = computeModelEvidenceChecksum({
+        ...baseEvidenceParams,
+        output: 'Tampered malicious output content',
+      });
+      assert.notEqual(originalChecksum, tamperedOutputChecksum);
+
+      // Tamper fallback flag
+      const tamperedFallbackChecksum = computeModelEvidenceChecksum({
+        ...baseEvidenceParams,
+        cpuFallback: true,
+      });
+      assert.notEqual(originalChecksum, tamperedFallbackChecksum);
+    });
+
+    it('confirms native/GPU benchmark mode requires actual native backend execution', async () => {
+      const adapterFactory = new ProviderAdapterFactory();
+      const llama = adapterFactory.getAdapter('llamacpp') as LlamaCppAdapter;
+
+      // When no native engine backend is attached
+      llama.setNativeBackend(null);
+      const cap = await llama.getNativeCapability();
+      assert.equal(cap.status, 'UNAVAILABLE');
+      assert.equal(cap.backend, 'cpu');
+
+      // Now attach a genuine native engine
+      let backendExecuted = false;
+      const mockNative: INativeEngineBackend = {
+        async *execute(req) {
+          backendExecuted = true;
+          yield {
+            requestId: req.requestId,
+            chunkIndex: 0,
+            text: 'Native response token',
+            tokenCount: 3,
+            isFinal: true,
+            finishReason: 'stop',
+            redacted: false,
+          };
+        },
+      };
+
+      llama.setNativeBackend(mockNative, 'cuda');
+      const capNative = await llama.getNativeCapability();
+      assert.equal(capNative.status, 'SUPPORTED');
+      assert.equal(capNative.backend, 'cuda');
+
+      const stream = llama.generateStream({
+        requestId: 'test-req',
+        modelId: 'test-model',
+        provider: 'llamacpp',
+        prompt: 'test',
+        tenantId: '00000000-0000-4000-8000-000000000001',
+        deviceId: '00000000-0000-4000-8000-000000000002',
+        callerId: 'test',
+        correlationId: 'test',
+      });
+      for await (const chunk of stream) {
+        assert.ok(chunk);
+      }
+      assert.equal(backendExecuted, true);
+    });
   });
 });
