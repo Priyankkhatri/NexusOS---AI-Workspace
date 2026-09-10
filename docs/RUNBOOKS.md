@@ -1,12 +1,14 @@
 # Operational Runbooks Index
 
-This directory contains the authoritative operational runbooks for Nexus AI / NexusOS, established under Sprint 0 Milestone M7 (Blueprint Section 65).
+This directory contains the authoritative operational runbooks for Nexus AI / NexusOS, established under Sprint 0 Milestone M7 and expanded under Sprint 1 Milestone 11 (Blueprint Sections 52, 65).
 
 Each runbook follows a strict 8-section incident response schema designed for rapid diagnosis, safe containment, reliable remediation, and post-incident verification.
 
 ---
 
 ## 1. Runbook Catalog & Incident Triage Matrix
+
+### Sprint 0 Foundational Runbooks (RB-001 through RB-010)
 
 | Runbook ID                                            | Title                                        | Failure Domain                                     | Severity                  | Owning Subsystem                          | Target Component                           |
 | :---------------------------------------------------- | :------------------------------------------- | :------------------------------------------------- | :------------------------ | :---------------------------------------- | :----------------------------------------- |
@@ -20,6 +22,21 @@ Each runbook follows a strict 8-section incident response schema designed for ra
 | [RB-008](runbooks/RB-008-certificate-secret-issue.md) | **Certificate & Secret Issues**              | Security Credentials, Token Expiry & Vault Refs    | HIGH (P1)                 | Identity & Access, Local Vault            | `JwtValidator`, `LocalVaultUpdateHost`     |
 | [RB-009](runbooks/RB-009-deployment-rollback.md)      | **Deployment Rollback**                      | Deployment Regressions & Staged Rollback           | CRITICAL (P0) / HIGH (P1) | Platform & Release Engineering            | `UpdateManager`, `ProcessSupervisor`       |
 | [RB-010](runbooks/RB-010-corrupted-local-state.md)    | **Corrupted Local State**                    | Encrypted State, SQLite Persistence & Client Cache | MEDIUM (P2) / HIGH (P1)   | Desktop Agent State Management            | `StateManager`, `EncryptedStore`           |
+
+### Sprint 1 Subsystem Runbooks (RB-011 through RB-020)
+
+| Runbook ID                                                                   | Title                                                  | Failure Domain                                     | Severity                  | Owning Subsystem                           | Target Component                            |
+| :--------------------------------------------------------------------------- | :----------------------------------------------------- | :------------------------------------------------- | :------------------------ | :----------------------------------------- | :------------------------------------------ |
+| [RB-011](runbooks/RB-011-dag-workflow-failure.md)                            | **DAG Workflow Execution & Deadlock**                  | Multi-Step Workflow Graph Execution & Topo Cycle   | HIGH (P1)                 | Control-Plane Task Subsystem               | `TaskController`, `WorkflowEngine`          |
+| [RB-012](runbooks/RB-012-sandbox-filesystem-jail-violation.md)               | **Filesystem Sandbox Jail Violation**                  | Desktop Filesystem Sandbox & Path Traversal Jail   | CRITICAL (P0) / HIGH (P1) | Desktop Agent Filesystem Runtime           | `FilesystemSandboxRuntime`, `PathValidator` |
+| [RB-013](runbooks/RB-013-local-ai-engine-hardware-fault.md)                  | **Local AI Engine Hardware & Inference Fault**         | Local AI Model Inference, VRAM & Fallback Router   | HIGH (P1) / MEDIUM (P2)   | AI Runtime Subsystem                       | `LocalAiModelRouter`, `ResourceGovernor`    |
+| [RB-014](runbooks/RB-014-hitl-approval-timeout-ipc-loss.md)                  | **HITL Approval Timeout & Notification Loss**          | HITL Desktop Approval Interceptor & Desktop IPC    | HIGH (P1) / MEDIUM (P2)   | Desktop Agent UI & HITL Contracts          | `ApprovalInterceptor`, `NotificationHost`   |
+| [RB-015](runbooks/RB-015-web-dashboard-stream-disconnection.md)              | **Web Dashboard Stream Disconnection & Telemetry Lag** | Web Dashboard Live Event Streaming & Telemetry     | MEDIUM (P2) / LOW (P3)    | Experience Platform & Backend Event Stream | `WebDashboardApp`, `EventStreamGateway`     |
+| [RB-016](runbooks/RB-016-plugin-signature-quarantine-breach.md)              | **Plugin Signature Tampering & Quarantine**            | Plugin SDK Manifest Verification & Quarantine      | CRITICAL (P0) / HIGH (P1) | Plugin Framework & Runtime Host            | `PluginHost`, `PluginRegistry`              |
+| [RB-017](runbooks/RB-017-browser-session-ssrf-interception-failure.md)       | **Browser Automation CDP Crash & SSRF Defense**        | Browser Automation Runtime & SSRF Interception     | HIGH (P1) / CRITICAL (P0) | Desktop Browser Runtime & Contracts        | `BrowserRuntime`, `SSRFInterceptor`         |
+| [RB-018](runbooks/RB-018-governed-memory-poisoning-leakage.md)               | **Governed Memory Poisoning & Secret Leakage**         | Governed Persistent Memory, Delimiters & Redaction | CRITICAL (P0) / HIGH (P1) | Backend Memory Subsystem                   | `MemoryService`, `RedactionFilter`          |
+| [RB-019](runbooks/RB-019-autonomous-decomposer-replan-exhaustion.md)         | **Goal Decomposer Ambiguity & Replan Exhaustion**      | Autonomous Goal Decomposer & Adaptive Replanner    | HIGH (P1) / MEDIUM (P2)   | Backend Planner Subsystem                  | `PlannerService`, `ReplanCoordinator`       |
+| [RB-020](runbooks/RB-020-episodic-graph-cycle-forgetting-cascade-failure.md) | **Memory Graph Explosion & Forgetting Failure**        | Episodic Knowledge Graph & Atomic Forgetting       | HIGH (P1) / MEDIUM (P2)   | Backend Memory Subsystem & Graph Engine    | `GraphProjectionEngine`, `MemoryStore`      |
 
 ---
 
