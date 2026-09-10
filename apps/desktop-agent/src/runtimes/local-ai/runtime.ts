@@ -201,10 +201,13 @@ export class LocalAiRuntime {
             output: outputText,
             evidence: {
               checksum,
+              evidenceChecksum: checksum,
               modelId: inferenceReq.modelId,
               provider: effectiveProvider,
+              gpuAccelerated: directResult.hardwareProfileUsed.gpuAccelerated,
               cpuFallback,
               fallbackReason,
+              executionPlan: directResult.executionPlan,
               tokensGenerated: directResult.completionTokens,
               finishReason: directResult.finishReason,
               taskId,
@@ -212,10 +215,12 @@ export class LocalAiRuntime {
               tenantId,
             },
             metadata: {
+              gpuAccelerated: directResult.hardwareProfileUsed.gpuAccelerated,
               cpuFallback,
               fallbackReason,
               provider: effectiveProvider,
               modelId: inferenceReq.modelId,
+              executionPlan: directResult.executionPlan,
               finishReason: directResult.finishReason,
             },
           };

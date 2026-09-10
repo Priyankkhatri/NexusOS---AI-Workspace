@@ -227,3 +227,5 @@ export function computeModelEvidenceChecksum(params: {
   ];
   return crypto.createHash('sha256').update(parts.join(':')).digest('hex');
 }
+
+export * from './native.js';

@@ -1,5 +1,6 @@
 import { ExecutionLeaseBoundary } from '../../permissions/lease-boundary.js';
 import { RedactionFilter } from '../../telemetry/redaction-filter.js';
+import { InferenceExecutionPlan } from '@nexusos/contracts';
 import { HardwareDetector } from './hardware-detector.js';
 import { ModelCacheManager } from './model-cache-manager.js';
 import { ProviderAdapterFactory } from './provider-adapters.js';
@@ -222,10 +223,11 @@ export class ModelRuntimeManager {
       : validatedRequest.provider;
     const adapter = this.adapterFactory.getAdapter(effectiveProvider);
 
+    isolatedRequest.executionPlan = reservation.executionPlan;
     if (cachedModel) {
       this.modelCacheManager.markModelActive(cachedModel.modelId);
       this.transitionModelState(cachedModel.modelId, 'Ready');
-      await adapter.loadModel(cachedModel);
+      await adapter.loadModel(cachedModel, reservation.executionPlan);
     }
 
     this.activeInferenceStates.set(validatedRequest.requestId, 'Generating');
@@ -313,6 +315,7 @@ export class ModelRuntimeManager {
       fallbackReason?: string;
     };
     effectiveProvider: ProviderType;
+    executionPlan?: InferenceExecutionPlan;
     redacted: boolean;
   }> {
     if (this.isShutdown) {
@@ -430,10 +433,11 @@ export class ModelRuntimeManager {
       : validatedRequest.provider;
     const adapter = this.adapterFactory.getAdapter(effectiveProvider);
 
+    isolatedRequest.executionPlan = reservation.executionPlan;
     if (cachedModel) {
       this.modelCacheManager.markModelActive(cachedModel.modelId);
       this.transitionModelState(cachedModel.modelId, 'Ready');
-      await adapter.loadModel(cachedModel);
+      await adapter.loadModel(cachedModel, reservation.executionPlan);
     }
 
     this.activeInferenceStates.set(validatedRequest.requestId, 'Generating');
@@ -503,6 +507,7 @@ export class ModelRuntimeManager {
         fallbackReason: reservation.fallbackReason,
       },
       effectiveProvider,
+      executionPlan: reservation.executionPlan,
       redacted: wasRedacted,
     };
   }

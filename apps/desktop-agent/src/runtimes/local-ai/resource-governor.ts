@@ -1,4 +1,6 @@
 import crypto from 'node:crypto';
+import { InferenceExecutionPlan } from '@nexusos/contracts';
+import { VramOffloader } from './vram-offloader.js';
 import {
   HardwareProfile,
   InferenceRequest,
@@ -108,7 +110,48 @@ export class ResourceGovernor {
       }
     }
 
-    // 4. Create transactional reservation
+    // 4. Compute deterministic layer placement execution plan
+    let executionPlan: InferenceExecutionPlan | undefined = request.executionPlan;
+    if (!executionPlan && model) {
+      const allowFallback =
+        request.allowCpuFallback === true ||
+        (request.hardwareBudget?.allowCpuFallback === true && request.allowCpuFallback !== false);
+      try {
+        executionPlan = VramOffloader.planLayerOffload(
+          hardware,
+          {
+            modelId: model.modelId,
+            fileSizeBytes: model.fileSizeBytes,
+            format: model.format,
+            quantization: model.quantization,
+            contextWindowTokens: model.contextWindowTokens,
+          },
+          {
+            allowCpuFallback: allowFallback,
+            activeReservedRamBytes: this.reservedRamBytes,
+            activeReservedVramBytes: this.reservedVramBytes,
+            maxVramPercent: this.maxVramPercent,
+            maxRamPercent: this.maxRamPercent,
+          },
+        );
+      } catch (offloadErr) {
+        if (!allowFallback) {
+          throw offloadErr;
+        }
+      }
+    }
+
+    if (executionPlan?.isCpuFallback) {
+      isCpuFallback = true;
+      allocatedVram = 0;
+      fallbackReason = fallbackReason ?? executionPlan.fallbackReason;
+    } else if (hardware.gpuAdapters.length === 0) {
+      isCpuFallback = true;
+      allocatedVram = 0;
+      fallbackReason = fallbackReason ?? 'No GPU detected; running on CPU.';
+    }
+
+    // 5. Create transactional reservation
     const reservationId = `res-${crypto.randomUUID()}`;
     const reservation: ResourceReservation = {
       reservationId,
@@ -119,6 +162,7 @@ export class ResourceGovernor {
       isReleased: false,
       cpuFallback: isCpuFallback,
       fallbackReason,
+      executionPlan,
     };
 
     // Update internal tracking
@@ -128,6 +172,38 @@ export class ResourceGovernor {
     this.reservedVramBytes += allocatedVram;
 
     return { ...reservation };
+  }
+
+  /**
+   * Plans deterministic layer offloading using VramOffloader without acquiring a reservation.
+   */
+  public planExecution(
+    request: InferenceRequest,
+    hardware: HardwareProfile,
+    model?: ModelArtifact,
+  ): InferenceExecutionPlan {
+    const fileSizeBytes =
+      model?.fileSizeBytes ?? request.hardwareBudget?.maxVramBytes ?? 1073741824;
+
+    return VramOffloader.planLayerOffload(
+      hardware,
+      {
+        modelId: request.modelId,
+        fileSizeBytes,
+        format: model?.format ?? (request.provider === 'onnx' ? 'onnx' : 'gguf'),
+        quantization: model?.quantization ?? 'Q4_K_M',
+        contextWindowTokens: model?.contextWindowTokens ?? 2048,
+      },
+      {
+        allowCpuFallback:
+          request.allowCpuFallback === true ||
+          (request.hardwareBudget?.allowCpuFallback === true && request.allowCpuFallback !== false),
+        activeReservedRamBytes: this.reservedRamBytes,
+        activeReservedVramBytes: this.reservedVramBytes,
+        maxVramPercent: this.maxVramPercent,
+        maxRamPercent: this.maxRamPercent,
+      },
+    );
   }
 
   /**

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { InferenceExecutionPlan, NativeEngineDescriptor } from '@nexusos/contracts';
 
 // ============================================================
 // Enums and Discriminated Union Types
@@ -69,6 +70,7 @@ export interface ResourceReservation {
   isReleased: boolean;
   cpuFallback?: boolean;
   fallbackReason?: string;
+  executionPlan?: InferenceExecutionPlan;
 }
 
 export interface ModelArtifact {
@@ -116,6 +118,7 @@ export interface InferenceRequest {
     strictSeparation?: boolean;
     neutralizeControlTokens?: boolean;
   };
+  executionPlan?: InferenceExecutionPlan;
 }
 
 export interface LocalAiExecutionRequest {
@@ -148,6 +151,7 @@ export interface LocalAiExecutionRequest {
     neutralizeControlTokens?: boolean;
   };
   allowCpuFallback?: boolean;
+  executionPlan?: InferenceExecutionPlan;
   signal?: AbortSignal;
 }
 
@@ -172,6 +176,7 @@ export interface LocalAiExecutionResult<T = unknown> {
     cpuFallback: boolean;
     fallbackReason?: string;
   };
+  executionPlan?: InferenceExecutionPlan;
   durationMs?: number;
   evidenceChecksum?: string;
   data?: T;
@@ -198,10 +203,14 @@ export interface ProviderHealth {
   endpoint?: string;
 }
 
+export type { NativeEngineDescriptor };
+
 export interface ILocalModelProvider {
   readonly providerType: ProviderType;
+  readonly descriptor?: NativeEngineDescriptor;
   isAvailable(): Promise<boolean>;
-  loadModel(model: ModelArtifact): Promise<void>;
+  getNativeCapability?(): Promise<NativeEngineDescriptor>;
+  loadModel(model: ModelArtifact, plan?: InferenceExecutionPlan): Promise<void>;
   unloadModel(modelId: string): Promise<void>;
   generateStream(
     request: InferenceRequest,

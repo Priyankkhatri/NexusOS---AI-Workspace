@@ -7,3 +7,4 @@ export * from './model-cache-manager.js';
 export * from './provider-adapters.js';
 export * from './model-runtime-manager.js';
 export * from './prompt-isolation.js';
+export * from './vram-offloader.js';
