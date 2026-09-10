@@ -33,28 +33,30 @@ This runbook covers operational failures in the NexusOS persistent disk-backed m
 
 ## 2. Detection / Symptoms
 
-| Signal | Where to Look |
-|:---|:---|
-| `062-SEC-01: SQLite integrity check failed` at backend startup | Backend boot logs |
-| `UNIQUE constraint failed` or `FOREIGN KEY constraint failed` | SQLite error in memory operation logs |
-| `SqliteMemoryStoreSimulatedFailureError` in production logs | `simulateFailure` flag accidentally set |
-| `VectorDimensionMismatchError` on vector upsert | Vector index receiving mismatched embedding |
-| `MemoryVersionConflictError` on update | Optimistic concurrency conflict; stale version |
-| `MemoryNotFoundError` on getById of a valid record | Tombstone applied erroneously or wrong tenant context |
-| Memory records present in SQLite but absent from VectorIndex | VectorIndex not hydrated on startup |
-| Unexplained `null` returns for known record IDs | Cross-tenant query or tombstone misidentified as active |
+| Signal                                                         | Where to Look                                           |
+| :------------------------------------------------------------- | :------------------------------------------------------ |
+| `062-SEC-01: SQLite integrity check failed` at backend startup | Backend boot logs                                       |
+| `UNIQUE constraint failed` or `FOREIGN KEY constraint failed`  | SQLite error in memory operation logs                   |
+| `SqliteMemoryStoreSimulatedFailureError` in production logs    | `simulateFailure` flag accidentally set                 |
+| `VectorDimensionMismatchError` on vector upsert                | Vector index receiving mismatched embedding             |
+| `MemoryVersionConflictError` on update                         | Optimistic concurrency conflict; stale version          |
+| `MemoryNotFoundError` on getById of a valid record             | Tombstone applied erroneously or wrong tenant context   |
+| Memory records present in SQLite but absent from VectorIndex   | VectorIndex not hydrated on startup                     |
+| Unexplained `null` returns for known record IDs                | Cross-tenant query or tombstone misidentified as active |
 
 ---
 
 ## 3. Immediate Containment
 
 1. **Identify whether the failure is transaction or integrity**:
+
    - Transaction failure: the operation rolled back atomically — data is consistent, the caller
      received an error. Retry is safe.
    - Integrity failure: detected at startup via `PRAGMA integrity_check` — the database file
      may have been corrupted (e.g., process crash without WAL flush).
 
 2. **Stop accepting new write operations** to the affected workspace:
+
    - Use the `simulateFailure` flag (TEST ONLY — never set in production) or implement a
      write-pause at the HTTP router layer while recovery runs.
 
@@ -80,6 +82,7 @@ PRAGMA integrity_check;
 Expected result: `ok`. Any other result indicates page-level corruption.
 
 To run manually:
+
 ```bash
 # On the machine hosting the backend process
 node -e "
@@ -204,13 +207,13 @@ Retry the write operation after re-reading the current record version.
 
 ## 7. Escalation
 
-| Trigger | Action |
-|:---|:---|
-| Integrity check fails after WAL recovery | Escalate to data engineering — potential filesystem-level corruption |
-| Repeated WAL checkpoint failures | OS-level filesystem investigation; disk health check |
-| `simulateFailure = true` found in production config | Immediate incident — code review and configuration audit |
-| Cascade tombstone failures producing inconsistent graph state | Backend engineering escalation — transaction rollback path investigation |
-| Persistent `MemoryVersionConflictError` under single-writer load | Backend concurrency bug — not expected without concurrent writes |
+| Trigger                                                          | Action                                                                   |
+| :--------------------------------------------------------------- | :----------------------------------------------------------------------- |
+| Integrity check fails after WAL recovery                         | Escalate to data engineering — potential filesystem-level corruption     |
+| Repeated WAL checkpoint failures                                 | OS-level filesystem investigation; disk health check                     |
+| `simulateFailure = true` found in production config              | Immediate incident — code review and configuration audit                 |
+| Cascade tombstone failures producing inconsistent graph state    | Backend engineering escalation — transaction rollback path investigation |
+| Persistent `MemoryVersionConflictError` under single-writer load | Backend concurrency bug — not expected without concurrent writes         |
 
 ---
 

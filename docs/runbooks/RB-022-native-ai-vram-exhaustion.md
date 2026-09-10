@@ -30,15 +30,15 @@ This runbook covers operational failures in the NexusOS native quantized local-A
 
 ## 2. Detection / Symptoms
 
-| Signal | Where to Look |
-|:---|:---|
-| `VramOffloaderError(INVALID_HARDWARE)` in logs | Desktop agent: `[VramOffloader]` log stream |
-| Model stuck loading — no inference responses | `[ModelRuntimeManager]` load timeout |
-| `ENDPOINT_DISALLOWED` error from `validateLoopbackEndpoint` | Provider adapter SSRF guard triggered |
-| Inference latency > 30s for simple prompts | CPU fallback active; GPU path unavailable |
-| `NATIVE_ENGINE_UNAVAILABLE` in provider adapter logs | LlamaCpp or ONNX engine not initialized |
-| High process RSS growing unboundedly | Memory leak in model weights or KV cache |
-| Thermal throttling warnings | `HardwareProfile.thermalState = 'throttled'` or `'critical'` |
+| Signal                                                      | Where to Look                                                |
+| :---------------------------------------------------------- | :----------------------------------------------------------- |
+| `VramOffloaderError(INVALID_HARDWARE)` in logs              | Desktop agent: `[VramOffloader]` log stream                  |
+| Model stuck loading — no inference responses                | `[ModelRuntimeManager]` load timeout                         |
+| `ENDPOINT_DISALLOWED` error from `validateLoopbackEndpoint` | Provider adapter SSRF guard triggered                        |
+| Inference latency > 30s for simple prompts                  | CPU fallback active; GPU path unavailable                    |
+| `NATIVE_ENGINE_UNAVAILABLE` in provider adapter logs        | LlamaCpp or ONNX engine not initialized                      |
+| High process RSS growing unboundedly                        | Memory leak in model weights or KV cache                     |
+| Thermal throttling warnings                                 | `HardwareProfile.thermalState = 'throttled'` or `'critical'` |
 
 ---
 
@@ -161,13 +161,13 @@ If GPU is persistently unavailable, configure the runtime for CPU-only operation
 
 ## 7. Escalation
 
-| Trigger | Action |
-|:---|:---|
-| VRAM exhaustion persists after model eviction | OS-level GPU driver investigation; check nvidia-smi or equivalent |
-| `thermalState = 'critical'` — not recovering after pause | Hardware engineering — thermal management fault |
-| Model quarantined repeatedly (download always corrupt) | Infrastructure — CDN or model registry integrity issue |
-| `NATIVE_ENGINE_UNAVAILABLE` with correct installation | Desktop Agent engineering — native engine binary compatibility investigation |
-| SSRF guard blocking requests it should allow | Security review — loopback detection edge case |
+| Trigger                                                  | Action                                                                       |
+| :------------------------------------------------------- | :--------------------------------------------------------------------------- |
+| VRAM exhaustion persists after model eviction            | OS-level GPU driver investigation; check nvidia-smi or equivalent            |
+| `thermalState = 'critical'` — not recovering after pause | Hardware engineering — thermal management fault                              |
+| Model quarantined repeatedly (download always corrupt)   | Infrastructure — CDN or model registry integrity issue                       |
+| `NATIVE_ENGINE_UNAVAILABLE` with correct installation    | Desktop Agent engineering — native engine binary compatibility investigation |
+| SSRF guard blocking requests it should allow             | Security review — loopback detection edge case                               |
 
 ---
 

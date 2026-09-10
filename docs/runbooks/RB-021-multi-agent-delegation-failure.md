@@ -26,15 +26,15 @@ subsystem (`DelegationCoordinator`, `AgentDirectoryService`). It applies when:
 
 ## 2. Detection / Symptoms
 
-| Signal | Where to Look |
-|:---|:---|
-| `DelegationStatus` stuck in `PENDING` or `IN_PROGRESS` | Backend logs: `[DelegationCoordinator]` |
-| `DELEGATION_DEPTH_EXCEEDED` error in task logs | Backend error logs with `delegationDepth > 3` |
-| `SCOPE_AMPLIFICATION_FORBIDDEN` error | Attenuation guard rejecting child request |
-| Child agent stops sending heartbeats > 45s | `AgentDirectoryService` heartbeat TTL expiry |
-| `FAN_OUT_LIMIT_EXCEEDED` — too many parallel delegations | Backend logs: `fanOut > 5` rejection |
-| Missing `ExecutionReceipt` from child after timeout | Delegation session TTL expiry |
-| `LEASE_REVOKED` propagation not reaching children | IPC / cancellation path log gaps |
+| Signal                                                   | Where to Look                                 |
+| :------------------------------------------------------- | :-------------------------------------------- |
+| `DelegationStatus` stuck in `PENDING` or `IN_PROGRESS`   | Backend logs: `[DelegationCoordinator]`       |
+| `DELEGATION_DEPTH_EXCEEDED` error in task logs           | Backend error logs with `delegationDepth > 3` |
+| `SCOPE_AMPLIFICATION_FORBIDDEN` error                    | Attenuation guard rejecting child request     |
+| Child agent stops sending heartbeats > 45s               | `AgentDirectoryService` heartbeat TTL expiry  |
+| `FAN_OUT_LIMIT_EXCEEDED` — too many parallel delegations | Backend logs: `fanOut > 5` rejection          |
+| Missing `ExecutionReceipt` from child after timeout      | Delegation session TTL expiry                 |
+| `LEASE_REVOKED` propagation not reaching children        | IPC / cancellation path log gaps              |
 
 **Baseline normal state**: All `DelegationStatus` values resolve to `COMPLETED` or `CANCELLED`
 within the session TTL. `AgentDirectoryService` shows all registered agents as `HEALTHY`.
@@ -47,12 +47,14 @@ within the session TTL. `AgentDirectoryService` shows all registered agents as `
    endpoint (if exposed) or inspect logs for `delegationId` with stale `IN_PROGRESS` status.
 
 2. **Revoke the parent task**:
+
    - Trigger `DelegationCoordinator.revokeParentTask(taskId)` to propagate a
      `LEASE_REVOKED` signal across all active child delegations for that task.
    - This marks all child delegation sessions as `CANCELLED` and prevents new delegations
      from being accepted under the revoked task.
 
 3. **Isolate the faulty child agent**:
+
    - Remove the child agent from `AgentDirectoryService` using `deregisterAgent(agentId, tenantId)`.
    - This prevents further task assignments to the faulty agent.
 
@@ -144,12 +146,12 @@ After applying recovery:
 
 ## 7. Escalation
 
-| Trigger | Action |
-|:---|:---|
+| Trigger                                                              | Action                                                                          |
+| :------------------------------------------------------------------- | :------------------------------------------------------------------------------ |
 | Cascade propagation failure (children not receiving `LEASE_REVOKED`) | Escalate to NexusOS Backend Engineering — IPC / cancellation path investigation |
-| `SCOPE_AMPLIFICATION_FORBIDDEN` events in production | Security escalation — potential capability escalation attempt |
-| Recurring fan-out violations (`MAX_FAN_OUT` exceeded repeatedly) | Orchestration plan review — reduce delegation breadth |
-| Agent fails to re-register after restart | Desktop-Agent IPC investigation (RB-004 may apply) |
+| `SCOPE_AMPLIFICATION_FORBIDDEN` events in production                 | Security escalation — potential capability escalation attempt                   |
+| Recurring fan-out violations (`MAX_FAN_OUT` exceeded repeatedly)     | Orchestration plan review — reduce delegation breadth                           |
+| Agent fails to re-register after restart                             | Desktop-Agent IPC investigation (RB-004 may apply)                              |
 
 ---
 

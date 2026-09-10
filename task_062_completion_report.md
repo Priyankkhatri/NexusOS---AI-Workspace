@@ -1,4 +1,5 @@
 # Task 062 — Completion Report
+
 ## Persistent SQLite Memory Store, Vector Search & Knowledge Graph
 
 **Task ID**: 062  
@@ -64,43 +65,43 @@ No duplicate memory runtimes were introduced.
 
 New schemas delivered:
 
-| Schema | Description |
-|:---|:---|
-| `VectorSearchRequestSchema` | Validated vector search query with topK bounds |
-| `VectorSearchResponseSchema` | Typed results with similarity scores |
-| `MemoryGraphQueryRequestSchema` | Graph traversal query with depth/type filters |
-| `MemoryGraphQueryResponseSchema` | Typed result set: nodes + edges |
-| `MemoryRecordSchema` | Full memory record with provenance |
-| `DEFAULT_VECTOR_DIMENSION = 384` | Canonical embedding dimension constant |
+| Schema                           | Description                                    |
+| :------------------------------- | :--------------------------------------------- |
+| `VectorSearchRequestSchema`      | Validated vector search query with topK bounds |
+| `VectorSearchResponseSchema`     | Typed results with similarity scores           |
+| `MemoryGraphQueryRequestSchema`  | Graph traversal query with depth/type filters  |
+| `MemoryGraphQueryResponseSchema` | Typed result set: nodes + edges                |
+| `MemoryRecordSchema`             | Full memory record with provenance             |
+| `DEFAULT_VECTOR_DIMENSION = 384` | Canonical embedding dimension constant         |
 
 ---
 
 ## 3. Security Controls Delivered
 
-| Code | Description | Implementation |
-|:---|:---|:---|
-| 062-SEC-01 | Tenant isolation on all persistence operations | `(tenant_id, workspace_id)` prefix on every SQL query |
-| 062-SEC-02 | Optimistic concurrency — no silent overwrites | `expectedVersion` on all `update()` calls |
-| 062-SEC-03 | Integrity check on startup | `PRAGMA integrity_check` run at `SqliteMemoryStore` construction |
-| 062-SEC-04 | Secret sanitization before persistence | `RedactionFilter.assertNoSecrets` on content, title, summary |
-| 062-SEC-05 | Graph traversal depth/limit bounds | `maxDepth ≤ 4`, `limit ≤ 100` enforced in engine and client |
-| 062-SEC-06 | Vector dimension mismatch rejection | `VectorDimensionMismatchError` on bad embedding dimensions |
-| 062-SEC-07 | Graph is advisory context — not authorization | Graph data must not be used as access control source |
-| 058-SEC-03 | Cross-tenant graph access rejection | Context tenantId ≠ node tenantId → `MemorySecurityViolationError` |
+| Code       | Description                                    | Implementation                                                    |
+| :--------- | :--------------------------------------------- | :---------------------------------------------------------------- |
+| 062-SEC-01 | Tenant isolation on all persistence operations | `(tenant_id, workspace_id)` prefix on every SQL query             |
+| 062-SEC-02 | Optimistic concurrency — no silent overwrites  | `expectedVersion` on all `update()` calls                         |
+| 062-SEC-03 | Integrity check on startup                     | `PRAGMA integrity_check` run at `SqliteMemoryStore` construction  |
+| 062-SEC-04 | Secret sanitization before persistence         | `RedactionFilter.assertNoSecrets` on content, title, summary      |
+| 062-SEC-05 | Graph traversal depth/limit bounds             | `maxDepth ≤ 4`, `limit ≤ 100` enforced in engine and client       |
+| 062-SEC-06 | Vector dimension mismatch rejection            | `VectorDimensionMismatchError` on bad embedding dimensions        |
+| 062-SEC-07 | Graph is advisory context — not authorization  | Graph data must not be used as access control source              |
+| 058-SEC-03 | Cross-tenant graph access rejection            | Context tenantId ≠ node tenantId → `MemorySecurityViolationError` |
 
 ---
 
 ## 4. Tests Delivered
 
-| Test File | Coverage |
-|:---|:---|
-| `services/backend/tests/memory/sqlite-memory-store.test.ts` | Full CRUD, WAL, tenant isolation, cascade tombstone |
-| `services/backend/tests/memory/vector-index.test.ts` | Dimension mismatch, cosine search, size isolation |
-| `services/backend/tests/memory/graph-projection.test.ts` | Node/edge upsert, depth-bounded traversal, cycle detection |
-| `tests/hardening/memory-persistence-security.test.ts` | Security controls 062-SEC-01 through 062-SEC-07 |
-| `tests/vertical-slice/memory-persistence-vertical-slice.test.ts` | End-to-end memory lifecycle |
-| `packages/contracts/tests/memory/memory-contracts.test.ts` | Schema validation coverage |
-| `packages/contracts/tests/memory/vector-contracts.test.ts` | Vector schema validation |
+| Test File                                                        | Coverage                                                   |
+| :--------------------------------------------------------------- | :--------------------------------------------------------- |
+| `services/backend/tests/memory/sqlite-memory-store.test.ts`      | Full CRUD, WAL, tenant isolation, cascade tombstone        |
+| `services/backend/tests/memory/vector-index.test.ts`             | Dimension mismatch, cosine search, size isolation          |
+| `services/backend/tests/memory/graph-projection.test.ts`         | Node/edge upsert, depth-bounded traversal, cycle detection |
+| `tests/hardening/memory-persistence-security.test.ts`            | Security controls 062-SEC-01 through 062-SEC-07            |
+| `tests/vertical-slice/memory-persistence-vertical-slice.test.ts` | End-to-end memory lifecycle                                |
+| `packages/contracts/tests/memory/memory-contracts.test.ts`       | Schema validation coverage                                 |
+| `packages/contracts/tests/memory/vector-contracts.test.ts`       | Vector schema validation                                   |
 
 ---
 
@@ -115,7 +116,7 @@ New schemas delivered:
 
 ## 6. Exit Criteria Verified
 
-- [x] All test files pass: `pnpm test` (services/backend/tests/memory/*, hardening, vertical-slice)
+- [x] All test files pass: `pnpm test` (services/backend/tests/memory/\*, hardening, vertical-slice)
 - [x] `SqliteMemoryStore.create()` → `getById()` round-trips correctly with tenant isolation
 - [x] `VectorDimensionMismatchError` thrown on incorrect embedding dimension
 - [x] `GraphProjectionEngine` cross-tenant upsert rejected with `058-SEC-03`
@@ -124,4 +125,4 @@ New schemas delivered:
 
 ---
 
-*Report generated: 2026-09-10 | Task 062 — Sprint 2 Milestone*
+_Report generated: 2026-09-10 | Task 062 — Sprint 2 Milestone_

@@ -20,39 +20,43 @@ This runbook covers operational failures in the NexusOS knowledge graph projecti
 - The dashboard graph view (`#view-graph`) stops loading or displays stale/no data
 - A `DashboardAPIError` on the `POST /v1/memory/graph/query` endpoint disrupts the UI feed
 
-**Subsystem Authority**:  
-- Backend: `services/backend/src/memory/graph-projection-engine.ts`, `sqlite-memory-store.ts`  
+**Subsystem Authority**:
+
+- Backend: `services/backend/src/memory/graph-projection-engine.ts`, `sqlite-memory-store.ts`
 - Dashboard: `apps/web-dashboard/src/api/client.ts` (`queryGraph` method)
 
-**Traversal Safety Invariants** (062-SEC-05):  
-- `maxDepth ≤ 4` (enforced in `DashboardAPIClient.queryGraph` and backend handler)  
-- `limit ≤ 100` nodes per query result  
+**Traversal Safety Invariants** (062-SEC-05):
+
+- `maxDepth ≤ 4` (enforced in `DashboardAPIClient.queryGraph` and backend handler)
+- `limit ≤ 100` nodes per query result
 - Cycles must be detected and skipped by the traversal algorithm
 
 ---
 
 ## 2. Detection / Symptoms
 
-| Signal | Where to Look |
-|:---|:---|
-| Backend response time > 5s for `POST /v1/memory/graph/query` | Backend observability logs / dashboard network tab |
-| Dashboard `#view-graph` spinner never resolves | Browser console `DashboardAPIError` for graph endpoint |
-| Node count in query response approaching 100 every query | Indicates nearly-full result sets; depth/breadth explosion |
-| Backend memory (RSS) spiking during graph traversal | Process memory monitor |
-| `058-SEC-03` security violation in graph engine logs | Cross-tenant graph access attempt detected |
-| Graph shows cycles — same nodes appearing multiple times | Cycle detection not engaged (should be impossible; indicates bug) |
-| `GET /v1/memory/graph/query` returning 500 | Unhandled error in graph traversal — inspect backend logs |
+| Signal                                                       | Where to Look                                                     |
+| :----------------------------------------------------------- | :---------------------------------------------------------------- |
+| Backend response time > 5s for `POST /v1/memory/graph/query` | Backend observability logs / dashboard network tab                |
+| Dashboard `#view-graph` spinner never resolves               | Browser console `DashboardAPIError` for graph endpoint            |
+| Node count in query response approaching 100 every query     | Indicates nearly-full result sets; depth/breadth explosion        |
+| Backend memory (RSS) spiking during graph traversal          | Process memory monitor                                            |
+| `058-SEC-03` security violation in graph engine logs         | Cross-tenant graph access attempt detected                        |
+| Graph shows cycles — same nodes appearing multiple times     | Cycle detection not engaged (should be impossible; indicates bug) |
+| `GET /v1/memory/graph/query` returning 500                   | Unhandled error in graph traversal — inspect backend logs         |
 
 ---
 
 ## 3. Immediate Containment
 
 1. **Reduce query bounds at the client**:
+
    - `DashboardAPIClient.queryGraph` enforces `maxDepth = Math.min(maxDepth, 4)` and
      `limit = Math.min(limit, 100)`. These cannot be overridden by the caller.
    - If dashboard UI allows user input for depth/limit, temporarily disable those controls.
 
 2. **Kill the stuck backend request** (if identifiable):
+
    - Backend queries run synchronously on the SQLite connection. A stuck traversal will block
      the Node.js event loop.
    - Restart the backend service if the event loop is blocked and the process is unresponsive.
@@ -188,13 +192,13 @@ If a specific sub-graph is legitimately dense (e.g., an entity with 200+ edges):
 
 ## 7. Escalation
 
-| Trigger | Action |
-|:---|:---|
-| `058-SEC-03` cross-tenant graph access detected | **Security escalation** — potential tenant isolation breach. Investigate immediately. |
-| Event loop permanently blocked by graph query | Backend engineering — synchronous SQLite query optimization required |
-| Traversal result always exactly 100 nodes | Investigate graph density — consider pagination or restricting nodeTypes |
-| Dashboard graph view never loads on any workspace | Frontend engineering — `DashboardAPIClient.queryGraph` or SSE stream investigation |
-| Graph nodes accumulating without bound | Memory subsystem review — tombstone process not running or bounds not enforced |
+| Trigger                                           | Action                                                                                |
+| :------------------------------------------------ | :------------------------------------------------------------------------------------ |
+| `058-SEC-03` cross-tenant graph access detected   | **Security escalation** — potential tenant isolation breach. Investigate immediately. |
+| Event loop permanently blocked by graph query     | Backend engineering — synchronous SQLite query optimization required                  |
+| Traversal result always exactly 100 nodes         | Investigate graph density — consider pagination or restricting nodeTypes              |
+| Dashboard graph view never loads on any workspace | Frontend engineering — `DashboardAPIClient.queryGraph` or SSE stream investigation    |
+| Graph nodes accumulating without bound            | Memory subsystem review — tombstone process not running or bounds not enforced        |
 
 ---
 

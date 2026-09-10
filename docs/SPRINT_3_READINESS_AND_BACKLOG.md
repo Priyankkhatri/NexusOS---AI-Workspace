@@ -1,4 +1,5 @@
 # Sprint 3 Readiness & Backlog
+
 ## NexusOS Sprint 3 — Candidate Milestones & Entry Requirements
 
 **Document Type**: Sprint Readiness Assessment  
@@ -13,15 +14,15 @@
 
 Sprint 3 begins with the following stable, tested infrastructure delivered by Sprint 2:
 
-| Subsystem | Delivery Sprint | State |
-|:---|:---|:---|
-| Federated ACP & Multi-Agent Delegation | Sprint 2 (T-060) | Stable, tested, runbooked |
-| Native Quantized Local-AI with VRAM Offloading | Sprint 2 (T-061) | Stable, tested, runbooked |
+| Subsystem                                           | Delivery Sprint  | State                     |
+| :-------------------------------------------------- | :--------------- | :------------------------ |
+| Federated ACP & Multi-Agent Delegation              | Sprint 2 (T-060) | Stable, tested, runbooked |
+| Native Quantized Local-AI with VRAM Offloading      | Sprint 2 (T-061) | Stable, tested, runbooked |
 | Persistent SQLite Memory / Vector / Knowledge Graph | Sprint 2 (T-062) | Stable, tested, runbooked |
-| Web Dashboard — Memory Explorer & Knowledge Graph | Sprint 2 (T-063) | Stable, tested, runbooked |
-| Multi-Agent Governance & Delegation Vertical Slice | Sprint 2 (T-060) | Passing |
-| Sprint 2 Security Hardening Suites (4 test files) | Sprint 2 (T-064) | Registered in CI |
-| Operational Runbooks RB-001 through RB-024 | Sprint 0–2 | Complete catalog |
+| Web Dashboard — Memory Explorer & Knowledge Graph   | Sprint 2 (T-063) | Stable, tested, runbooked |
+| Multi-Agent Governance & Delegation Vertical Slice  | Sprint 2 (T-060) | Passing                   |
+| Sprint 2 Security Hardening Suites (4 test files)   | Sprint 2 (T-064) | Registered in CI          |
+| Operational Runbooks RB-001 through RB-024          | Sprint 0–2       | Complete catalog          |
 
 ---
 
@@ -51,6 +52,7 @@ excluded real GGUF/ONNX model weight files (not stored in repository). Sprint 3 
 5. Validate `InferenceExecutionPlan` accuracy against measured real-world layer placement
 
 **Entry Criteria**:
+
 - [ ] GGUF model weight acquisition process defined
 - [ ] Model manifest schema specified in `@nexusos/contracts`
 - [ ] `ModelCacheManager.download()` implemented with checksum verification
@@ -71,6 +73,7 @@ automatically derive graph nodes/edges from new `MemoryRecord` content. Sprint 3
 4. Update the Dashboard Knowledge Graph view to show live graph evolution as memories are written
 
 **Entry Criteria**:
+
 - [ ] Entity extraction strategy selected (rule-based vs. embedding-based)
 - [ ] `GraphProjectionEngine.deriveFromRecord()` designed and contract-specced
 
@@ -89,6 +92,7 @@ but does not stream live delegation events. Sprint 3 would:
 4. Surface delegation cascade cancellation controls in the dashboard operator panel
 
 **Entry Criteria**:
+
 - [ ] SSE delegation event stream endpoint defined in backend
 - [ ] `DashboardAPIClient` SSE subscription method designed
 
@@ -108,6 +112,7 @@ but plugins cannot currently write to memory or the knowledge graph. Sprint 3 wo
 4. Add plugin write capability to the security hardening test suite
 
 **Entry Criteria**:
+
 - [ ] Plugin SDK capability model extended in `packages/plugin-sdk/src/index.ts`
 - [ ] Plugin write capability schema spec'd in `@nexusos/contracts`
 
@@ -126,6 +131,7 @@ consult the episodic memory or knowledge graph when constructing new plans. Spri
 4. Measure replan quality improvement with and without memory context injection
 
 **Entry Criteria**:
+
 - [ ] PlannerEngine can accept external context injection interface defined
 - [ ] Memory-informed replan contract schema defined
 
@@ -135,15 +141,15 @@ consult the episodic memory or knowledge graph when constructing new plans. Spri
 
 The following items were explicitly deferred from Sprint 2 and are Sprint 3 candidates:
 
-| Item | Deferred From | Priority |
-|:---|:---|:---|
-| Real GGUF model download lifecycle | Task 061 | HIGH — required for real local-AI usage |
-| Automatic graph derivation from memory content | Task 062 | MEDIUM — enhances knowledge graph value |
-| Dashboard live delegation SSE streaming | Task 063 Phase 2 | MEDIUM — improves operator visibility |
-| Plugin write capability for memory | Task 062 / Plugin SDK | LOW — requires trust model expansion |
-| Memory-informed autonomous replanning | Sprint 1 / Task 062 | HIGH — core AI quality improvement |
-| Graph node count alerting (> 10,000 per workspace) | Task 062 | LOW — operational hygiene |
-| WAL checkpoint interval tuning for production | Task 062 | MEDIUM — operational hardening |
+| Item                                               | Deferred From         | Priority                                |
+| :------------------------------------------------- | :-------------------- | :-------------------------------------- |
+| Real GGUF model download lifecycle                 | Task 061              | HIGH — required for real local-AI usage |
+| Automatic graph derivation from memory content     | Task 062              | MEDIUM — enhances knowledge graph value |
+| Dashboard live delegation SSE streaming            | Task 063 Phase 2      | MEDIUM — improves operator visibility   |
+| Plugin write capability for memory                 | Task 062 / Plugin SDK | LOW — requires trust model expansion    |
+| Memory-informed autonomous replanning              | Sprint 1 / Task 062   | HIGH — core AI quality improvement      |
+| Graph node count alerting (> 10,000 per workspace) | Task 062              | LOW — operational hygiene               |
+| WAL checkpoint interval tuning for production      | Task 062              | MEDIUM — operational hardening          |
 
 ---
 
@@ -174,4 +180,4 @@ The following architectural constraints remain binding in Sprint 3:
 
 ---
 
-*Document prepared: 2026-09-10 | Sprint 2 Exit Gate (Task 064) | NexusOS Platform Engineering*
+_Document prepared: 2026-09-10 | Sprint 2 Exit Gate (Task 064) | NexusOS Platform Engineering_

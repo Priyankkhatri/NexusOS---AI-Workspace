@@ -169,16 +169,16 @@ Following the completion of all 4 Sprint 2 milestones (Tasks 060 through 063), i
 
 Measured compiled artifact sizes across all monorepo workspace packages:
 
-| Workspace Package        | Dist Path                         | Observed Dist Size | Notes                                                     |
-| :----------------------- | :-------------------------------- | :----------------- | :-------------------------------------------------------- |
-| `packages/contracts`     | `packages/contracts/dist`         | ~390 KB            | Expanded with ACP, native AI, vector, graph schemas       |
-| `packages/plugin-sdk`    | `packages/plugin-sdk/dist`        | 11 KB              | Unchanged from Sprint 1                                   |
-| `services/backend`       | `services/backend/dist`           | ~620 KB            | +AgentDirectory, DelegationCoordinator, SqliteMemoryStore |
-| `services/identity`      | `services/identity/dist`          | 32 KB              | Unchanged                                                 |
-| `services/policy`        | `services/policy/dist`            | 32 KB              | Unchanged                                                 |
+| Workspace Package        | Dist Path                         | Observed Dist Size | Notes                                                                         |
+| :----------------------- | :-------------------------------- | :----------------- | :---------------------------------------------------------------------------- |
+| `packages/contracts`     | `packages/contracts/dist`         | ~390 KB            | Expanded with ACP, native AI, vector, graph schemas                           |
+| `packages/plugin-sdk`    | `packages/plugin-sdk/dist`        | 11 KB              | Unchanged from Sprint 1                                                       |
+| `services/backend`       | `services/backend/dist`           | ~620 KB            | +AgentDirectory, DelegationCoordinator, SqliteMemoryStore                     |
+| `services/identity`      | `services/identity/dist`          | 32 KB              | Unchanged                                                                     |
+| `services/policy`        | `services/policy/dist`            | 32 KB              | Unchanged                                                                     |
 | `apps/desktop-agent`     | `apps/desktop-agent/dist`         | ~2.10 MB           | +Native local-AI runtime (HardwareDetector, VramOffloader, provider adapters) |
-| `apps/web-dashboard`     | `apps/web-dashboard/dist`         | ~75 KB             | +Memory Explorer, Knowledge Graph, Agent Cockpit views    |
-| **Total Dist Footprint** | All workspace compilation outputs | **3.10 MB**        | +0.24 MB from Sprint 1 baseline (compact expansion)       |
+| `apps/web-dashboard`     | `apps/web-dashboard/dist`         | ~75 KB             | +Memory Explorer, Knowledge Graph, Agent Cockpit views                        |
+| **Total Dist Footprint** | All workspace compilation outputs | **3.10 MB**        | +0.24 MB from Sprint 1 baseline (compact expansion)                           |
 
 ### 5.5 GPU / VRAM / Native AI Measurements
 
@@ -193,9 +193,9 @@ Measured compiled artifact sizes across all monorepo workspace packages:
 
 ## 6. Comparative Analysis — Sprints 0, 1, and 2
 
-| Metric Area              | Sprint 0 Baseline | Sprint 1 Baseline | Sprint 2 Baseline | S1→S2 Delta                                                  |
-| :----------------------- | :---------------- | :---------------- | :---------------- | :----------------------------------------------------------- |
-| **Process RSS**          | 45.07 MB          | 39.51 MB          | 42.57 MB          | +3.06 MB (+7.7% — SQLite store init + new agent directory)   |
+| Metric Area              | Sprint 0 Baseline | Sprint 1 Baseline | Sprint 2 Baseline | S1→S2 Delta                                                   |
+| :----------------------- | :---------------- | :---------------- | :---------------- | :------------------------------------------------------------ |
+| **Process RSS**          | 45.07 MB          | 39.51 MB          | 42.57 MB          | +3.06 MB (+7.7% — SQLite store init + new agent directory)    |
 | **Idle Heap Used**       | 6.58 MB           | 9.63 MB           | 10.21 MB          | +0.58 MB (+6.0% — new in-memory maps for delegation sessions) |
 | **Contracts Import**     | 20.64 ms          | 65.23 ms          | 83.28 ms          | +18.05 ms — ACP/native-AI/vector/graph schema additions       |
 | **Total Dist Footprint** | 1.95 MB           | 2.86 MB           | 3.10 MB           | +0.24 MB — proportional to 4 new subsystems                   |
@@ -213,4 +213,3 @@ Measured compiled artifact sizes across all monorepo workspace packages:
    Ensure WAL checkpoint intervals are configured appropriately for production deployment.
 4. **Import Latency Target**: Keep `@nexusos/contracts` import latency < 150 ms. The Sprint 2
    value of 83.28 ms leaves ~67 ms headroom before the target is reached.
-

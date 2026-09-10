@@ -42,15 +42,16 @@ The NexusOS development lifecycle, as established in
 mandates that every sprint terminates in a formal exit and hardening milestone before the next
 sprint's feature work begins. This pattern has been strictly followed:
 
-| Exit Gate Task | Sprint | Feature Milestones | Outputs |
-|:---|:---|:---|:---|
-| `Task 048` | Sprint 0 Exit | Tasks 001–047 (M0–M6) | `sprint0-dod.test.ts`, RB-001–010, `SPRINT_0_COMPLETION_REPORT.md`, `SPRINT_1_READINESS_AND_BACKLOG.md` |
-| `Task 059` | Sprint 1 Exit | Tasks 049–058 (M1–M10) | `sprint1-dod.test.ts`, RB-011–020, `SPRINT_1_COMPLETION_REPORT.md`, `SPRINT_2_READINESS_AND_BACKLOG.md` |
+| Exit Gate Task | Sprint            | Feature Milestones        | Outputs                                                                                                  |
+| :------------- | :---------------- | :------------------------ | :------------------------------------------------------------------------------------------------------- |
+| `Task 048`     | Sprint 0 Exit     | Tasks 001–047 (M0–M6)     | `sprint0-dod.test.ts`, RB-001–010, `SPRINT_0_COMPLETION_REPORT.md`, `SPRINT_1_READINESS_AND_BACKLOG.md`  |
+| `Task 059`     | Sprint 1 Exit     | Tasks 049–058 (M1–M10)    | `sprint1-dod.test.ts`, RB-011–020, `SPRINT_1_COMPLETION_REPORT.md`, `SPRINT_2_READINESS_AND_BACKLOG.md`  |
 | **`Task 064`** | **Sprint 2 Exit** | **Tasks 060–063 (M1–M4)** | `sprint2-dod.test.ts`, RB-021–024+, `SPRINT_2_COMPLETION_REPORT.md`, `SPRINT_3_READINESS_AND_BACKLOG.md` |
 
 **2. `docs/SPRINT_2_READINESS_AND_BACKLOG.md` — Section 4 (Candidate Backlog)**
 
 All Sprint 2 [CANDIDATE] items have been delivered:
+
 - Item 1: Advanced Multi-Agent Collaboration → **Task 060 (COMPLETE)**
 - Item 2: Native Quantized Local-AI Model Execution → **Task 061 (COMPLETE)**
 - Item 3: Persistent Distributed Graph Store & Vector Search → **Task 062 (COMPLETE)**
@@ -81,12 +82,12 @@ The only remaining Sprint 2 milestone is the formal exit gate.
 
 ### Candidate Ranking Matrix
 
-| Candidate | Title | Authority Source | Decision |
-|:---|:---|:---|:---|
-| **Candidate 1 (AUTHORITATIVE)** | Sprint 2 Exit Gate — Sprint 2 Hardening, Quality Gate Finalization & Sprint 3 Readiness | Blueprint Sec 52/56/58; Task 059 precedent; Sprint 2 backlog fully satisfied | **SELECTED** |
-| **Candidate 2 (REJECTED)** | Cloud State Sync & Enterprise RBAC | `SPRINT_2_READINESS_AND_BACKLOG.md` Sec 4 Item 4 | **EXPLICITLY DEFERRED TO SPRINT 3** — prohibited from Sprint 2 scope |
-| **Candidate 3 (REJECTED)** | Any new Sprint 3 feature work | — | **NOT TO BE IMPLEMENTED** — Sprint 2 exit gate must close first |
-| **Candidate 4 (REJECTED)** | Contract versioning bump standalone | `SPRINT_2_READINESS_AND_BACKLOG.md` Sec 5 | **INCORPORATED** into exit gate, not a standalone milestone |
+| Candidate                       | Title                                                                                   | Authority Source                                                             | Decision                                                             |
+| :------------------------------ | :-------------------------------------------------------------------------------------- | :--------------------------------------------------------------------------- | :------------------------------------------------------------------- |
+| **Candidate 1 (AUTHORITATIVE)** | Sprint 2 Exit Gate — Sprint 2 Hardening, Quality Gate Finalization & Sprint 3 Readiness | Blueprint Sec 52/56/58; Task 059 precedent; Sprint 2 backlog fully satisfied | **SELECTED**                                                         |
+| **Candidate 2 (REJECTED)**      | Cloud State Sync & Enterprise RBAC                                                      | `SPRINT_2_READINESS_AND_BACKLOG.md` Sec 4 Item 4                             | **EXPLICITLY DEFERRED TO SPRINT 3** — prohibited from Sprint 2 scope |
+| **Candidate 3 (REJECTED)**      | Any new Sprint 3 feature work                                                           | —                                                                            | **NOT TO BE IMPLEMENTED** — Sprint 2 exit gate must close first      |
+| **Candidate 4 (REJECTED)**      | Contract versioning bump standalone                                                     | `SPRINT_2_READINESS_AND_BACKLOG.md` Sec 5                                    | **INCORPORATED** into exit gate, not a standalone milestone          |
 
 ### Why Candidate 1 Wins
 
@@ -116,12 +117,12 @@ The only remaining Sprint 2 milestone is the formal exit gate.
 
 **Sprint 2 Feature Deliverables (all verified GREEN at `f0b701d`):**
 
-| Task | Title | Key Artifacts |
-|:---|:---|:---|
+| Task     | Title                                                           | Key Artifacts                                                                                                                                                          |
+| :------- | :-------------------------------------------------------------- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Task 060 | Multi-Agent Collaboration, Federated ACP & Sub-Agent Delegation | `packages/contracts/src/acp/federation.ts`, `delegation.ts`, `directory.ts`; `services/backend/src/agents/`; `tests/hardening/multi-agent-delegation-security.test.ts` |
-| Task 061 | Native Quantized Local-AI Execution & VRAM Offloading | `apps/desktop-agent/src/runtimes/local-ai/`; native engine adapters; `tests/hardening/local-ai-hardware-security.test.ts` |
-| Task 062 | Persistent SQLite Store, Vector Search & Knowledge Graph | `services/backend/src/memory/` (SQLite store, vector index, graph engine); `tests/hardening/memory-persistence-security.test.ts` |
-| Task 063 | Web Dashboard Multi-Agent, Memory Explorer & Knowledge Graph | `apps/web-dashboard/` (all phases); `tests/vertical-slice/dashboard-security-invariants.test.ts` (83 tests) |
+| Task 061 | Native Quantized Local-AI Execution & VRAM Offloading           | `apps/desktop-agent/src/runtimes/local-ai/`; native engine adapters; `tests/hardening/local-ai-hardware-security.test.ts`                                              |
+| Task 062 | Persistent SQLite Store, Vector Search & Knowledge Graph        | `services/backend/src/memory/` (SQLite store, vector index, graph engine); `tests/hardening/memory-persistence-security.test.ts`                                       |
+| Task 063 | Web Dashboard Multi-Agent, Memory Explorer & Knowledge Graph    | `apps/web-dashboard/` (all phases); `tests/vertical-slice/dashboard-security-invariants.test.ts` (83 tests)                                                            |
 
 **Test Infrastructure (passing at baseline):**
 
@@ -144,13 +145,13 @@ The only remaining Sprint 2 milestone is the formal exit gate.
 
 ### What is Missing (Gaps to Fill)
 
-| Artifact | Status | Required by Task 064 |
-|:---|:---|:---|
-| `tests/hardening/sprint2-dod.test.ts` | DOES NOT EXIST | Yes — automated Sprint 2 DoD audit |
-| `SPRINT_2_COMPLETION_REPORT.md` | DOES NOT EXIST | Yes — formal Sprint 2 closure document |
-| `docs/SPRINT_3_READINESS_AND_BACKLOG.md` | DOES NOT EXIST | Yes — Sprint 3 definition of ready |
-| Sprint 2 runbooks (RB-021+) | DOES NOT EXIST | Yes — ≥4 new runbooks for Sprint 2 failure domains |
-| Sprint 2 resource baseline section | MISSING in `docs/RESOURCE_BASELINE.md` | Yes — Sprint 2 measurements |
+| Artifact                                 | Status                                 | Required by Task 064                               |
+| :--------------------------------------- | :------------------------------------- | :------------------------------------------------- |
+| `tests/hardening/sprint2-dod.test.ts`    | DOES NOT EXIST                         | Yes — automated Sprint 2 DoD audit                 |
+| `SPRINT_2_COMPLETION_REPORT.md`          | DOES NOT EXIST                         | Yes — formal Sprint 2 closure document             |
+| `docs/SPRINT_3_READINESS_AND_BACKLOG.md` | DOES NOT EXIST                         | Yes — Sprint 3 definition of ready                 |
+| Sprint 2 runbooks (RB-021+)              | DOES NOT EXIST                         | Yes — ≥4 new runbooks for Sprint 2 failure domains |
+| Sprint 2 resource baseline section       | MISSING in `docs/RESOURCE_BASELINE.md` | Yes — Sprint 2 measurements                        |
 
 ### What Must NOT Be Rebuilt
 
@@ -169,6 +170,7 @@ The only remaining Sprint 2 milestone is the formal exit gate.
 Task 064 is a **governance/hardening milestone** with no new runtime implementation.
 
 Ownership:
+
 - `tests/hardening/` — automated DoD audit suite
 - `docs/` — runbooks, resource baseline, completion report, Sprint 3 readiness
 - `scripts/` — re-run `measure-resource-baseline.js` for Sprint 2 measurements
@@ -177,6 +179,7 @@ Ownership:
 ### What Task 064 Does NOT Own
 
 Task 064 must not modify:
+
 - Any package under `packages/`
 - Any service under `services/`
 - Any app under `apps/`
@@ -185,13 +188,13 @@ Task 064 must not modify:
 
 ### Existing Mechanisms to Reuse
 
-| Mechanism | Location | How Task 064 Reuses It |
-|:---|:---|:---|
-| DoD audit pattern | `tests/hardening/sprint1-dod.test.ts` | Mirror pattern for `sprint2-dod.test.ts` |
-| Runbook schema | `docs/runbooks/RB-011` through `RB-020` | Mirror 8-section schema for RB-021+ |
-| Resource measurement | `scripts/measure-resource-baseline.js` | Re-run and append Sprint 2 section |
-| Completion report template | `SPRINT_1_COMPLETION_REPORT.md` | Mirror structure for `SPRINT_2_COMPLETION_REPORT.md` |
-| Backlog template | `docs/SPRINT_2_READINESS_AND_BACKLOG.md` | Mirror structure for `SPRINT_3_READINESS_AND_BACKLOG.md` |
+| Mechanism                  | Location                                 | How Task 064 Reuses It                                   |
+| :------------------------- | :--------------------------------------- | :------------------------------------------------------- |
+| DoD audit pattern          | `tests/hardening/sprint1-dod.test.ts`    | Mirror pattern for `sprint2-dod.test.ts`                 |
+| Runbook schema             | `docs/runbooks/RB-011` through `RB-020`  | Mirror 8-section schema for RB-021+                      |
+| Resource measurement       | `scripts/measure-resource-baseline.js`   | Re-run and append Sprint 2 section                       |
+| Completion report template | `SPRINT_1_COMPLETION_REPORT.md`          | Mirror structure for `SPRINT_2_COMPLETION_REPORT.md`     |
+| Backlog template           | `docs/SPRINT_2_READINESS_AND_BACKLOG.md` | Mirror structure for `SPRINT_3_READINESS_AND_BACKLOG.md` |
 
 ---
 
@@ -200,6 +203,7 @@ Task 064 must not modify:
 Task 064 introduces **no new contracts**. All canonical contracts were finalized in Tasks 060–063.
 
 The `sprint2-dod.test.ts` will **import** and verify existing exported symbols from:
+
 - `@nexusos/contracts` — ACP federation/delegation schemas, memory contracts, vector contracts, graph contracts, planner contracts
 - `@nexusos/backend` — `AgentDirectoryService`, `DelegationCoordinator`, `MemoryService`, `InMemoryMemoryStore`, `SqliteMemoryStore`, `VectorIndex`, `GraphProjectionEngine`, `EpisodicLearner`
 
@@ -220,13 +224,13 @@ accurately document realistic threat response procedures.
 
 ### Specific Threats
 
-| Threat | Description | Mitigation |
-|:---|:---|:---|
-| **T-064-01: Fake DoD Tests** | DoD tests assert file paths or static values but never exercise real behavior | Each DoD criterion must instantiate real contracts, call real service methods, or invoke real validators |
-| **T-064-02: Runbook Security Gap** | New Sprint 2 failure domains (multi-agent delegation, native AI VRAM, SQLite corruption, graph explosion) have no runbooks, leaving operators without incident response guidance | Deliver ≥1 runbook per Sprint 2 failure domain |
-| **T-064-03: Stale Resource Baseline** | Resource baseline reflects Sprint 1 footprint; SQLite + vector index + expanded contracts materially change the baseline | Re-run `scripts/measure-resource-baseline.js` and document observed values |
-| **T-064-04: Sprint 3 Scope Without Readiness Gate** | Proceeding to Sprint 3 without a formalized readiness backlog risks uncoordinated feature work | Produce `docs/SPRINT_3_READINESS_AND_BACKLOG.md` with concrete readiness criteria |
-| **T-064-05: Test Regression on Audit** | DoD audit imports break if a Sprint 2 export path is wrong | Verify imports resolve cleanly during build and typecheck |
+| Threat                                              | Description                                                                                                                                                                      | Mitigation                                                                                               |
+| :-------------------------------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------- |
+| **T-064-01: Fake DoD Tests**                        | DoD tests assert file paths or static values but never exercise real behavior                                                                                                    | Each DoD criterion must instantiate real contracts, call real service methods, or invoke real validators |
+| **T-064-02: Runbook Security Gap**                  | New Sprint 2 failure domains (multi-agent delegation, native AI VRAM, SQLite corruption, graph explosion) have no runbooks, leaving operators without incident response guidance | Deliver ≥1 runbook per Sprint 2 failure domain                                                           |
+| **T-064-03: Stale Resource Baseline**               | Resource baseline reflects Sprint 1 footprint; SQLite + vector index + expanded contracts materially change the baseline                                                         | Re-run `scripts/measure-resource-baseline.js` and document observed values                               |
+| **T-064-04: Sprint 3 Scope Without Readiness Gate** | Proceeding to Sprint 3 without a formalized readiness backlog risks uncoordinated feature work                                                                                   | Produce `docs/SPRINT_3_READINESS_AND_BACKLOG.md` with concrete readiness criteria                        |
+| **T-064-05: Test Regression on Audit**              | DoD audit imports break if a Sprint 2 export path is wrong                                                                                                                       | Verify imports resolve cleanly during build and typecheck                                                |
 
 ---
 
@@ -234,18 +238,18 @@ accurately document realistic threat response procedures.
 
 Task 064 defines the following audit invariants in `tests/hardening/sprint2-dod.test.ts`:
 
-| Invariant ID | Description | Enforcement |
-|:---|:---|:---|
-| **DoD-S2-01** | M1 / Task 060: ACP federation & delegation contracts, AgentDirectory, DelegationCoordinator exist | Check exported schemas, service class instantiation, test suite path |
-| **DoD-S2-02** | M2 / Task 061: Native local-AI engine adapters, VRAM offloader, and hardware detector exist | Check runtime directory, LlamaCppAdapter/OnnxAdapter paths, security test suite path |
-| **DoD-S2-03** | M3 / Task 062: Persistent SQLite memory store, vector index, and graph projection engine exist | Check SqliteMemoryStore, VectorIndex, GraphProjectionEngine classes, hardening test path |
-| **DoD-S2-04** | M4 / Task 063: Web dashboard Memory Explorer & Knowledge Graph views exist in index.html and main.ts | Check `#view-memory`, `#view-graph` sections, memory/graph client methods, security test path |
-| **DoD-S2-05** | Monorepo workspace isolation: no cross-boundary dependency violations | Verify packages/contracts and packages/plugin-sdk have no backend/desktop dependencies |
-| **DoD-S2-06** | Operational runbooks exist for all Sprint 2 failure domains (RB-021 through RB-024+) | Check `docs/runbooks/` for RB-021 through RB-024 minimum; verify `docs/RUNBOOKS.md` catalog |
-| **DoD-S2-07** | Resource baseline report contains Sprint 2 section | Check `docs/RESOURCE_BASELINE.md` includes "Sprint 2" text with measurements |
-| **DoD-S2-08** | All Sprint 2 milestone completion reports exist (Tasks 060–063) | Check `task_060_completion_report.md` through `task_063_completion_report.md` (or phase report) |
-| **DoD-S2-09** | `SPRINT_2_COMPLETION_REPORT.md` and `docs/SPRINT_3_READINESS_AND_BACKLOG.md` exist | Check root and docs/ for both documents |
-| **DoD-S2-10** | Security hardening suites exist for each Sprint 2 subsystem | Verify `multi-agent-delegation-security.test.ts`, `local-ai-hardware-security.test.ts`, `memory-persistence-security.test.ts`, `dashboard-security-invariants.test.ts` paths |
+| Invariant ID  | Description                                                                                          | Enforcement                                                                                                                                                                  |
+| :------------ | :--------------------------------------------------------------------------------------------------- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **DoD-S2-01** | M1 / Task 060: ACP federation & delegation contracts, AgentDirectory, DelegationCoordinator exist    | Check exported schemas, service class instantiation, test suite path                                                                                                         |
+| **DoD-S2-02** | M2 / Task 061: Native local-AI engine adapters, VRAM offloader, and hardware detector exist          | Check runtime directory, LlamaCppAdapter/OnnxAdapter paths, security test suite path                                                                                         |
+| **DoD-S2-03** | M3 / Task 062: Persistent SQLite memory store, vector index, and graph projection engine exist       | Check SqliteMemoryStore, VectorIndex, GraphProjectionEngine classes, hardening test path                                                                                     |
+| **DoD-S2-04** | M4 / Task 063: Web dashboard Memory Explorer & Knowledge Graph views exist in index.html and main.ts | Check `#view-memory`, `#view-graph` sections, memory/graph client methods, security test path                                                                                |
+| **DoD-S2-05** | Monorepo workspace isolation: no cross-boundary dependency violations                                | Verify packages/contracts and packages/plugin-sdk have no backend/desktop dependencies                                                                                       |
+| **DoD-S2-06** | Operational runbooks exist for all Sprint 2 failure domains (RB-021 through RB-024+)                 | Check `docs/runbooks/` for RB-021 through RB-024 minimum; verify `docs/RUNBOOKS.md` catalog                                                                                  |
+| **DoD-S2-07** | Resource baseline report contains Sprint 2 section                                                   | Check `docs/RESOURCE_BASELINE.md` includes "Sprint 2" text with measurements                                                                                                 |
+| **DoD-S2-08** | All Sprint 2 milestone completion reports exist (Tasks 060–063)                                      | Check `task_060_completion_report.md` through `task_063_completion_report.md` (or phase report)                                                                              |
+| **DoD-S2-09** | `SPRINT_2_COMPLETION_REPORT.md` and `docs/SPRINT_3_READINESS_AND_BACKLOG.md` exist                   | Check root and docs/ for both documents                                                                                                                                      |
+| **DoD-S2-10** | Security hardening suites exist for each Sprint 2 subsystem                                          | Verify `multi-agent-delegation-security.test.ts`, `local-ai-hardware-security.test.ts`, `memory-persistence-security.test.ts`, `dashboard-security-invariants.test.ts` paths |
 
 ---
 
@@ -253,16 +257,16 @@ Task 064 defines the following audit invariants in `tests/hardening/sprint2-dod.
 
 **No new npm/pnpm dependencies are required.**
 
-| Dependency Category | Assessment |
-|:---|:---|
-| npm/pnpm packages | None — uses Node built-ins (`node:fs`, `node:path`, `node:test`, `node:assert`) for DoD audit, identical to `sprint1-dod.test.ts` |
-| Native dependencies | None |
-| External services | None |
-| Database | None — re-uses existing SQLite via `@nexusos/backend` already in the dependency graph |
-| Browser API | None |
-| OS integration | None |
-| GPU/native runtime | None — re-uses existing local-AI runtime |
-| Cloud provider | None |
+| Dependency Category | Assessment                                                                                                                        |
+| :------------------ | :-------------------------------------------------------------------------------------------------------------------------------- |
+| npm/pnpm packages   | None — uses Node built-ins (`node:fs`, `node:path`, `node:test`, `node:assert`) for DoD audit, identical to `sprint1-dod.test.ts` |
+| Native dependencies | None                                                                                                                              |
+| External services   | None                                                                                                                              |
+| Database            | None — re-uses existing SQLite via `@nexusos/backend` already in the dependency graph                                             |
+| Browser API         | None                                                                                                                              |
+| OS integration      | None                                                                                                                              |
+| GPU/native runtime  | None — re-uses existing local-AI runtime                                                                                          |
+| Cloud provider      | None                                                                                                                              |
 
 > **Default assumption confirmed: NO NEW DEPENDENCIES.**
 
@@ -274,23 +278,23 @@ The `scripts/measure-resource-baseline.js` script is already present and functio
 
 ### Files to Create
 
-| File | Purpose | Basis |
-|:---|:---|:---|
-| `tests/hardening/sprint2-dod.test.ts` | Automated Sprint 2 Definition of Done audit (10 criteria) | Mirror of `tests/hardening/sprint1-dod.test.ts` |
-| `SPRINT_2_COMPLETION_REPORT.md` | Formal Sprint 2 closure and audit document | Mirror of `SPRINT_1_COMPLETION_REPORT.md` |
-| `docs/SPRINT_3_READINESS_AND_BACKLOG.md` | Sprint 3 readiness criteria and candidate backlog | Mirror of `docs/SPRINT_2_READINESS_AND_BACKLOG.md` |
-| `docs/runbooks/RB-021-multi-agent-delegation-failure.md` | Incident runbook: multi-agent delegation cascade failure | Mirror of existing runbook schema |
-| `docs/runbooks/RB-022-native-ai-vram-exhaustion.md` | Incident runbook: native AI engine VRAM exhaustion & hardware fault | Mirror of existing runbook schema |
-| `docs/runbooks/RB-023-sqlite-memory-corruption.md` | Incident runbook: SQLite memory store ACID failure & vector index corruption | Mirror of existing runbook schema |
-| `docs/runbooks/RB-024-knowledge-graph-traversal-explosion.md` | Incident runbook: knowledge graph traversal explosion & dashboard feed disruption | Mirror of existing runbook schema |
+| File                                                          | Purpose                                                                           | Basis                                              |
+| :------------------------------------------------------------ | :-------------------------------------------------------------------------------- | :------------------------------------------------- |
+| `tests/hardening/sprint2-dod.test.ts`                         | Automated Sprint 2 Definition of Done audit (10 criteria)                         | Mirror of `tests/hardening/sprint1-dod.test.ts`    |
+| `SPRINT_2_COMPLETION_REPORT.md`                               | Formal Sprint 2 closure and audit document                                        | Mirror of `SPRINT_1_COMPLETION_REPORT.md`          |
+| `docs/SPRINT_3_READINESS_AND_BACKLOG.md`                      | Sprint 3 readiness criteria and candidate backlog                                 | Mirror of `docs/SPRINT_2_READINESS_AND_BACKLOG.md` |
+| `docs/runbooks/RB-021-multi-agent-delegation-failure.md`      | Incident runbook: multi-agent delegation cascade failure                          | Mirror of existing runbook schema                  |
+| `docs/runbooks/RB-022-native-ai-vram-exhaustion.md`           | Incident runbook: native AI engine VRAM exhaustion & hardware fault               | Mirror of existing runbook schema                  |
+| `docs/runbooks/RB-023-sqlite-memory-corruption.md`            | Incident runbook: SQLite memory store ACID failure & vector index corruption      | Mirror of existing runbook schema                  |
+| `docs/runbooks/RB-024-knowledge-graph-traversal-explosion.md` | Incident runbook: knowledge graph traversal explosion & dashboard feed disruption | Mirror of existing runbook schema                  |
 
 ### Files to Modify
 
-| File | Modification |
-|:---|:---|
-| `docs/RESOURCE_BASELINE.md` | Append Sprint 2 baseline section (run `scripts/measure-resource-baseline.js`, record observations) |
-| `docs/RUNBOOKS.md` | Add RB-021 through RB-024 (minimum) to master runbook catalog |
-| `package.json` (root `test` script) | Add `tests/hardening/sprint2-dod.test.ts` to the test command |
+| File                                | Modification                                                                                       |
+| :---------------------------------- | :------------------------------------------------------------------------------------------------- |
+| `docs/RESOURCE_BASELINE.md`         | Append Sprint 2 baseline section (run `scripts/measure-resource-baseline.js`, record observations) |
+| `docs/RUNBOOKS.md`                  | Add RB-021 through RB-024 (minimum) to master runbook catalog                                      |
+| `package.json` (root `test` script) | Add `tests/hardening/sprint2-dod.test.ts` to the test command                                      |
 
 ### Files to Reuse (Read-Only)
 
@@ -327,6 +331,7 @@ documentation, audit tests, and measurement — not layered subsystem implementa
 **Purpose**: Create the automated Definition of Done audit for all Sprint 2 milestones.
 
 **Files**:
+
 - `tests/hardening/sprint2-dod.test.ts` (new)
 - `package.json` root `test` script (add new file)
 
@@ -343,6 +348,7 @@ documentation, audit tests, and measurement — not layered subsystem implementa
 **Purpose**: Document incident response for the 4 new Sprint 2 failure domains.
 
 **Files**:
+
 - `docs/runbooks/RB-021-multi-agent-delegation-failure.md`
 - `docs/runbooks/RB-022-native-ai-vram-exhaustion.md`
 - `docs/runbooks/RB-023-sqlite-memory-corruption.md`
@@ -356,9 +362,11 @@ documentation, audit tests, and measurement — not layered subsystem implementa
 **Purpose**: Capture Sprint 2 hardware/software baseline.
 
 **Files**:
+
 - `docs/RESOURCE_BASELINE.md` (append Sprint 2 section)
 
 **Process**:
+
 1. Run `node scripts/measure-resource-baseline.js` to capture current measurements.
 2. Append new section "## 5. Observed Sprint 2 Baseline Measurements" with recorded values.
 3. Add comparative row to the existing table.
@@ -370,10 +378,12 @@ documentation, audit tests, and measurement — not layered subsystem implementa
 **Purpose**: Formally close Sprint 2 and define Sprint 3.
 
 **Files**:
+
 - `SPRINT_2_COMPLETION_REPORT.md` (new, root)
 - `docs/SPRINT_3_READINESS_AND_BACKLOG.md` (new)
 
 **Content of `SPRINT_2_COMPLETION_REPORT.md`**:
+
 - Executive summary: 4 milestones completed (Tasks 060–063)
 - Completed milestone table (M1–M4)
 - Subsystem architecture state (agents, local-AI, persistent memory, dashboard)
@@ -386,6 +396,7 @@ documentation, audit tests, and measurement — not layered subsystem implementa
 - Final exit decision: PASS
 
 **Content of `docs/SPRINT_3_READINESS_AND_BACKLOG.md`**:
+
 - Sprint 2 exit assessment: all criteria satisfied
 - Sprint 3 prerequisites
 - Remaining deferred risks (Cloud State Sync & Enterprise RBAC — previously deferred)
@@ -397,6 +408,7 @@ documentation, audit tests, and measurement — not layered subsystem implementa
 ### Full Exit Condition
 
 All of the following must be true:
+
 - `pnpm test` exits 0 with all 1306+ tests passing (including new `sprint2-dod.test.ts`)
 - `pnpm run build` — PASS
 - `pnpm run typecheck` — PASS
@@ -414,17 +426,17 @@ All of the following must be true:
 
 Package manager: `pnpm@11.21.0` (pinned in `package.json`).
 
-| Gate | Command | Expected |
-|:---|:---|:---|
-| Build | `pnpm run build` | All 7 workspace packages compile clean |
-| Typecheck | `pnpm run typecheck` | `tsc --noEmit` exits 0, 0 errors |
-| Lint | `pnpm run lint` | ESLint exits 0, 0 errors |
-| Format | `pnpm run format:check` | Prettier exits 0, all files conformant |
-| Validate | `pnpm run validate` | `node scripts/validate-repo.js` PASSED |
-| Security | `pnpm run security` | `node scripts/security-scan.js` PASSED |
-| Focused DoD tests | `node --import tsx/esm --test tests/hardening/sprint2-dod.test.ts` | 10 pass, 0 fail |
-| Full suite | `pnpm test` | All tests pass (≥ 1316 expected after adding 10 new DoD tests) |
-| GitHub Actions | Exact run for final SHA on `origin/main` | SUCCESS |
+| Gate              | Command                                                            | Expected                                                       |
+| :---------------- | :----------------------------------------------------------------- | :------------------------------------------------------------- |
+| Build             | `pnpm run build`                                                   | All 7 workspace packages compile clean                         |
+| Typecheck         | `pnpm run typecheck`                                               | `tsc --noEmit` exits 0, 0 errors                               |
+| Lint              | `pnpm run lint`                                                    | ESLint exits 0, 0 errors                                       |
+| Format            | `pnpm run format:check`                                            | Prettier exits 0, all files conformant                         |
+| Validate          | `pnpm run validate`                                                | `node scripts/validate-repo.js` PASSED                         |
+| Security          | `pnpm run security`                                                | `node scripts/security-scan.js` PASSED                         |
+| Focused DoD tests | `node --import tsx/esm --test tests/hardening/sprint2-dod.test.ts` | 10 pass, 0 fail                                                |
+| Full suite        | `pnpm test`                                                        | All tests pass (≥ 1316 expected after adding 10 new DoD tests) |
+| GitHub Actions    | Exact run for final SHA on `origin/main`                           | SUCCESS                                                        |
 
 ---
 
@@ -432,20 +444,20 @@ Package manager: `pnpm@11.21.0` (pinned in `package.json`).
 
 The following are explicitly NOT part of Task 064:
 
-| Item | Status | Reason |
-|:---|:---|:---|
+| Item                               | Status               | Reason                                                                  |
+| :--------------------------------- | :------------------- | :---------------------------------------------------------------------- |
 | Cloud State Sync & Enterprise RBAC | Deferred to Sprint 3 | Explicitly deferred in `SPRINT_2_READINESS_AND_BACKLOG.md` Sec 4 Item 4 |
-| New backend subsystems or services | Not Task 064 | Sprint 2 feature work is complete |
-| New contract schemas | Not Task 064 | No new contracts needed |
-| Web dashboard feature additions | Not Task 064 | Task 063 closed the dashboard phase |
-| New runtime implementations | Not Task 064 | Exit gate milestone only |
-| Multi-agent collaboration changes | Not Task 064 | Task 060 is complete |
-| Native AI engine changes | Not Task 064 | Task 061 is complete |
-| Persistent memory store changes | Not Task 064 | Task 062 is complete |
-| Federated ACP networking | Not Task 064 | Sprint 3+ |
-| WebSocket/SSE/React/Vue additions | Not Task 064 | Not a dashboard task |
-| New npm/pnpm dependencies | Not Task 064 | No new dependencies permitted |
-| Modifying existing security tests | Not Task 064 | Existing tests remain untouched |
+| New backend subsystems or services | Not Task 064         | Sprint 2 feature work is complete                                       |
+| New contract schemas               | Not Task 064         | No new contracts needed                                                 |
+| Web dashboard feature additions    | Not Task 064         | Task 063 closed the dashboard phase                                     |
+| New runtime implementations        | Not Task 064         | Exit gate milestone only                                                |
+| Multi-agent collaboration changes  | Not Task 064         | Task 060 is complete                                                    |
+| Native AI engine changes           | Not Task 064         | Task 061 is complete                                                    |
+| Persistent memory store changes    | Not Task 064         | Task 062 is complete                                                    |
+| Federated ACP networking           | Not Task 064         | Sprint 3+                                                               |
+| WebSocket/SSE/React/Vue additions  | Not Task 064         | Not a dashboard task                                                    |
+| New npm/pnpm dependencies          | Not Task 064         | No new dependencies permitted                                           |
+| Modifying existing security tests  | Not Task 064         | Existing tests remain untouched                                         |
 
 ---
 
@@ -453,12 +465,12 @@ The following are explicitly NOT part of Task 064:
 
 ### Risks
 
-| Risk | Probability | Impact | Mitigation |
-|:---|:---|:---|:---|
-| `sprint2-dod.test.ts` import paths for new Sprint 2 exports break typecheck | Low | Medium | Verify exports from `@nexusos/contracts` and `@nexusos/backend` compile cleanly before committing |
-| Sprint 3 backlog item definition requires additional architecture review beyond what's in existing docs | Medium | Low | Document candidate items with explicit "CANDIDATE" status; do not commit to implementation scope |
-| Resource baseline script reports different values due to SQLite initialization cost | Low | Low | Document as observed measurement; note SQLite startup adds one-time overhead |
-| `package.json` test script line length becomes excessively long with one more test file | Low | Low | Add file path, run `pnpm run format` to confirm Prettier accepts the result |
+| Risk                                                                                                    | Probability | Impact | Mitigation                                                                                        |
+| :------------------------------------------------------------------------------------------------------ | :---------- | :----- | :------------------------------------------------------------------------------------------------ |
+| `sprint2-dod.test.ts` import paths for new Sprint 2 exports break typecheck                             | Low         | Medium | Verify exports from `@nexusos/contracts` and `@nexusos/backend` compile cleanly before committing |
+| Sprint 3 backlog item definition requires additional architecture review beyond what's in existing docs | Medium      | Low    | Document candidate items with explicit "CANDIDATE" status; do not commit to implementation scope  |
+| Resource baseline script reports different values due to SQLite initialization cost                     | Low         | Low    | Document as observed measurement; note SQLite startup adds one-time overhead                      |
+| `package.json` test script line length becomes excessively long with one more test file                 | Low         | Low    | Add file path, run `pnpm run format` to confirm Prettier accepts the result                       |
 
 ### Open Questions
 
@@ -477,6 +489,7 @@ The following are explicitly NOT part of Task 064:
 **`TASK 064: SPRINT 2 MILESTONE 5 (SPRINT 2 EXIT) — SPRINT 2 HARDENING, QUALITY GATE FINALIZATION & SPRINT 3 READINESS`**
 
 This identity is derived exclusively from:
+
 1. The established NexusOS lifecycle pattern in Blueprint Section 52/56/58.
 2. The exact precedent of Task 048 (Sprint 0 Exit) and Task 059 (Sprint 1 Exit).
 3. The fact that all 4 Sprint 2 candidate features (Tasks 060–063) are complete and verified.
