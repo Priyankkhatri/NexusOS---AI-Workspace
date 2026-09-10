@@ -229,3 +229,4 @@ export function computeModelEvidenceChecksum(params: {
 }
 
 export * from './native.js';
+export * from './manifest.js';
