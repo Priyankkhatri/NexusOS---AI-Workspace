@@ -1,6 +1,10 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { HardwareDetector, IHardwareSampler } from '../src/runtimes/local-ai/hardware-detector.js';
+import {
+  HardwareDetector,
+  IHardwareSampler,
+  DefaultHardwareSampler,
+} from '../src/runtimes/local-ai/hardware-detector.js';
 
 describe('Task 03T — HardwareDetector Unit Tests', () => {
   it('HD-01: getProfile returns normalized hardware profile', async () => {
@@ -75,5 +79,39 @@ describe('Task 03T — HardwareDetector Unit Tests', () => {
     detector.invalidateCache();
     await detector.getProfile(); // Should re-sample
     assert.equal(callCount, 2);
+  });
+
+  it('HD-05: DefaultHardwareSampler probes physical adapters safely without fabricating acceleration', async () => {
+    const defaultSampler = new DefaultHardwareSampler();
+    const adapters = await defaultSampler.sampleGpuAdapters();
+
+    assert.ok(Array.isArray(adapters), 'Adapters must be an array');
+    assert.ok(adapters.length >= 1, 'At least one adapter or fallback must be present');
+
+    for (const adapter of adapters) {
+      assert.ok(
+        typeof adapter.name === 'string' && adapter.name.length > 0,
+        'Adapter name must be valid',
+      );
+      assert.ok(
+        typeof adapter.vramBytes === 'number' && adapter.vramBytes > 0,
+        'VRAM bytes must be positive',
+      );
+      assert.ok(
+        typeof adapter.freeVramBytes === 'number' && adapter.freeVramBytes >= 0,
+        'Free VRAM must be non-negative',
+      );
+      // Verify hardware detector does NOT fabricate runtime execution capabilities
+      assert.equal(
+        (adapter as any).gpuAccelerated,
+        undefined,
+        'Hardware sampler must never emit gpuAccelerated',
+      );
+      assert.equal(
+        (adapter as any).nativeBackend,
+        undefined,
+        'Hardware sampler must never emit nativeBackend',
+      );
+    }
   });
 });

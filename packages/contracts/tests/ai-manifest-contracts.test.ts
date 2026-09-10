@@ -495,5 +495,47 @@ describe('Task 065 Phase 1: Canonical Local-AI Model Manifest Contracts Audit', 
         }),
       /peakVramBytes must be non-negative/,
     );
+
+    assert.throws(
+      () =>
+        InferenceBenchmarkResultSchema.parse({
+          ...baseBenchmark,
+          plannedVramBytes: -50,
+        }),
+      /plannedVramBytes must be non-negative/,
+    );
+  });
+
+  it('validates planned memory metrics and accepts null peak memory when unmeasured', () => {
+    const truthfulBenchmark = {
+      benchmarkId: crypto.randomUUID(),
+      modelId: 'meta-llama/Llama-3.2-1B-Instruct',
+      quantization: 'Q4_K_M',
+      modelFormat: 'gguf',
+      hardwareProfile: {
+        deviceModel: 'Reference-Workstation',
+        totalRamBytes: 16353984512,
+      },
+      timeToFirstTokenMs: 85.5,
+      tokensPerSecond: 28.6,
+      promptTokens: 16,
+      completionTokens: 64,
+      totalDurationMs: 2320.0,
+      plannedVramBytes: 2147483648,
+      plannedRamBytes: 536870912,
+      peakVramBytes: null, // Truthful: unavailable without GPU process counter
+      peakRamBytes: 156237824, // Measured process RSS
+      gpuLayers: 0,
+      cpuLayers: 32,
+      cpuFallback: true,
+      gpuAccelerated: false,
+      timestamp: new Date().toISOString(),
+    };
+
+    const parsed = InferenceBenchmarkResultSchema.parse(truthfulBenchmark);
+    assert.equal(parsed.plannedVramBytes, 2147483648);
+    assert.equal(parsed.plannedRamBytes, 536870912);
+    assert.equal(parsed.peakVramBytes, null);
+    assert.equal(parsed.peakRamBytes, 156237824);
   });
 });

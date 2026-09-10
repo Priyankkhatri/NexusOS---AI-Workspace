@@ -173,7 +173,15 @@ describe('Task 065 — Local AI Benchmarking Vertical Slice', () => {
     assert.equal(result.result.cpuFallback, true);
     assert.equal(result.result.gpuAccelerated, false);
     assert.equal(result.result.gpuLayers, 0);
-    assert.equal(result.result.peakVramBytes, 0);
+    assert.equal(result.result.plannedVramBytes, 0);
+    assert.equal(result.result.peakVramBytes, null, 'Unmeasured peak VRAM must be null');
+    assert.ok(result.result.plannedRamBytes! > 0, 'Planned RAM should be set');
+    assert.ok(result.result.peakRamBytes! > 0, 'Peak RAM should be measured process RSS');
+    assert.notEqual(
+      result.result.plannedRamBytes,
+      result.result.peakRamBytes,
+      'Planned RAM must not equal measured peak RAM',
+    );
     assert.ok(result.result.cpuLayers > 0);
   });
 
@@ -240,7 +248,8 @@ describe('Task 065 — Local AI Benchmarking Vertical Slice', () => {
     assert.equal(result.result.gpuAccelerated, true);
     assert.equal(result.result.cpuFallback, false);
     assert.ok(result.result.gpuLayers > 0);
-    assert.ok(result.result.peakVramBytes > 0);
+    assert.ok(result.result.plannedVramBytes! > 0, 'Planned VRAM must be populated');
+    assert.equal(result.result.peakVramBytes, null, 'Unmeasured peak VRAM must be null');
   });
 
   // 4. Contradictory flags cannot be emitted
@@ -489,5 +498,226 @@ describe('Task 065 — Local AI Benchmarking Vertical Slice', () => {
     assert.equal(serialized.includes('bearer'), false, 'Bearer token leaked');
     // Ensure no raw lease header is attached to the output
     assert.equal((result.result as any)?.leaseHeader, undefined);
+  });
+
+  // 11. Warmup statistics isolation: warmups do NOT contaminate aggregates or sample arrays
+  it('11. warmup iterations execute but are strictly excluded from samples and aggregate statistics', async () => {
+    const cacheManager = new ModelCacheManager(tmpDir, 100 * 1024 * 1024);
+    await cacheManager.initialize();
+    await createSyntheticModel(cacheManager, 'warmup-isolate-model', 'Q4_K_M');
+
+    let executionCount = 0;
+    const mockBackend: INativeEngineBackend = {
+      async *execute(request, _model, _plan) {
+        executionCount++;
+        // Warmup requests have id benchmark-warmup-*, measured requests have benchmark-iter-*
+        const isWarmup = request.requestId.includes('warmup');
+        // Return 100 tokens for warmup, exactly 10 tokens for measured
+        const tokenCount = isWarmup ? 100 : 10;
+        yield {
+          requestId: request.requestId,
+          chunkIndex: 0,
+          text: 'token ',
+          tokenCount: 1,
+          isFinal: false,
+          finishReason: undefined,
+          redacted: false,
+        };
+        yield {
+          requestId: request.requestId,
+          chunkIndex: 1,
+          text: `completed ${tokenCount} tokens.`,
+          tokenCount: tokenCount - 1,
+          isFinal: true,
+          finishReason: 'stop',
+          redacted: false,
+        };
+      },
+    };
+
+    const adapterFactory = new ProviderAdapterFactory();
+    const llama = adapterFactory.getAdapter('llamacpp') as LlamaCppAdapter;
+    llama.setNativeBackend(mockBackend, 'cuda');
+
+    const result = await runBenchmark({
+      modelId: 'warmup-isolate-model',
+      quantization: 'Q4_K_M',
+      baseDir: tmpDir,
+      modelCacheManager: cacheManager,
+      warmup: 2, // 2 warmups
+      iterations: 3, // 3 measured
+      adapterFactory,
+      leaseBoundary,
+    });
+
+    assert.equal(result.success, true);
+    // Total executions: 2 warmup + 3 measured = 5
+    assert.equal(executionCount, 5, 'Warmups must execute if configured');
+    // Samples array must contain ONLY measured iterations
+    assert.equal(result.samples?.length, 3, 'Samples array must contain only measured iterations');
+    assert.deepEqual(
+      result.samples?.map((s) => s.iteration),
+      [1, 2, 3],
+    );
+
+    // Verify all samples have 10 completion tokens (none have 100 from warmup)
+    for (const sample of result.samples!) {
+      assert.equal(sample.completionTokens, 10, 'Sample must only contain measured token count');
+    }
+
+    // Verify aggregates strictly reflect measured iterations
+    assert.ok(result.aggregates);
+    assert.equal(result.aggregates.completionTokens.mean, 10);
+    assert.equal(result.aggregates.completionTokens.median, 10);
+    assert.equal(result.aggregates.completionTokens.min, 10);
+    assert.equal(result.aggregates.completionTokens.max, 10);
+    assert.equal(result.result?.completionTokens, 10);
+  });
+
+  // 12. GPU hardware presence and offload plan alone do NOT establish GPU execution
+  it('12. GPU hardware presence and offload planning alone do not establish GPU execution', async () => {
+    const cacheManager = new ModelCacheManager(tmpDir, 100 * 1024 * 1024);
+    await cacheManager.initialize();
+    await createSyntheticModel(cacheManager, 'plan-not-gpu-model', 'Q4_K_M');
+
+    // Host has 16 GB VRAM GPU
+    const sampler = new MockHardwareSampler([
+      {
+        name: 'NVIDIA GeForce RTX 4090',
+        vramBytes: 16 * 1024 * 1024 * 1024,
+        freeVramBytes: 15 * 1024 * 1024 * 1024,
+      },
+    ]);
+    const detector = new HardwareDetector(sampler as any);
+
+    const adapterFactory = new ProviderAdapterFactory();
+    const llama = adapterFactory.getAdapter('llamacpp') as LlamaCppAdapter;
+    llama.setNativeBackend(null); // No native backend attached
+
+    const result = await runBenchmark({
+      modelId: 'plan-not-gpu-model',
+      quantization: 'Q4_K_M',
+      baseDir: tmpDir,
+      modelCacheManager: cacheManager,
+      warmup: 0,
+      iterations: 1,
+      hardwareDetector: detector,
+      adapterFactory,
+      leaseBoundary,
+    });
+
+    assert.equal(result.success, true);
+    // Invariants:
+    assert.equal(result.result?.gpuAccelerated, false);
+    assert.equal(result.result?.cpuFallback, true);
+    assert.equal(result.result?.gpuLayers, 0);
+    assert.equal(result.result?.plannedVramBytes, 0);
+    assert.equal(result.result?.peakVramBytes, null);
+    assert.ok(result.result!.cpuLayers > 0);
+  });
+
+  // 13. Genuinely sampled GPU memory is populated into peakVramBytes when adapter provides sampler hook
+  it('13. genuinely sampled GPU memory is populated into peakVramBytes when runtime adapter provides sampler', async () => {
+    const cacheManager = new ModelCacheManager(tmpDir, 100 * 1024 * 1024);
+    await cacheManager.initialize();
+    await createSyntheticModel(cacheManager, 'sampled-vram-model', 'Q4_K_M');
+
+    const mockNativeBackend: INativeEngineBackend = {
+      async *execute(request, _model, _plan) {
+        yield {
+          requestId: request.requestId,
+          chunkIndex: 0,
+          text: 'Native response',
+          tokenCount: 4,
+          isFinal: true,
+          finishReason: 'stop',
+          redacted: false,
+        };
+      },
+    };
+
+    const sampler = new MockHardwareSampler([
+      {
+        name: 'NVIDIA GeForce RTX 3050 Laptop GPU',
+        vramBytes: 6 * 1024 * 1024 * 1024,
+        freeVramBytes: 5 * 1024 * 1024 * 1024,
+      },
+    ]);
+    const detector = new HardwareDetector(sampler as any);
+
+    const adapterFactory = new ProviderAdapterFactory();
+    const llama = adapterFactory.getAdapter('llamacpp') as any;
+    llama.setNativeBackend(mockNativeBackend, 'cuda');
+    // Provide genuine runtime sampler hook
+    llama.getGpuMemoryUsageBytes = () => 3221225472; // 3 GiB genuine sample
+
+    const result = await runBenchmark({
+      modelId: 'sampled-vram-model',
+      quantization: 'Q4_K_M',
+      baseDir: tmpDir,
+      modelCacheManager: cacheManager,
+      warmup: 0,
+      iterations: 1,
+      hardwareDetector: detector,
+      adapterFactory,
+      leaseBoundary,
+    });
+
+    assert.equal(result.success, true);
+    assert.equal(result.result?.gpuAccelerated, true);
+    assert.equal(result.result?.peakVramBytes, 3221225472, 'Genuine sampled VRAM must be emitted');
+  });
+
+  // 14. Quantization truthfulness: missing or mismatched quantization fails closed without silent relabeling
+  it('14. quantization truthfulness: unestablished quantization fails closed as QUANTIZATION_UNESTABLISHED', async () => {
+    const cacheManager = new ModelCacheManager(tmpDir, 100 * 1024 * 1024);
+    await cacheManager.initialize();
+
+    // Create synthetic model without quantization metadata
+    const unquantizedArtifact = {
+      modelId: 'unquantized-model',
+      name: 'Unquantized Model',
+      provider: 'llamacpp' as const,
+      sha256: 'b'.repeat(64),
+      fileSizeBytes: 1024 * 1024,
+      format: 'gguf' as const,
+      quantization: '' as any, // Missing quantization
+      contextWindowTokens: 4096,
+      state: 'Installed' as const,
+      installedPath: path.join(tmpDir, 'models', 'unquantized-model.gguf'),
+      lastVerifiedAt: new Date().toISOString(),
+    };
+
+    const result = await runBenchmark({
+      modelId: 'unquantized-model',
+      baseDir: tmpDir,
+      customModelArtifact: unquantizedArtifact,
+      leaseBoundary,
+    });
+
+    assert.equal(result.success, false);
+    assert.equal(result.status, 'QUANTIZATION_UNESTABLISHED');
+    assert.ok((result.message || '').includes('does not establish a valid quantization'));
+  });
+
+  it('15. quantization truthfulness: requested quantization mismatch fails closed as QUANTIZATION_MISMATCH', async () => {
+    const cacheManager = new ModelCacheManager(tmpDir, 100 * 1024 * 1024);
+    await cacheManager.initialize();
+    await createSyntheticModel(cacheManager, 'mismatch-quant-model', 'Q4_K_M');
+
+    // Requested Q8_0, but model is Q4_K_M
+    const result = await runBenchmark({
+      modelId: 'mismatch-quant-model',
+      quantization: 'Q8_0',
+      baseDir: tmpDir,
+      modelCacheManager: cacheManager,
+      leaseBoundary,
+    });
+
+    assert.equal(result.success, false);
+    assert.equal(result.status, 'QUANTIZATION_MISMATCH');
+    assert.ok(
+      (result.message || '').includes('Silently relabeling quantizations is strictly prohibited'),
+    );
   });
 });

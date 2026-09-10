@@ -154,8 +154,28 @@ export const InferenceBenchmarkResultSchema = z
     promptTokens: z.number().int().nonnegative('promptTokens must be non-negative'),
     completionTokens: z.number().int().nonnegative('completionTokens must be non-negative'),
     totalDurationMs: z.number().nonnegative('totalDurationMs must be non-negative'),
-    peakVramBytes: z.number().int().nonnegative('peakVramBytes must be non-negative'),
-    peakRamBytes: z.number().int().nonnegative('peakRamBytes must be non-negative'),
+    plannedVramBytes: z
+      .number()
+      .int()
+      .nonnegative('plannedVramBytes must be non-negative')
+      .optional(),
+    plannedRamBytes: z
+      .number()
+      .int()
+      .nonnegative('plannedRamBytes must be non-negative')
+      .optional(),
+    peakVramBytes: z
+      .number()
+      .int()
+      .nonnegative('peakVramBytes must be non-negative')
+      .nullable()
+      .optional(),
+    peakRamBytes: z
+      .number()
+      .int()
+      .nonnegative('peakRamBytes must be non-negative')
+      .nullable()
+      .optional(),
     gpuLayers: z.number().int().nonnegative('gpuLayers must be non-negative'),
     cpuLayers: z.number().int().nonnegative('cpuLayers must be non-negative'),
     cpuFallback: z.boolean(),

@@ -95,7 +95,7 @@ export async function runBenchmark(options = {}) {
     quantization = 'Q4_K_M',
     prompt = 'Explain the fast inverse square root algorithm in 3 concise bullet points.',
     maxTokens = 64,
-    warmupRuns = 1,
+    warmupRuns = options.warmup !== undefined ? options.warmup : (options.warmupRuns ?? 1),
     iterations = 3,
     baseDir = path.join(os.homedir(), '.nexus', 'model-cache'),
     allowCpuFallback = true,
@@ -136,12 +136,19 @@ export async function runBenchmark(options = {}) {
   }
 
   // 3. Quantization Verification: derive actual quantization and prevent silent relabeling
-  const actualQuantization = model.quantization || 'Q4_K_M';
+  const actualQuantization = model.quantization;
+  if (!actualQuantization) {
+    return {
+      success: false,
+      status: 'QUANTIZATION_UNESTABLISHED',
+      message: `Model metadata for '${model.modelId}' does not establish a valid quantization. Benchmark cannot proceed without established quantization metadata.`,
+    };
+  }
   if (quantization && quantization !== actualQuantization) {
     return {
       success: false,
       status: 'QUANTIZATION_MISMATCH',
-      message: `Configuration invalid: requested quantization '${quantization}' does not match model's actual quantization '${actualQuantization}'. Silently relabeling quantizations is strictly prohibited.`,
+      message: `Configuration invalid: requested quantization '${quantization}' does not match model's actual metadata quantization '${actualQuantization}'. Silently relabeling quantizations is strictly prohibited.`,
     };
   }
 
@@ -276,16 +283,27 @@ export async function runBenchmark(options = {}) {
 
   // 8. Warmup and 9. Measured Iterations (High-resolution monotonic timing)
   const iterationSamples = [];
+  let actualPeakRamBytes = process.memoryUsage().rss;
+  let actualPeakVramBytes = null;
+  if (typeof adapter.getGpuMemoryUsageBytes === 'function') {
+    try {
+      actualPeakVramBytes = adapter.getGpuMemoryUsageBytes();
+    } catch {
+      actualPeakVramBytes = null;
+    }
+  }
 
   try {
     for (let w = 0; w < warmupRuns; w++) {
       const warmupReq = makeInferenceRequest(`benchmark-warmup-${w}`);
-      // Consume warmup stream
+      // Consume warmup stream completely to ensure model warmup
+      // Warmups MUST NOT contaminate measured iteration samples or aggregate statistics
       for await (const warmupChunk of mrm.executeInference(warmupReq)) {
         if (warmupChunk?.text) {
-          // Warmup execution
+          // Warmup execution - intentionally unmeasured in samples
         }
       }
+      actualPeakRamBytes = Math.max(actualPeakRamBytes, process.memoryUsage().rss);
     }
 
     for (let i = 0; i < iterations; i++) {
@@ -305,6 +323,8 @@ export async function runBenchmark(options = {}) {
           completionTokens += chunk.tokenCount;
         }
       }
+
+      actualPeakRamBytes = Math.max(actualPeakRamBytes, process.memoryUsage().rss);
 
       if (firstTokenTime === null || completionTokens === 0) {
         return {
@@ -345,20 +365,31 @@ export async function runBenchmark(options = {}) {
     throw err;
   }
 
-  // 10. Compute Aggregate Statistics (Median, Mean, Min, Max)
-  const median = (arr) => {
+  // 10. Compute Aggregate Statistics solely from measured iterations (Median, Mean, Min, Max)
+  const stats = (arr) => {
+    if (arr.length === 0) return { mean: 0, median: 0, min: 0, max: 0 };
     const sorted = [...arr].sort((a, b) => a - b);
     const mid = Math.floor(sorted.length / 2);
-    return sorted.length % 2 !== 0 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+    const median = sorted.length % 2 !== 0 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+    const sum = arr.reduce((acc, v) => acc + v, 0);
+    return {
+      mean: Number((sum / arr.length).toFixed(2)),
+      median: Number(median.toFixed(2)),
+      min: Number(sorted[0].toFixed(2)),
+      max: Number(sorted[sorted.length - 1].toFixed(2)),
+    };
   };
 
-  const medianTtft = median(iterationSamples.map((s) => s.ttftMs));
-  const medianTokensPerSec = median(iterationSamples.map((s) => s.tokensPerSecond));
-  const medianDuration = median(iterationSamples.map((s) => s.totalDurationMs));
-  const medianCompletionTokens = Math.round(
-    median(iterationSamples.map((s) => s.completionTokens)),
-  );
+  const ttftStats = stats(iterationSamples.map((s) => s.ttftMs));
+  const tokensPerSecStats = stats(iterationSamples.map((s) => s.tokensPerSecond));
+  const durationStats = stats(iterationSamples.map((s) => s.totalDurationMs));
+  const completionTokensStats = stats(iterationSamples.map((s) => s.completionTokens));
   const promptTokens = Math.max(1, Math.ceil(prompt.length / 4));
+
+  const plannedVramBytes = gpuAccelerated ? plan.placement.vramAllocatedBytes : 0;
+  const plannedRamBytes = gpuAccelerated
+    ? plan.placement.ramAllocatedBytes
+    : plan.placement.ramAllocatedBytes || plan.placement.vramAllocatedBytes;
 
   // 11. Format Canonical Result adhering to InferenceBenchmarkResultSchema
   const benchmarkResult = {
@@ -374,13 +405,15 @@ export async function runBenchmark(options = {}) {
       cpuCores: hardware.cpuCores,
       cpuArch: hardware.cpuArch,
     },
-    timeToFirstTokenMs: Number(medianTtft.toFixed(2)),
-    tokensPerSecond: Number(medianTokensPerSec.toFixed(2)),
+    timeToFirstTokenMs: ttftStats.median,
+    tokensPerSecond: tokensPerSecStats.median,
     promptTokens,
-    completionTokens: medianCompletionTokens,
-    totalDurationMs: Number(medianDuration.toFixed(2)),
-    peakVramBytes: gpuAccelerated ? plan.placement.vramAllocatedBytes : 0,
-    peakRamBytes: plan.placement.ramAllocatedBytes,
+    completionTokens: Math.round(completionTokensStats.median),
+    totalDurationMs: durationStats.median,
+    plannedVramBytes,
+    plannedRamBytes,
+    peakVramBytes: actualPeakVramBytes,
+    peakRamBytes: actualPeakRamBytes,
     gpuLayers: gpuAccelerated ? plan.placement.gpuLayers : 0,
     cpuLayers: gpuAccelerated ? plan.placement.cpuLayers : plan.placement.totalLayers,
     cpuFallback,
@@ -396,6 +429,12 @@ export async function runBenchmark(options = {}) {
     status: 'COMPLETED',
     result: benchmarkResult,
     samples: iterationSamples,
+    aggregates: {
+      ttft: ttftStats,
+      tokensPerSecond: tokensPerSecStats,
+      durationMs: durationStats,
+      completionTokens: completionTokensStats,
+    },
     executionMode: gpuAccelerated ? 'NATIVE_GPU' : 'CPU_FALLBACK',
   };
 }
@@ -511,9 +550,18 @@ Options:
   console.log(`Generation Speed:    ${r.tokensPerSecond} tokens/sec`);
   console.log(`Total Duration:      ${r.totalDurationMs} ms`);
   console.log(`Prompt Tokens:       ${r.promptTokens}`);
-  console.log(`Completion Tokens:   ${r.completionTokens}`);
-  console.log(`Peak VRAM Allocated: ${(r.peakVramBytes / (1024 * 1024)).toFixed(1)} MiB`);
-  console.log(`Peak RAM Allocated:  ${(r.peakRamBytes / (1024 * 1024)).toFixed(1)} MiB`);
+  console.log(
+    `Planned VRAM:        ${r.plannedVramBytes !== undefined ? `${(r.plannedVramBytes / (1024 * 1024)).toFixed(1)} MiB` : 'N/A'}`,
+  );
+  console.log(
+    `Planned RAM:         ${r.plannedRamBytes !== undefined ? `${(r.plannedRamBytes / (1024 * 1024)).toFixed(1)} MiB` : 'N/A'}`,
+  );
+  console.log(
+    `Peak Measured VRAM:  ${r.peakVramBytes !== null && r.peakVramBytes !== undefined ? `${(r.peakVramBytes / (1024 * 1024)).toFixed(1)} MiB` : 'UNAVAILABLE (not sampled from runtime)'}`,
+  );
+  console.log(
+    `Peak Measured RAM:   ${r.peakRamBytes !== null && r.peakRamBytes !== undefined ? `${(r.peakRamBytes / (1024 * 1024)).toFixed(1)} MiB (process RSS)` : 'UNAVAILABLE'}`,
+  );
   console.log('============================================================\n');
 }
 

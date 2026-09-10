@@ -34,6 +34,12 @@ export interface BenchmarkRunResult {
   message?: string;
   result?: InferenceBenchmarkResult;
   samples?: any[];
+  aggregates?: {
+    ttft: { mean: number; median: number; min: number; max: number };
+    tokensPerSecond: { mean: number; median: number; min: number; max: number };
+    durationMs: { mean: number; median: number; min: number; max: number };
+    completionTokens: { mean: number; median: number; min: number; max: number };
+  };
   executionMode?: 'NATIVE_GPU' | 'CPU_FALLBACK';
   hardwareProfile?: Partial<HardwareProfile> & {
     deviceModel: string;
