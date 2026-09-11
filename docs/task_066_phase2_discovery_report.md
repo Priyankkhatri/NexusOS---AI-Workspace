@@ -1,4 +1,5 @@
 # TASK 066 DISCOVERY REPORT — PHASE 2
+
 ## Deterministic Heuristic GraphExtractor
 
 **Document Type**: Engineering Discovery & Implementation Specification  
@@ -6,7 +7,7 @@
 **Milestone**: Sprint 3 Milestone 2 (`S3-02`) — Real-Time Graph Evolution  
 **Baseline Commit**: `d42d82abc2de438349ae130b14ba71f0b5a54436`  
 **Author**: NexusOS Core Architecture Team  
-**Status**: DISCOVERY COMPLETE — Ready for Implementation Authorization  
+**Status**: DISCOVERY COMPLETE — Ready for Implementation Authorization
 
 ---
 
@@ -16,7 +17,9 @@ The authoritative identity for Phase 2 is:
 **`TASK 066 — SPRINT 3 / S3-02: Real-Time Graph Evolution — Phase 2: Deterministic Heuristic GraphExtractor`**
 
 ### 1.1 Roadmap Grounding
+
 As established in `docs/SPRINT_3_READINESS_AND_BACKLOG.md` §2 (`CANDIDATE S3-02`) and sequenced by `task_066_discovery_report.md` §18 (Phase Plan):
+
 - **Phase 1 (Closed & Released)**: Delivered canonical graph evolution contracts, additive SQLite schema migration v2, optimistic locking, and temporal/versioned persistence primitives (`4f489b8` / `d42d82a`).
 - **Phase 2 (This Discovery)**: Specifies the deterministic, dependency-free heuristic extraction engine (`GraphExtractor`) that parses structured and unstructured `MemoryRecord` content into bounded `GraphExtractionCandidateNode` and `GraphExtractionCandidateEdge` projections.
 - **Phase 3 (Subsequent Milestone)**: Will implement governed graph evolution orchestration (`GraphProjectionEngine.evolveFromRecord()`), atomic batch mutations, supersession mechanics, and automatic memory-to-graph write triggers.
@@ -64,7 +67,7 @@ flowchart TD
     MS --> SMS
     SMS --> T_MR
     SMS --> T_VE
-    
+
     MS -.->|MISSING LINK: No automatic extraction| GPE
     MS -.->|Phase 2 Boundary: Extract Candidates| GEP
     GEP --> CAN
@@ -74,6 +77,7 @@ flowchart TD
 ```
 
 Currently, when a `MemoryRecord` is created or updated in `MemoryService`:
+
 1. The record is validated against `MemoryCreateRequestSchema`.
 2. Secrets are blocked via `RedactionFilter.assertNoSecrets()`.
 3. The record is written to `memory_records` and `vector_embeddings`.
@@ -103,21 +107,22 @@ A comprehensive search of the repository reveals the following:
 
 ## 5. Exact Phase 2 Gaps
 
-| Capability | Current State | Phase 2 Requirement | Architectural Location |
-|---|---|---|---|
-| **Entity Extraction** | None | Extract named entities, tools, file paths, technical identifiers from memory content | `services/backend/src/memory/graph-extractor.ts` |
-| **Concept Extraction** | None | Extract domain concepts, explicit tags, and categorized themes | `services/backend/src/memory/graph-extractor.ts` |
-| **Relationship Derivation** | None | Derive semantic connective edges (`RELATES_TO`, `DERIVED_FROM`, `RESOLVED_BY`) | `services/backend/src/memory/graph-extractor.ts` |
-| **Extraction Candidate Contracts** | None | Formal Zod schemas for extraction candidates and extraction results | `packages/contracts/src/memory/graph.ts` |
-| **Payload Bounding & ReDoS Guard** | None | Enforce 32 KB payload bounds, work limits, and non-backtracking regexes | `GraphExtractor.extract()` |
-| **Provenance Isolation** | Manual only | Ensure all extracted candidates carry `verified: false` and cite parent record ID | `GraphExtractionResult` builder |
-| **Sensitivity Propagation** | Manual only | Automatically inherit `sensitivity` from parent `MemoryRecord` into properties | `GraphExtractionResult` builder |
+| Capability                         | Current State | Phase 2 Requirement                                                                  | Architectural Location                           |
+| ---------------------------------- | ------------- | ------------------------------------------------------------------------------------ | ------------------------------------------------ |
+| **Entity Extraction**              | None          | Extract named entities, tools, file paths, technical identifiers from memory content | `services/backend/src/memory/graph-extractor.ts` |
+| **Concept Extraction**             | None          | Extract domain concepts, explicit tags, and categorized themes                       | `services/backend/src/memory/graph-extractor.ts` |
+| **Relationship Derivation**        | None          | Derive semantic connective edges (`RELATES_TO`, `DERIVED_FROM`, `RESOLVED_BY`)       | `services/backend/src/memory/graph-extractor.ts` |
+| **Extraction Candidate Contracts** | None          | Formal Zod schemas for extraction candidates and extraction results                  | `packages/contracts/src/memory/graph.ts`         |
+| **Payload Bounding & ReDoS Guard** | None          | Enforce 32 KB payload bounds, work limits, and non-backtracking regexes              | `GraphExtractor.extract()`                       |
+| **Provenance Isolation**           | Manual only   | Ensure all extracted candidates carry `verified: false` and cite parent record ID    | `GraphExtractionResult` builder                  |
+| **Sensitivity Propagation**        | Manual only   | Automatically inherit `sensitivity` from parent `MemoryRecord` into properties       | `GraphExtractionResult` builder                  |
 
 ---
 
 ## 6. Proposed GraphExtractor Design
 
 ### 6.1 Architectural Mandates
+
 1. **Dependency-Free**: Zero external NLP libraries, zero ML dependencies, zero cloud API calls. Must execute synchronously or in fast in-memory async microtasks using Node.js built-ins (`node:crypto`, RegExp).
 2. **Deterministic**: For any identical `MemoryRecord` input and configuration, `GraphExtractor.extract()` MUST return byte-for-byte identical candidate nodes and edges with deterministic sorting and IDs.
 3. **Bounded**: Must strictly honor payload size bounds (maximum 32 KB), node generation bounds (max 20 nodes), and edge generation bounds (max 30 edges).
@@ -133,7 +138,7 @@ flowchart TD
     C --> D
     D --> E[Text Normalization: NFKC + Strip Controls]
     E --> F[Rule-Based Extraction Stages]
-    
+
     subgraph Extraction Stages
         F1[Stage 1: Explicit Metadata - tags, title, class]
         F2[Stage 2: Technical Identifiers - paths, URLs, errcodes, tokens]
@@ -141,13 +146,13 @@ flowchart TD
         F4[Stage 4: Domain Concepts & Stop-Word Filtered Keywords]
         F5[Stage 5: Co-occurrence & Semantic Connective Edges]
     end
-    
+
     F --> F1
     F --> F2
     F --> F3
     F --> F4
     F --> F5
-    
+
     F1 & F2 & F3 & F4 & F5 --> G[Deduplication & Canonical Key Collapsing]
     G --> H[Clamping: Max 20 Nodes, Max 30 Edges]
     H --> I[Post-Scan: RedactionFilter Sanitization on all Labels]
@@ -163,6 +168,7 @@ flowchart TD
 To maintain strict contract-driven design, the following additive schemas will be exported from `packages/contracts/src/memory/graph.ts`:
 
 ### 7.1 `GraphExtractionCandidateNode`
+
 ```typescript
 export const GraphExtractionCandidateNodeSchema = z.object({
   candidateId: z.string().min(1),
@@ -180,6 +186,7 @@ export type GraphExtractionCandidateNode = z.infer<typeof GraphExtractionCandida
 ```
 
 ### 7.2 `GraphExtractionCandidateEdge`
+
 ```typescript
 export const GraphExtractionCandidateEdgeSchema = z.object({
   candidateId: z.string().min(1),
@@ -198,6 +205,7 @@ export type GraphExtractionCandidateEdge = z.infer<typeof GraphExtractionCandida
 ```
 
 ### 7.3 `GraphExtractionResult`
+
 ```typescript
 export const GraphExtractionResultSchema = z.object({
   memoryRecordId: z.string().min(1),
@@ -214,13 +222,14 @@ export type GraphExtractionResult = z.infer<typeof GraphExtractionResultSchema>;
 ```
 
 ### 7.4 `GraphExtractorOptions`
+
 ```typescript
 export interface GraphExtractorOptions {
-  maxInputBytes?: number;       // Default: 32768 (32 KB)
-  maxNodes?: number;            // Default: 20
-  maxEdges?: number;            // Default: 30
-  strictSizeLimit?: boolean;    // Default: false (truncate safely if false, throw if true)
-  minConfidence?: number;       // Default: 0.50
+  maxInputBytes?: number; // Default: 32768 (32 KB)
+  maxNodes?: number; // Default: 20
+  maxEdges?: number; // Default: 30
+  strictSizeLimit?: boolean; // Default: false (truncate safely if false, throw if true)
+  minConfidence?: number; // Default: 0.50
 }
 ```
 
@@ -229,6 +238,7 @@ export interface GraphExtractorOptions {
 ## 8. Entity, Concept & Relationship Extraction Strategy
 
 ### 8.1 Entity Derivation Strategy (`MemoryGraphNodeType.ENTITY`)
+
 The extractor identifies discrete technical entities through deterministic regex patterns:
 
 1. **System & File Paths**:
@@ -258,6 +268,7 @@ The extractor identifies discrete technical entities through deterministic regex
    - Confidence: `0.75`
 
 ### 8.2 Concept Derivation Strategy (`MemoryGraphNodeType.CONCEPT`)
+
 Concepts capture domain semantics, categories, and tags:
 
 1. **Explicit Metadata Tags**:
@@ -273,6 +284,7 @@ Concepts capture domain semantics, categories, and tags:
    - Confidence: `0.80`.
 
 ### 8.3 Relationship Derivation Strategy (`MemoryGraphEdgeType`)
+
 Edges model semantic connections between extracted nodes and the parent record:
 
 1. **Parent Derivation Edge (`DERIVED_FROM`)**:
@@ -292,6 +304,7 @@ Edges model semantic connections between extracted nodes and the parent record:
 ## 9. Bounds & Determinism Strategy
 
 ### 9.1 The 32 KB Extraction Input Bound
+
 The roadmap and Discovery Report §12 (T-066-12) mandate a maximum 32 KB payload bound. We establish the concrete enforcement protocol:
 
 ```typescript
@@ -304,7 +317,7 @@ let isTruncated = false;
 if (byteLength > MAX_INPUT_BYTES) {
   if (options?.strictSizeLimit) {
     throw new MemoryExtractionPayloadExceededError(
-      `066-P2-SEC-05: Memory record content size (${byteLength} bytes) exceeds maximum extraction limit (32768 bytes).`
+      `066-P2-SEC-05: Memory record content size (${byteLength} bytes) exceeds maximum extraction limit (32768 bytes).`,
     );
   }
   // Safe truncation at safe UTF-8 character boundary
@@ -317,6 +330,7 @@ if (byteLength > MAX_INPUT_BYTES) {
 - **Architectural Justification for Safe Truncation Default**: In production, memory records can hold logs or traces exceeding 32 KB. Hard failing memory ingestion because extraction exceeded 32 KB would degrade availability. Safely truncating at 32 KB preserves extraction of the vital preamble/summary while guaranteeing constant-bounded CPU time and zero out-of-memory risk.
 
 ### 9.2 ReDoS Resistance & Algorithmic Complexity
+
 1. **Zero Nested Quantifiers**: Prohibit regex constructs such as `(a+)+`, `(a|a?)+`, or `.*.*`.
 2. **Linear Processing Time ($O(N)$)**: Every regex must execute in linear time relative to input length.
 3. **Sentence Bounding**: Maximum of 50 sentences evaluated per record.
@@ -326,13 +340,17 @@ if (byteLength > MAX_INPUT_BYTES) {
    - If heuristic generation produces more, elements are ranked by confidence descending, then sliced to limits deterministically.
 
 ### 9.3 Normalization & Canonical Collapsing
+
 To prevent duplicate nodes like `"nexus-runtime"` and `"Nexus Runtime"`:
-- **Canonical Key**: `canonicalKey = `${nodeType}:${normalizedLabel}`` where `normalizedLabel = label.normalize('NFKC').toLowerCase().replace(/\s+/g, ' ').trim()`.
+
+- **Canonical Key**: `canonicalKey = `${nodeType}:${normalizedLabel}``where`normalizedLabel = label.normalize('NFKC').toLowerCase().replace(/\s+/g, ' ').trim()`.
 - **Display Label**: Retains the highest-confidence or first-observed casing.
 - **Deduplication**: Hash map keyed on `canonicalKey`. If a duplicate is encountered, the higher confidence score is retained.
 
 ### 9.4 Deterministic Node ID Generation
+
 Node IDs must not use random UUIDs during extraction. They must be deterministically derivable:
+
 ```typescript
 const candidateId = `cand-node-${crypto
   .createHash('sha256')
@@ -340,6 +358,7 @@ const candidateId = `cand-node-${crypto
   .digest('hex')
   .slice(0, 16)}`;
 ```
+
 This guarantees that running extraction on the same record twice produces byte-identical IDs.
 
 ---
@@ -347,7 +366,9 @@ This guarantees that running extraction on the same record twice produces byte-i
 ## 10. Provenance & Sensitivity Model
 
 ### 10.1 Provenance Fidelity & Trust Parity
+
 Extracted graph elements are autonomous heuristic derivations. In accordance with `056-SEC-04` and `066-P1-SEC-04`:
+
 1. **Immutable `verified = false`**: Heuristic extraction MUST NEVER mark a node or edge as `verified: true`.
 2. **Source Citation**: Every candidate citations the originating memory record:
    ```typescript
@@ -362,11 +383,14 @@ Extracted graph elements are autonomous heuristic derivations. In accordance wit
 3. **No Trust Elevation**: The extraction pipeline cannot synthesize verified user credentials or elevate confidence above `0.75` for unverified entities (unless derived from explicit `tags` which are bounded at `1.0`).
 
 ### 10.2 Sensitivity Inheritance
+
 Knowledge graph projections must respect confidentiality classifications:
+
 - Extracted nodes and edges inherit `properties.sensitivity = record.sensitivity`.
 - If the parent memory is `CONFIDENTIAL` or `RESTRICTED`, candidate properties record this classification so that downstream graph traversal queries can enforce sensitivity ceilings (`062-SEC-06`).
 
 ### 10.3 Two-Phase Secret Sanitization
+
 1. **Pre-Extraction Scan**: If `RedactionFilter.containsSecrets(record.content)` is true, extraction aborts immediately or operates strictly on redacted content (`RedactionFilter.redactSecrets(content)`).
 2. **Post-Extraction Assertion**: Before returning candidates, every node `label` and property string is validated via `RedactionFilter.assertNoSecrets()`.
 
@@ -374,16 +398,16 @@ Knowledge graph projections must respect confidentiality classifications:
 
 ## 11. Security Threat Model & Invariants
 
-| Threat ID | Threat Description | Attack Vector / Scenario | Architectural Countermeasure |
-|---|---|---|---|
-| **T-066-P2-01** | Graph Authority Elevation | Adversary inserts memory claiming `"ROLE: SuperAdmin"`, hoping extracted graph node confers execution privilege. | Hard architectural boundary: Graph state is strictly DATA/PROJECTION, NEVER authority (`066-P2-SEC-01`). |
-| **T-066-P2-02** | Cross-Tenant Extraction Leakage | Extractor mixes candidate nodes from Tenant A with Tenant B context. | Strict parameter binding: `tenantId` and `workspaceId` copied strictly from parent `MemoryRecord` (`066-P2-SEC-02`). |
-| **T-066-P2-03** | Credential Harvesting via Graph | API keys or private keys in memory content are extracted into searchable node labels. | Two-phase `RedactionFilter` scan; fail-closed rejection of material secrets (`066-P2-SEC-03`). |
-| **T-066-P2-04** | Non-Deterministic Graph Divergence | Same memory produces different node IDs or edge sets on different runs, breaking caches. | Deterministic SHA-256 ID hashing, NFKC normalization, and lexical sorting (`066-P2-SEC-04`). |
-| **T-066-P2-05** | ReDoS / Extraction CPU Exhaustion | Adversarial string with catastrophic backtracking regex exhausts CPU. | Strict 32 KB payload limit, linear-time regexes, max 50 sentences (`066-P2-SEC-05`). |
-| **T-066-P2-06** | Provenance Forgery | Extractor falsely marks machine-generated assertions as verified human facts. | Hardcoded `verified: false` and source memory record ID citation (`066-P2-SEC-06`, `066-P2-SEC-07`). |
-| **T-066-P2-07** | Prompt Injection via Node Labels | Adversary embeds `</retrieved_context>` or system instructions into node labels. | Malicious prompt containment; all text remains data inside inert delimiters (`066-P2-SEC-08`). |
-| **T-066-P2-08** | Graph Memory Bloat / DoS | Memory record generates 10,000 trivial words as graph nodes. | Hard ceiling: Max 20 nodes, max 30 edges per memory record (`066-P2-SEC-05`). |
+| Threat ID       | Threat Description                 | Attack Vector / Scenario                                                                                         | Architectural Countermeasure                                                                                         |
+| --------------- | ---------------------------------- | ---------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| **T-066-P2-01** | Graph Authority Elevation          | Adversary inserts memory claiming `"ROLE: SuperAdmin"`, hoping extracted graph node confers execution privilege. | Hard architectural boundary: Graph state is strictly DATA/PROJECTION, NEVER authority (`066-P2-SEC-01`).             |
+| **T-066-P2-02** | Cross-Tenant Extraction Leakage    | Extractor mixes candidate nodes from Tenant A with Tenant B context.                                             | Strict parameter binding: `tenantId` and `workspaceId` copied strictly from parent `MemoryRecord` (`066-P2-SEC-02`). |
+| **T-066-P2-03** | Credential Harvesting via Graph    | API keys or private keys in memory content are extracted into searchable node labels.                            | Two-phase `RedactionFilter` scan; fail-closed rejection of material secrets (`066-P2-SEC-03`).                       |
+| **T-066-P2-04** | Non-Deterministic Graph Divergence | Same memory produces different node IDs or edge sets on different runs, breaking caches.                         | Deterministic SHA-256 ID hashing, NFKC normalization, and lexical sorting (`066-P2-SEC-04`).                         |
+| **T-066-P2-05** | ReDoS / Extraction CPU Exhaustion  | Adversarial string with catastrophic backtracking regex exhausts CPU.                                            | Strict 32 KB payload limit, linear-time regexes, max 50 sentences (`066-P2-SEC-05`).                                 |
+| **T-066-P2-06** | Provenance Forgery                 | Extractor falsely marks machine-generated assertions as verified human facts.                                    | Hardcoded `verified: false` and source memory record ID citation (`066-P2-SEC-06`, `066-P2-SEC-07`).                 |
+| **T-066-P2-07** | Prompt Injection via Node Labels   | Adversary embeds `</retrieved_context>` or system instructions into node labels.                                 | Malicious prompt containment; all text remains data inside inert delimiters (`066-P2-SEC-08`).                       |
+| **T-066-P2-08** | Graph Memory Bloat / DoS           | Memory record generates 10,000 trivial words as graph nodes.                                                     | Hard ceiling: Max 20 nodes, max 30 edges per memory record (`066-P2-SEC-05`).                                        |
 
 ---
 
@@ -428,7 +452,9 @@ To avoid collision with Phase 1's persistence invariants (`066-P1-SEC-01..07`), 
 ## 13. Integration Boundary & Separation of Concerns
 
 ### 13.1 Phase 2 Scope Boundary
+
 Phase 2 delivers ONLY the extraction engine:
+
 ```typescript
 export interface IGraphExtractor {
   extract(record: MemoryRecord, options?: GraphExtractorOptions): Promise<GraphExtractionResult>;
@@ -437,6 +463,7 @@ export interface IGraphExtractor {
 ```
 
 ### 13.2 What Phase 2 Explicitly Does NOT Do (Deferred to Phase 3)
+
 1. **DOES NOT hook into `MemoryService.createMemory()`**: Memory creation in Phase 2 remains decoupled from graph extraction.
 2. **DOES NOT execute database writes**: `GraphExtractor` does not touch SQLite, `graph_nodes`, or `graph_edges`.
 3. **DOES NOT perform supersession orchestration**: Invalidation of old facts (`validTo`, `isCurrent = false`, `SUPERSEDES` edge) belongs strictly to Phase 3 (`GraphProjectionEngine.evolveFromRecord()`).
@@ -448,6 +475,7 @@ export interface IGraphExtractor {
 ## 14. Exact File Change Plan
 
 ### CREATE
+
 1. `services/backend/src/memory/graph-extractor.ts`:
    - Core implementation of `GraphExtractor` with heuristic entity/concept/relationship parsers, normalization, ReDoS guards, and secret filters.
 2. `packages/contracts/tests/memory/graph-extraction-contracts.test.ts`:
@@ -458,6 +486,7 @@ export interface IGraphExtractor {
    - Security hardening suite validating `066-P2-SEC-01` through `066-P2-SEC-08`.
 
 ### MODIFY
+
 1. `packages/contracts/src/memory/graph.ts`:
    - Additive export of candidate schemas and result types (`GraphExtractionCandidateNode`, `GraphExtractionCandidateEdge`, `GraphExtractionResult`).
 2. `services/backend/src/memory/types.ts`:
@@ -466,6 +495,7 @@ export interface IGraphExtractor {
    - Register new test suites in root `test` script.
 
 ### DO NOT TOUCH
+
 - `apps/web-dashboard/**` (Dashboard remains stable; consumes graph via query).
 - `packages/plugin-sdk/**` (Plugin memory write capabilities deferred to `S3-04`).
 - `services/identity/**`, `services/policy/**` (Auth and policy contracts are out of scope).
@@ -520,14 +550,14 @@ The implementation of Phase 2 will be verified across 16 targeted test scenarios
 
 ## 18. Architectural Risks & Mitigations
 
-| Risk | Likelihood | Impact | Mitigation Strategy |
-|---|---|---|---|
-| **Heuristic False Positives** | Medium | Low | Cap unverified heuristic confidence at `<= 0.75`; downstream planners can filter by `minConfidence`. |
-| **ReDoS / Backtracking Hangs** | Low | High | Enforce non-backtracking linear regexes and clamp input to 32 KB max. |
-| **Graph Explosion / Node Bloat** | Medium | Medium | Strict hard clamps: Maximum 20 nodes, maximum 30 edges per extraction run. |
-| **Unicode / Surrogate Pair Corruption** | Low | Medium | Utilize `String.prototype.normalize('NFKC')` and safe buffer slicing. |
-| **Secret Leakage into Knowledge Graph** | Low | Critical | Two-phase `RedactionFilter` scan: reject inputs containing material secrets fail-closed. |
-| **Authority Confusion** | Low | High | Delimiter encapsulation and hard architectural invariant: Graph is data, never execution authority. |
+| Risk                                    | Likelihood | Impact   | Mitigation Strategy                                                                                  |
+| --------------------------------------- | ---------- | -------- | ---------------------------------------------------------------------------------------------------- |
+| **Heuristic False Positives**           | Medium     | Low      | Cap unverified heuristic confidence at `<= 0.75`; downstream planners can filter by `minConfidence`. |
+| **ReDoS / Backtracking Hangs**          | Low        | High     | Enforce non-backtracking linear regexes and clamp input to 32 KB max.                                |
+| **Graph Explosion / Node Bloat**        | Medium     | Medium   | Strict hard clamps: Maximum 20 nodes, maximum 30 edges per extraction run.                           |
+| **Unicode / Surrogate Pair Corruption** | Low        | Medium   | Utilize `String.prototype.normalize('NFKC')` and safe buffer slicing.                                |
+| **Secret Leakage into Knowledge Graph** | Low        | Critical | Two-phase `RedactionFilter` scan: reject inputs containing material secrets fail-closed.             |
+| **Authority Confusion**                 | Low        | High     | Delimiter encapsulation and hard architectural invariant: Graph is data, never execution authority.  |
 
 ---
 
