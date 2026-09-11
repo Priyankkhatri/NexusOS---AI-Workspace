@@ -140,7 +140,7 @@ A comprehensive search of `services/backend/` and `packages/contracts/` revealed
 2. **Publisher Boundary (`services/backend/src/events/publisher-boundary.ts`)**:
    `EventPublisherBoundary` interface with `publish(event: EventEnvelope)`.
    `InMemoryEventPublisherBoundary` stores published events in an in-memory array (`publishedEvents: EventEnvelope[]`).
-   **Crucial Finding**: It is purely passive storage (`publishedEvents.push(event)`). There is **no subscription mechanism, no pub/sub callback, no EventEmitter, and no streaming interface**.
+   **Crucial Finding**: It is currently passive array storage (`publishedEvents.push(event)`). There is **no subscription mechanism, no pub/sub callback, no EventEmitter, and no streaming interface**.
 3. **Activity Query Endpoint (`services/backend/src/tasks/controller.ts`)**:
    `getActivityByTenant(tenantId, query)` reads from `eventPublisher.getPublishedEvents()`, filters by `tenantId`, deduplicates by `event_id`, sorts deterministically, and applies cursor pagination.
 
@@ -219,8 +219,9 @@ WebSocket is often assumed to be the default "real-time" technology, but for Nex
 │   ┌──────────────────────────────────────────────────────────────────────────┐   │
 │   │            Governed Event Bus (EventPublisherBoundary + Pub/Sub)         │   │
 │   │   - RedactionFilter (067-SEC-03)                                         │   │
-│   │   - Monotonic Sequence Counter (067-SEC-04)                              │   │
+│   │   - Monotonic Epoch-Scoped Cursor <epoch>:<seq> (067-SEC-04)             │   │
 │   │   - Bounded Per-Tenant Ring Buffer [Max 100 / 5 min] (067-SEC-05)        │   │
+│   │   - Bounded Activity Array FIFO Cap [1,000 items max]                    │   │
 │   └─────────────────────────────────────┬────────────────────────────────────┘   │
 │                                         │                                        │
 │                                         ▼                                        │
@@ -230,14 +231,15 @@ WebSocket is often assumed to be the default "real-time" technology, but for Nex
 │                      - Backpressure & Connection Cap (067-SEC-07)                │
 └─────────────────────────────────────────┼────────────────────────────────────────┘
                                           │  text/event-stream
-                                          │  Last-Event-ID resumption
+                                          │  Last-Event-ID: <epoch>:<seq>
                                           ▼
 ┌──────────────────────────────────────────────────────────────────────────────────┐
 │                         WEB DASHBOARD (EXPERIENCE PLATFORM)                      │
 │                                                                                  │
 │   DashboardAPIClient.subscribeTelemetry()                                       │
-│   - Native EventSource / Fetch-Stream Reader                                     │
+│   - Fetch-Stream Reader with Authorization Header                                │
 │   - Client-side Dedup & Deterministic Sort (067-SEC-06)                          │
+│   - Epoch Change / Expiration Handling: stream.reset -> REST reconciliation      │
 │   - Fallback: Reverts to 15s Polling on 3x Stream Failure                        │
 │   - Strict Read-Only Observability (067-SEC-08)                                  │
 │                                                                                  │
@@ -286,7 +288,9 @@ export interface TelemetryStreamEvent<T = Record<string, unknown>> {
   schema_id: string; // e.g. 'nexusos.events.delegation.created'
   version: '1.0.0';
   event_id: string; // UUIDv4
-  sequence_number: number; // Monotonic per-tenant sequence counter (067-SEC-04)
+  epoch_id: string; // Process-lifetime stream epoch UUID (067-SEC-04)
+  sequence_number: number; // Monotonic per-tenant sequence counter within epoch (067-SEC-04)
+  cursor: string; // Canonical composite cursor `<epoch_id>:<sequence_number>`
   tenant_id: string; // Strict tenant ownership (067-SEC-01)
   workspace_id?: string; // Optional workspace scoping
   correlation_id: string; // Task ID, session ID, or trace correlation
@@ -329,7 +333,7 @@ export interface TelemetryStreamEvent<T = Record<string, unknown>> {
 
 When a network connection drops or a laptop lid closes, events continue to occur on the backend. When the client reconnects, it must not display stale data or corrupt its state.
 
-### 11.2 Bounded Replay Design (`067-SEC-04`, `067-SEC-05`)
+### 11.2 Bounded Replay Architecture
 
 1. **Per-Tenant Monotonic Sequence**:
    - The backend maintains an atomic monotonic integer counter `tenantSequence: Map<string, number>` starting at 1.
@@ -339,27 +343,164 @@ When a network connection drops or a laptop lid closes, events continue to occur
      - **Max Capacity**: 100 events per tenant (`MAX_REPLAY_BUFFER_SIZE = 100`).
      - **Max Age / TTL**: 5 minutes (`MAX_REPLAY_BUFFER_AGE_MS = 300_000`).
    - Eviction is automatic: oldest events are discarded when the buffer reaches capacity or exceeds the TTL. This guarantees **bounded memory consumption** under all conditions.
-3. **Resumption via `Last-Event-ID`**:
-   - Each SSE message frame formats the `sequence_number` as the event ID:
+3. **Resumption via Composite Cursor**:
+   - Each SSE frame formats the composite cursor `<streamEpochId>:<sequenceNumber>` as the event ID:
      ```
-     id: 1042
+     id: c2b4a689-1234-4567-89ab-cdef01234567:1042
      event: nexusos.events.delegation.created
      data: {"delegationId":"del-99", ...}
      ```
-   - On reconnect, the client passes `Last-Event-ID: 1042` (or `?lastEventId=1042`).
-   - **Scenario A (Within Buffer Window)**: The backend finds sequence 1042 in the buffer and replays events `1043..latest` immediately before streaming live events.
-   - **Scenario B (Missed Window / Stale Cursor)**: If `lastEventId < oldestInBuffer` (e.g. laptop slept for 15 minutes), the backend sends a control event:
-     ```
-     event: nexusos.events.stream.reset
-     data: {"reason":"REPLAY_BUFFER_EXPIRED","currentSequence":1250}
-     ```
-     Upon receiving this reset frame, the dashboard client clears view caches and triggers a full REST refresh (`refreshCurrentView()`).
+   - On reconnect, the client sends `Last-Event-ID: c2b4a689-1234-4567-89ab-cdef01234567:1042` (or `?lastEventId=...`).
+   - Replay is evaluated against the current process epoch and buffer boundaries (detailed in §12).
 
 ---
 
-## 12. Reconnection & Lifecycle Strategy
+## 12. Discovery Hardening — Cursor Epoch & Deployment Semantics
 
-### 12.1 Client Connection State Machine
+### 12.1 Problem Analysis: Ambiguity Across Backend Restarts
+
+A simple integer counter starting at 1 creates dangerous cursor-integrity ambiguities across server restarts:
+
+- Before restart: Tenant sequence reaches `1042`. Client disconnected at `Last-Event-ID: 2`.
+- Backend restarts: In-memory sequence counter resets to `1`.
+- New event produced: Receives sequence `3`.
+- The client reconnects presenting `Last-Event-ID: 2`. Under naive sequence checks, the server would believe event `3` is the immediate successor to event `2`, incorrectly serving new epoch events as continuous history without reconciling the hundreds of events lost across the restart.
+
+This violates `067-SEC-04` by claiming false cross-restart continuity.
+
+### 12.2 Chosen Cursor Design: Process Stream Epoch + Monotonic Sequence
+
+We evaluated four cursor identity alternatives:
+
+| Alternative                                         | Evaluation                                                                                                                                                                                                                                 |                      Verdict                       |
+| :-------------------------------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :------------------------------------------------: |
+| **A. Server Epoch + Monotonic Sequence**            | Generates a random UUID on process startup (`streamEpochId = crypto.randomUUID()`). Cursor format: `<streamEpochId>:<monotonicSequence>`. Sequence is strictly monotonic within one epoch; cursor identity cannot collide across restarts. | **SELECTED (Smallest, safest, zero dependencies)** |
+| **B. Process Start Timestamp + Sequence**           | Uses process launch epoch timestamp. Vulnerable to NTP clock adjustments and microsecond collisions during rapid container restarts.                                                                                                       |             Rejected in favor of UUID              |
+| **C. Persisted Global Sequence (SQLite)**           | Writes an updated sequence counter to disk for every ephemeral telemetry event. Introduces heavy write amplification and SQLite lock contention against task execution.                                                                    |  Rejected (overkill for transient observability)   |
+| **D. Distributed Vector Clock / Lamport Timestamp** | Multi-node causal ordering. Over-engineered for single-process desktop/server runtime; adds high framing overhead.                                                                                                                         |                      Rejected                      |
+
+#### Canonical Cursor Representation
+
+- `streamEpochId`: Generated once during backend initialization (`crypto.randomUUID()`).
+- `sequenceNumber`: Atomic integer incremented per event per tenant (starting at 1).
+- `Composite Cursor`: `${streamEpochId}:${sequenceNumber}` (e.g. `d4e5f6a7-b8c9-4012-9345-6789abcdef01:1042`).
+- Regex validation: `/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}:[0-9]+$/i`.
+
+### 12.3 Replay Semantics: The 5 Cursor Scenarios
+
+When a client initiates an SSE connection passing `Last-Event-ID: <cursor>` (or query parameter `lastEventId`), the server parses the cursor into `[clientEpoch, clientSeq]` and applies strict deterministic branching:
+
+```
+                      Client connects with Last-Event-ID
+                                      │
+                                      ▼
+                        Is cursor format valid regex?
+                                ├── No ────────► [SCENARIO 5: MALFORMED]
+                                │                Send stream.reset (MALFORMED_CURSOR)
+                                │                Trigger full REST reconciliation
+                                ▼ Yes
+                     clientEpoch === serverEpoch?
+                                ├── No ────────► [SCENARIO 4: SERVER_EPOCH_CHANGED]
+                                │                Send stream.reset (SERVER_EPOCH_CHANGED)
+                                │                Reset client cursor, trigger REST reconciliation
+                                ▼ Yes
+                   clientSeq > serverLatestSeq?
+                                ├── Yes ───────► [SCENARIO 3: FUTURE_CURSOR]
+                                │                Send stream.reset (FUTURE_CURSOR_DETECTED)
+                                │                Reset client cursor, trigger REST reconciliation
+                                ▼ No
+                   clientSeq < bufferOldestSeq?
+                                ├── Yes ───────► [SCENARIO 2: REPLAY_BUFFER_EXPIRED]
+                                │                Send stream.reset (REPLAY_BUFFER_EXPIRED)
+                                │                Trigger full REST reconciliation
+                                ▼ No
+                   [SCENARIO 1: VALID REPLAY]
+                   Replay events (clientSeq + 1)..serverLatestSeq
+                   Seamlessly transition to live stream
+```
+
+1. **Scenario 1: Current Epoch & Within Replay Buffer**
+   - Condition: `clientEpoch === serverEpoch` AND `clientSeq >= bufferOldestSeq` AND `clientSeq <= serverLatestSeq`.
+   - Behavior: The server replays all buffered events from `(clientSeq + 1)` through `serverLatestSeq` in strict FIFO order, then continues streaming live events. Zero missing data.
+2. **Scenario 2: Current Epoch but Older than Replay Buffer**
+   - Condition: `clientEpoch === serverEpoch` AND `clientSeq < bufferOldestSeq` (client was disconnected longer than 5 minutes or 100 events have passed).
+   - Behavior: Server emits a control event:
+     ```
+     event: nexusos.events.stream.reset
+     data: {"reason":"REPLAY_BUFFER_EXPIRED","currentEpoch":"d4e5f6a7...","currentSequence":1500}
+     ```
+     Client invalidates cached view data and triggers full REST reconciliation (`refreshCurrentView()`).
+3. **Scenario 3: Current Epoch but Ahead of Server Sequence**
+   - Condition: `clientEpoch === serverEpoch` AND `clientSeq > serverLatestSeq` (client supplied a corrupted or speculative sequence number).
+   - Behavior: Server emits:
+     ```
+     event: nexusos.events.stream.reset
+     data: {"reason":"FUTURE_CURSOR_DETECTED","currentEpoch":"d4e5f6a7...","currentSequence":100}
+     ```
+     Client resets its cursor and reconciles via REST.
+4. **Scenario 4: Previous or Unknown Epoch (Process Restart)**
+   - Condition: `clientEpoch !== serverEpoch` (backend restarted while client was disconnected).
+   - Behavior: Server immediately emits:
+     ```
+     event: nexusos.events.stream.reset
+     data: {"reason":"SERVER_EPOCH_CHANGED","currentEpoch":"d4e5f6a7...","currentSequence":0}
+     ```
+     **Critical Invariant**: The server **NEVER** attempts cross-epoch replay. The client discards its stale cursor, adopts `currentEpoch`, and executes a clean REST reconciliation.
+5. **Scenario 5: Malformed Cursor**
+   - Condition: Cursor fails regex validation.
+   - Behavior: Server emits:
+     ```
+     event: nexusos.events.stream.reset
+     data: {"reason":"MALFORMED_CURSOR","currentEpoch":"d4e5f6a7...","currentSequence":0}
+     ```
+     Client resets cursor and reconciles.
+
+### 12.4 Multi-Instance Deployment Boundary
+
+An audit of the NexusOS backend architecture confirms the following deployment characteristics:
+
+- **Single-Process Authority**: `NexusOSBackendApp` (`services/backend/src/server/app.ts`) is designed and executed as a single Node.js process.
+- **SQLite Single-Writer Model**: The primary state stores (`SqliteMemoryStore`, `TaskExecutionController`) rely on local SQLite files and in-memory Map tables. Multi-master replication is explicitly not present.
+- **Explicit Architectural Boundaries**:
+  1. **Process-Local Replay**: The stream event bus and replay buffers are strictly process-local.
+  2. **No Global Multi-Instance Ordering**: Global ordering across multiple independent backend instances is **NOT** guaranteed and is not supported.
+  3. **Connection Affinity**: An SSE stream must be served by the backend instance that executes the agent operations.
+  4. **No Distributed Broker**: External distributed pub/sub infrastructure (Kafka, Redis, RabbitMQ) is intentionally excluded from the single-node architecture. If multi-worker horizontal scaling is ever required in future sprints, a distributed event log milestone must precede it.
+
+### 12.5 Event Publisher Memory Bounds Strategy
+
+An audit of [`services/backend/src/events/publisher-boundary.ts`](file:///c:/Users/priya/Desktop/Nexus%20AI/services/backend/src/events/publisher-boundary.ts) revealed an existing unbounded growth vector:
+
+```ts
+export class InMemoryEventPublisherBoundary implements EventPublisherBoundary {
+  private readonly publishedEvents: EventEnvelope[] = []; // Grows indefinitely!
+  async publish(event: EventEnvelope) {
+    this.publishedEvents.push(event); // Unbounded push
+    ...
+  }
+}
+```
+
+If this array is used for the real-time event bus, long-running processes will suffer memory leaks.
+
+#### Decoupling Strategy: Live Stream Replay vs. REST Activity History
+
+1. **Dedicated Live Replay Ring Buffer (`StreamReplayBuffer`)**:
+   - Distinct from long-term activity storage.
+   - Per-tenant circular buffer capped at **`MAX_REPLAY_BUFFER_SIZE = 100`** events and **`MAX_REPLAY_BUFFER_AGE_MS = 300,000`** (5 minutes).
+   - Serves only real-time reconnects via `Last-Event-ID`.
+2. **Bounded REST Activity History (`InMemoryEventPublisherBoundary`)**:
+   - Retained for paginated queries via `GET /v1/activity`.
+   - Must enforce a strict FIFO cap: **`MAX_PUBLISHED_EVENTS = 1,000`** total (or 250 events per tenant).
+   - When the array reaches capacity, oldest events are evicted via `shift()`.
+   - Preserves sufficient history for recent activity pagination while eliminating memory leaks.
+3. **No Unbounded Memory**: Under zero circumstances may any in-memory event array grow unbounded.
+
+---
+
+## 13. Reconnection & Lifecycle Strategy
+
+### 13.1 Client Connection State Machine
 
 The client manages four explicit connection states surfaced on the existing `#connection-indicator` element:
 
@@ -380,7 +521,7 @@ The client manages four explicit connection states surfaced on the existing `#co
                                               [ DEGRADED_POLLING ]
 ```
 
-### 12.2 Lifecycle Handlers
+### 13.2 Lifecycle Handlers
 
 - **Tab Hidden (`document.hidden`)**:
   - When the tab is blurred/hidden, the client closes the SSE stream to save server resources and battery.
@@ -393,7 +534,7 @@ The client manages four explicit connection states surfaced on the existing `#co
 
 ---
 
-## 13. Backpressure & Resource Bounds
+## 14. Backpressure & Resource Bounds
 
 To prevent memory exhaustion, slow-client stalls, or ReDoS attacks, explicit numerical ceilings are established:
 
@@ -408,9 +549,9 @@ To prevent memory exhaustion, slow-client stalls, or ReDoS attacks, explicit num
 
 ---
 
-## 14. Fallback & Graceful Degradation Design
+## 15. Fallback & Graceful Degradation Design
 
-### 14.1 The Three-Tier Reliability Hierarchy
+### 15.1 The Three-Tier Reliability Hierarchy
 
 ```
 Tier 1: Live SSE Stream (Sub-second latency, push updates)
@@ -422,7 +563,7 @@ Tier 2: Governed REST Polling (15-second cadence, identical to Task 063)
 Tier 3: Offline Stale-State Display with Operator Retry Button
 ```
 
-### 14.2 Fail-Safe Principles
+### 15.2 Fail-Safe Principles
 
 1. **Never Brick the UI**: If the SSE endpoint returns 404, 502, or fails to connect, the dashboard silently transitions to Tier 2 (15s polling) and updates the header badge to `"Live Updates Paused (Polling)"`.
 2. **Read-Only Invariance**: A failure in the real-time telemetry stream **never** blocks an operator from submitting an approval decision or canceling a task via REST.
@@ -430,9 +571,9 @@ Tier 3: Offline Stale-State Display with Operator Retry Button
 
 ---
 
-## 15. Accessibility (WCAG 2.2 AA) & UX Requirements
+## 16. Accessibility (WCAG 2.2 AA) & UX Requirements
 
-### 15.1 Managing Real-Time Screen-Reader Announcements
+### 16.1 Managing Real-Time Screen-Reader Announcements
 
 Uncontrolled real-time updates are a primary violation of WCAG 2.2 AA (Criterion 4.1.3: Status Messages), causing screen readers to interrupt the user constantly.
 
@@ -450,17 +591,18 @@ Uncontrolled real-time updates are a primary violation of WCAG 2.2 AA (Criterion
 
 ---
 
-## 16. Security Threat Model & Concrete Invariants
+## 17. Security Threat Model & Concrete Invariants
 
-### 16.1 Threat Vectors Analyzed
+### 17.1 Threat Vectors Analyzed
 
 1. **Cross-Tenant Telemetry Snooping**: An attacker in Tenant B attempts to observe tasks, agent registrations, or delegation hierarchies belonging to Tenant A by connecting to the stream with crafted query parameters or forged headers.
 2. **Secret Leakage in Event Payloads**: An agent task executes with an API token or password in its parameters; the task completion event broadcasts the raw parameters over the telemetry stream to the browser.
 3. **Stream Hijacking & Command Injection**: An adversary attempts to send execution frames or reverse-RPC commands back across the telemetry connection to manipulate backend state.
 4. **Denial of Service via Connection Exhaustion**: A malicious tenant opens thousands of concurrent streaming connections to exhaust Node.js file descriptors and memory.
 5. **DOM / Memory Exhaustion via Event Flooding**: A compromised or misbehaving agent loops rapidly, emitting thousands of events per second to freeze the operator's browser tab.
+6. **Cross-Restart Replay Confusion**: A client connects after a backend restart with a cursor from a previous server epoch, causing either duplicate event execution or missed state transitions.
 
-### 16.2 Concrete Security Invariants
+### 17.2 Concrete Security Invariants (Hardened)
 
 The implementation of Task 067 must enforce the following eight mandatory security invariants:
 
@@ -481,13 +623,20 @@ The implementation of Task 067 must enforce the following eight mandatory securi
 │             All event payloads pass through RedactionFilter before publication. │
 │             API keys, tokens, and raw passwords are never broadcast.            │
 │                                                                                 │
-│ 067-SEC-04: Ordering & Monotonic Cursor Integrity                               │
-│             Events carry strictly increasing sequence numbers per tenant.       │
-│             Clients validate sequence continuity to detect dropped frames.      │
+│ 067-SEC-04: Ordering & Monotonic Cursor Integrity (Hardened)                    │
+│             Events carry strictly increasing sequence numbers scoped to a       │
+│             process stream epoch (<streamEpochId>:<sequenceNumber>). Monotonicity│
+│             is guaranteed within an epoch. Cursors from prior epochs or future  │
+│             speculative sequences are rejected with an explicit stream.reset    │
+│             frame (SERVER_EPOCH_CHANGED / FUTURE_CURSOR_DETECTED), triggering   │
+│             safe REST reconciliation. Cross-epoch replay confusion is forbidden.│
 │                                                                                 │
-│ 067-SEC-05: Replay Buffer Boundedness                                           │
-│             Backend replay buffers are strictly bounded (max 100 events / 5 min)│
-│             preventing unbounded memory growth. Expired cursors trigger reset.  │
+│ 067-SEC-05: Replay Buffer Boundedness & Lifetime Separation (Hardened)          │
+│             Live replay buffers are strictly bounded (max 100 events / 5 min per│
+│             tenant) and tied to the active process epoch. Expired cursors trigger│
+│             an explicit REPLAY_BUFFER_EXPIRED reset. Background REST activity   │
+│             history storage is capped at 1,000 events FIFO to eliminate memory  │
+│             leaks. Zero unbounded in-memory queues are permitted.               │
 │                                                                                 │
 │ 067-SEC-06: Duplicate & Out-of-Order Safety                                     │
 │             Dashboard clients deduplicate event IDs and maintain deterministic  │
@@ -506,7 +655,7 @@ The implementation of Task 067 must enforce the following eight mandatory securi
 
 ---
 
-## 17. Proposed Implementation Phases
+## 18. Proposed Implementation Phases
 
 When Task 067 moves to implementation, the work should be structured in four sequential, test-driven phases:
 
@@ -514,8 +663,8 @@ When Task 067 moves to implementation, the work should be structured in four seq
 
 - Define `TelemetryStreamEventSchema` and event payload schemas in `packages/contracts/src/events/stream.ts`.
 - Re-export contracts through `packages/contracts/src/index.ts`.
-- Extend `services/backend/src/events/publisher-boundary.ts` into a lightweight, in-process pub/sub event bus supporting `subscribe(tenantId, listener)`, per-tenant monotonic sequence generation, and bounded circular replay buffers.
-- Unit tests: Contract validation and event bus subscriber isolation.
+- Extend `services/backend/src/events/publisher-boundary.ts` into a lightweight, in-process pub/sub event bus supporting `subscribe(tenantId, listener)`, per-tenant monotonic sequence generation within a random `streamEpochId`, dedicated bounded circular replay buffers (`StreamReplayBuffer`), and a 1,000-event FIFO cap on activity history.
+- Unit tests: Contract validation, epoch generation, and event bus subscriber isolation.
 
 ### Phase 2: Producer Instrumentation & Backend SSE Endpoint
 
@@ -526,14 +675,15 @@ When Task 067 moves to implementation, the work should be structured in four seq
   - Route authentication via `authenticateForDashboard()`.
   - SSE headers (`Content-Type: text/event-stream`, `Cache-Control: no-cache`, `Connection: keep-alive`).
   - Connection limit enforcement (`maxStreamsPerTenant = 10`).
-  - `Last-Event-ID` cursor recovery handling.
+  - Composite cursor recovery (`Last-Event-ID: <epoch>:<seq>`) handling all 5 replay scenarios.
   - Heartbeat ping timer (every 15s).
-- Integration tests: Multi-tenant SSE streaming, replay recovery, and secret redaction.
+- Integration tests: Multi-tenant SSE streaming, restart epoch reset, replay recovery, and secret redaction.
 
 ### Phase 3: Web Dashboard SSE Integration & Live Views
 
 - Add `subscribeTelemetry()` to `DashboardAPIClient` using a fetch-based streaming reader.
 - Integrate stream event handlers into `apps/web-dashboard/src/main.ts`:
+  - Handle `nexusos.events.stream.reset` by resetting stored cursor and triggering `refreshCurrentView()`.
   - Dynamically update Agent Roster status cards on `agent.status_changed`.
   - Dynamically insert/update nodes in the Delegation Live Tree and Timeline on `delegation.*`.
   - Prepend new events to Activity Feed with deduplication and 100-item cap.
@@ -543,26 +693,26 @@ When Task 067 moves to implementation, the work should be structured in four seq
 
 ### Phase 4: Security Hardening & Vertical Slice Verification
 
-- Author security suite `tests/hardening/dashboard-telemetry-security.test.ts` covering `067-SEC-01` through `067-SEC-08`.
+- Author security suite `tests/hardening/dashboard-telemetry-security.test.ts` covering `067-SEC-01` through `067-SEC-08` (including restart epoch separation and buffer bounds).
 - Author vertical slice test `tests/vertical-slice/dashboard-realtime-telemetry-vertical-slice.test.ts` verifying end-to-end delegation lifecycle streaming from coordinator to client.
 - Execute full monorepo quality gates (`build`, `typecheck`, `lint`, `format:check`, `validate`, `security`, `pnpm test`).
 
 ---
 
-## 18. Explicit Non-Goals
+## 19. Explicit Non-Goals
 
 To maintain strict boundary discipline and prevent scope creep, the following are declared explicit non-goals for Task 067:
 
 1. **NO WebSockets**: WebSockets are explicitly rejected due to unnecessary bidirectional complexity, missing dependencies, and violation of `067-SEC-08`.
 2. **NO External Message Brokers**: No Redis, RabbitMQ, Kafka, or external pub/sub infrastructure. All event distribution is in-process within the backend control-plane service.
 3. **NO Bidirectional Commands over Stream**: The dashboard will not send commands, decisions, or cancellations over the SSE stream. All mutations remain on authenticated REST endpoints.
-4. **NO Unbounded History Storage**: The backend will not store permanent event histories in memory. Replay buffers are strictly capped at 100 entries / 5 minutes.
+4. **NO Unbounded History Storage**: The backend will not store permanent event histories in memory. Replay buffers are strictly capped at 100 entries / 5 minutes, and passive activity history is capped at 1,000 entries FIFO.
 5. **NO Changes to Execution Authority or Lease Governance**: The delegation safety bounds (`MAX_DEPTH = 3`, `MAX_FAN_OUT = 5`), approval state machines, and lease attenuation logic from Task 060 remain entirely untouched.
 6. **NO Changes to Memory/Graph Persistence**: The SQLite outbox and graph evolution engine from Task 066 remain the sole authority for knowledge graph state.
 
 ---
 
-## 19. Risks & Open Questions
+## 20. Risks & Open Questions
 
 | Risk / Question                               | Impact                                                                                                              | Mitigation Strategy                                                                                                                                                                                                                                                                         |
 | :-------------------------------------------- | :------------------------------------------------------------------------------------------------------------------ | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -573,13 +723,13 @@ To maintain strict boundary discipline and prevent scope creep, the following ar
 
 ---
 
-## 20. Conclusion & Readiness
+## 21. Conclusion & Readiness
 
-This discovery report comprehensively establishes the architecture for Task 067 (Sprint 3 Candidate S3-03).
+This discovery report comprehensively establishes the hardened real-time telemetry architecture for Task 067 (Sprint 3 Candidate S3-03).
 
-- The recommended architecture (**Server-Sent Events backed by an in-process, tenant-scoped event bus**) satisfies all business objectives while preserving the read-only observability boundary (`067-SEC-08`).
-- Zero new runtime dependencies are introduced.
-- Strict security invariants (`067-SEC-01` through `067-SEC-08`) prevent cross-tenant leakage, secret exposure, and resource exhaustion.
-- The existing 15-second polling implementation is preserved as an automatic fallback and reconciliation mechanism.
+- **Restart-Safe Cursor Identity**: Uses `<streamEpochId>:<sequenceNumber>` to eliminate cross-restart sequence collisions and provide deterministic replay reset.
+- **Process-Local Scope**: Explicitly identifies the single-process boundary of NexusOS without fabricating unsupported distributed guarantees.
+- **Strict In-Memory Bounds**: Decouples live stream replay (100 items / 5 min) from REST activity history (1,000 items FIFO), eliminating memory leaks.
+- **Security Invariants**: `067-SEC-01` through `067-SEC-08` are formally hardened against stale cursors, secret leakage, and execution authority escape.
 
 **STATUS: DISCOVERY ONLY — DO NOT IMPLEMENT.**
