@@ -13,7 +13,7 @@
  *  R-08: Tenant/workspace boundaries enforced through full outbox lifecycle.
  */
 
-import { describe, it, beforeEach } from 'node:test';
+import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   MemoryClass,
@@ -79,6 +79,7 @@ function makeParentRecord(id: string, tenantId: string, workspaceId: string) {
     confidence: 0.9,
     sensitivity: MemorySensitivity.INTERNAL,
     tags: [],
+    metadata: {},
     version: 1,
     status: MemoryStatus.ACTIVE,
     createdAt: now,
@@ -524,8 +525,10 @@ describe('066-P3-R-07: GraphEvolutionEngine Governance Re-entry', () => {
     );
     const rec = await store.getOutboxRecord!('evo-adv-01', ctx.tenantId, ctx.workspaceId);
     const receipt = await processor.processRecord(rec!, ctx);
-    for (const node of receipt.acceptedNodes) {
-      if (node.provenance) {
+    // acceptedNodes are string IDs — fetch each node to verify provenance.verified=false (066-P3-SEC-03)
+    for (const nodeId of receipt.acceptedNodes) {
+      const node = await store.getGraphNode(nodeId, ctx.tenantId, ctx.workspaceId);
+      if (node?.provenance) {
         assert.equal(
           node.provenance.verified,
           false,

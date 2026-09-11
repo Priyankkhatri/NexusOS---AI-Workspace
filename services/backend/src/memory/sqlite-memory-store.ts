@@ -29,7 +29,6 @@ import {
   EvolutionDeliveryStatus,
   EvolutionOutboxRecord,
   EvolutionOutboxRecordInput,
-  EvolutionOutboxRecordSchema,
   EvolutionOutboxRecordInputSchema,
   OUTBOX_MAX_ATTEMPTS_DEFAULT,
   OUTBOX_PROCESSING_LEASE_TIMEOUT_MS,
