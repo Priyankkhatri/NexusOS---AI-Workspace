@@ -124,24 +124,28 @@ describe('GraphExtractor Unit Tests (Task 066 Phase 2)', () => {
   });
 
   describe('Relationship Extraction', () => {
-    it('1. generates DERIVED_FROM edges from all extracted nodes to root atom', () => {
+    it('1. derives DERIVED_FROM edge between candidate nodes from semantic cue without synthetic root', () => {
       const record = createTestRecord({
-        content: 'Error ERR_GATEWAY occurred at https://gateway.internal/auth.',
+        title: '',
+        tags: [],
+        content: 'Worker QueryPlan derived from UserPrompt during pipeline execution.',
       });
 
       const result = extractor.extractSync(record, { extractedAt: '2026-09-11T00:00:00.000Z' });
-      const rootNode = result.nodes.find((n) => n.properties.isSourceAtom === true);
-      assert.ok(rootNode);
 
-      const derivedEdges = result.edges.filter(
-        (e) =>
-          e.edgeType === MemoryGraphEdgeType.DERIVED_FROM &&
-          e.targetNodeId === rootNode.candidateId,
+      // Proves no synthetic source/root node is emitted
+      assert.equal(
+        result.nodes.some((n) => n.properties.isSourceAtom === true),
+        false,
       );
 
-      // Every non-root node should have a DERIVED_FROM edge to root
-      const nonRootNodes = result.nodes.filter((n) => n.candidateId !== rootNode.candidateId);
-      assert.equal(derivedEdges.length, nonRootNodes.length);
+      const derivedEdges = result.edges.filter(
+        (e) => e.edgeType === MemoryGraphEdgeType.DERIVED_FROM,
+      );
+
+      assert.ok(derivedEdges.length > 0);
+      assert.equal(derivedEdges[0]!.edgeType, MemoryGraphEdgeType.DERIVED_FROM);
+      assert.equal(derivedEdges[0]!.properties.cue, 'derived_from');
     });
 
     it('2. derives RESOLVED_BY and EXECUTED_BY from semantic cues', () => {
@@ -325,12 +329,12 @@ describe('GraphExtractor Unit Tests (Task 066 Phase 2)', () => {
   });
 
   describe('Malformed & Edge-Case Inputs', () => {
-    it('1. handles empty content and whitespace gracefully', () => {
+    it('1. handles empty content and whitespace gracefully emitting zero synthetic nodes', () => {
       const record = createTestRecord({ title: '', content: '   \n\t   ', tags: [] });
       const result = extractor.extractSync(record);
 
       assert.ok(result);
-      assert.ok(result.nodes.length >= 1); // Only root atom
+      assert.equal(result.nodes.length, 0, 'Must not emit synthetic root node on empty input');
       assert.equal(result.edges.length, 0);
     });
 

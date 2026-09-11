@@ -559,40 +559,7 @@ export class GraphExtractor implements IGraphExtractor {
       }
     }
 
-    // 5. Build Synthetic Root Atom Node (066-SEC-06)
-    const rootAtomKey = 'root_memory_atom';
-    const rootAtomId = computeNodeCandidateId(
-      record.tenantId,
-      record.workspaceId,
-      record.id,
-      rootAtomKey,
-    );
-    const rootAtomLabel = sanitizedTitle.trim()
-      ? `Memory: ${sanitizedTitle.trim()}`
-      : `MemoryRecord ${record.id}`;
-
-    const rootAtomNode: GraphExtractionCandidateNode = {
-      candidateId: rootAtomId,
-      tenantId: record.tenantId,
-      workspaceId: record.workspaceId,
-      nodeType: MemoryGraphNodeType.ARTIFACT,
-      label: rootAtomLabel.slice(0, 256),
-      memoryRecordId: record.id,
-      properties: {
-        isSourceAtom: true,
-        sensitivity: record.sensitivity,
-      },
-      confidence: 1.0,
-      provenance: {
-        sourceType: MemorySourceType.SYSTEM_SYNTHESIS,
-        creatorPrincipalId: record.provenance?.creatorPrincipalId ?? 'system',
-        sourceId: record.id,
-        timestamp: extractedAt,
-        verified: false,
-      },
-    };
-
-    // 6. Convert Extracted Raw Nodes to Candidate Nodes
+    // 5. Convert Extracted Raw Nodes to Candidate Nodes
     const candidateNodesList: GraphExtractionCandidateNode[] = [];
     for (const raw of candidateNodesMap.values()) {
       const candidateId = computeNodeCandidateId(
@@ -639,12 +606,8 @@ export class GraphExtractor implements IGraphExtractor {
       return a.candidateId.localeCompare(b.candidateId);
     });
 
-    // Clamp nodes: maxNodes allows room for rootAtomNode
-    const maxExtractedNodes = Math.max(0, maxNodes - 1);
-    const clampedExtractedNodes = candidateNodesList.slice(0, maxExtractedNodes);
-
-    // Final node collection including root atom
-    const allFinalNodes = [rootAtomNode, ...clampedExtractedNodes];
+    // Clamp nodes: strictly up to maxNodes (default 20). No synthetic root node.
+    const allFinalNodes = candidateNodesList.slice(0, maxNodes);
     // Map for fast membership and edge referential integrity check
     const activeNodeIdSet = new Set(allFinalNodes.map((n) => n.candidateId));
 
@@ -685,14 +648,7 @@ export class GraphExtractor implements IGraphExtractor {
       }
     };
 
-    // Relationship Strategy 1: DERIVED_FROM linking extracted candidates to root memory atom
-    for (const node of clampedExtractedNodes) {
-      addEdgeCandidate(node.candidateId, rootAtomId, MemoryGraphEdgeType.DERIVED_FROM, 1.0, 1.0, {
-        relation: 'derived_from_memory_record',
-      });
-    }
-
-    // Relationship Strategy 2 & 3: Sentence-Bounded Semantic & Co-Occurrence Derivation
+    // Relationship Extraction: Sentence-Bounded Semantic & Co-Occurrence Derivation
     // Max 50 sentences, max 500 chars per sentence to guarantee strict bounded time (066-SEC-05)
     const sentences = normalizedText
       .split(/(?<=[.?!;\n])\s+/)
@@ -705,14 +661,41 @@ export class GraphExtractor implements IGraphExtractor {
 
       // Find all clamped nodes appearing in this sentence
       const nodesInSentence: GraphExtractionCandidateNode[] = [];
-      for (const node of clampedExtractedNodes) {
+      for (const node of allFinalNodes) {
         if (trimmedSentence.includes(node.label)) {
           nodesInSentence.push(node);
         }
       }
 
       // Explicit non-backtracking semantic connective cues
-      // 1. RESOLVED_BY: "fixes", "resolved", "resolves"
+      // 1. DERIVED_FROM: "derived from", "based on", "generated from"
+      const derivedCue = findSemanticCue(trimmedSentence, [
+        ' derived from ',
+        ' based on ',
+        ' generated from ',
+      ]);
+      if (derivedCue) {
+        for (const n1 of nodesInSentence) {
+          for (const n2 of nodesInSentence) {
+            if (
+              n1.candidateId !== n2.candidateId &&
+              derivedCue.left.includes(n1.label) &&
+              derivedCue.right.includes(n2.label)
+            ) {
+              addEdgeCandidate(
+                n1.candidateId,
+                n2.candidateId,
+                MemoryGraphEdgeType.DERIVED_FROM,
+                1.0,
+                0.85,
+                { cue: 'derived_from' },
+              );
+            }
+          }
+        }
+      }
+
+      // 2. RESOLVED_BY: "fixes", "resolved", "resolves"
       const resolvedCue = findSemanticCue(trimmedSentence, [' fixes ', ' resolved ', ' resolves ']);
       if (resolvedCue) {
         for (const n1 of nodesInSentence) {

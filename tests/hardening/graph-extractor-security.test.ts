@@ -87,6 +87,20 @@ describe('Task 066 Phase 2 Security Hardening: GraphExtractor Invariants (066-SE
         assert.equal(edge.provenance.verified, false);
       }
     });
+
+    it('does not emit synthetic root/source graph nodes that could masquerade as authority roots', () => {
+      const record = makeBaseRecord({
+        content: 'Technical details about agent-orchestrator and task-scheduler.',
+      });
+
+      const result = extractor.extractSync(record);
+
+      assert.equal(
+        result.nodes.some((n) => n.properties.isSourceAtom === true),
+        false,
+        'Must not create synthetic source atom graph nodes',
+      );
+    });
   });
 
   // ---------------------------------------------------------------------------
