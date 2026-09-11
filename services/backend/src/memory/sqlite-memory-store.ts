@@ -26,6 +26,13 @@ import {
   GraphEvolutionPlan,
   EvolutionReceipt,
   GraphEvolutionOperationType,
+  EvolutionDeliveryStatus,
+  EvolutionOutboxRecord,
+  EvolutionOutboxRecordInput,
+  EvolutionOutboxRecordSchema,
+  EvolutionOutboxRecordInputSchema,
+  OUTBOX_MAX_ATTEMPTS_DEFAULT,
+  OUTBOX_PROCESSING_LEASE_TIMEOUT_MS,
 } from '@nexusos/contracts';
 import {
   IMemoryStore,
@@ -326,6 +333,57 @@ export class SqliteMemoryStore implements IMemoryStore {
         this.db.exec('ROLLBACK;');
         throw err;
       }
+      currentVersion = getVersion();
+    }
+
+    if (currentVersion < 3) {
+      this.db.exec('BEGIN IMMEDIATE;');
+      try {
+        this.db.exec(`
+          -- Additive columns for graph_nodes and graph_edges (066-P3-R-04 Monotonic Version Fencing)
+          ALTER TABLE graph_nodes ADD COLUMN last_memory_version INTEGER NOT NULL DEFAULT 1;
+          ALTER TABLE graph_edges ADD COLUMN last_memory_version INTEGER NOT NULL DEFAULT 1;
+
+          -- Memory Evolution Outbox Table (066-P3-R-01 Durable Transactional Outbox)
+          CREATE TABLE IF NOT EXISTS memory_evolution_outbox (
+            id TEXT NOT NULL,
+            tenant_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            memory_record_id TEXT NOT NULL,
+            memory_version INTEGER NOT NULL,
+            candidate_set_hash TEXT NOT NULL,
+            evolution_payload TEXT NOT NULL,
+            status TEXT NOT NULL,
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            max_attempts INTEGER NOT NULL DEFAULT 5,
+            next_attempt_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            processed_at TEXT,
+            last_error TEXT,
+            PRIMARY KEY (tenant_id, workspace_id, id)
+          );
+
+          CREATE UNIQUE INDEX IF NOT EXISTS idx_outbox_dedup
+            ON memory_evolution_outbox (tenant_id, workspace_id, id);
+
+          CREATE INDEX IF NOT EXISTS idx_outbox_status_next
+            ON memory_evolution_outbox (status, next_attempt_at);
+
+          CREATE INDEX IF NOT EXISTS idx_outbox_scope
+            ON memory_evolution_outbox (tenant_id, workspace_id, status);
+
+          CREATE INDEX IF NOT EXISTS idx_outbox_mem_ver
+            ON memory_evolution_outbox (tenant_id, workspace_id, memory_record_id, memory_version);
+
+          INSERT INTO schema_migrations (version, applied_at, description)
+          VALUES (3, datetime('now'), 'Task 066 Phase 3 Durable Outbox & Version Fencing');
+        `);
+        this.db.exec('COMMIT;');
+      } catch (err) {
+        this.db.exec('ROLLBACK;');
+        throw err;
+      }
     }
   }
 
@@ -378,7 +436,10 @@ export class SqliteMemoryStore implements IMemoryStore {
   // Memory Records CRUD & Search
   // -------------------------------------------------------------------------
 
-  public async create(record: MemoryRecord): Promise<MemoryRecord> {
+  public async create(
+    record: MemoryRecord,
+    outboxItem?: EvolutionOutboxRecordInput,
+  ): Promise<MemoryRecord> {
     this.checkFailure();
 
     // 062-SEC-04: Secret Sanitization before persistence
@@ -398,27 +459,69 @@ export class SqliteMemoryStore implements IMemoryStore {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
     `);
 
-    stmt.run(
-      record.id,
-      record.tenantId,
-      record.workspaceId,
-      record.ownerId,
-      record.class,
-      record.status,
-      record.sensitivity,
-      record.title ?? null,
-      record.content,
-      record.summary ?? null,
-      record.confidence,
-      JSON.stringify(record.tags),
-      JSON.stringify(record.metadata),
-      JSON.stringify(record.provenance),
-      record.retentionPolicy ? JSON.stringify(record.retentionPolicy) : null,
-      record.version,
-      record.createdAt,
-      record.updatedAt,
-      record.tombstonedAt ?? null,
-    );
+    this.db.exec('BEGIN IMMEDIATE;');
+    try {
+      stmt.run(
+        record.id,
+        record.tenantId,
+        record.workspaceId,
+        record.ownerId,
+        record.class,
+        record.status,
+        record.sensitivity,
+        record.title ?? null,
+        record.content,
+        record.summary ?? null,
+        record.confidence,
+        JSON.stringify(record.tags),
+        JSON.stringify(record.metadata),
+        JSON.stringify(record.provenance),
+        record.retentionPolicy ? JSON.stringify(record.retentionPolicy) : null,
+        record.version,
+        record.createdAt,
+        record.updatedAt,
+        record.tombstonedAt ?? null,
+      );
+
+      if (outboxItem) {
+        const validatedOutbox = EvolutionOutboxRecordInputSchema.parse(outboxItem);
+        const outboxStmt = this.db.prepare(`
+          INSERT INTO memory_evolution_outbox (
+            id, tenant_id, workspace_id, memory_record_id, memory_version,
+            candidate_set_hash, evolution_payload, status, attempt_count,
+            max_attempts, next_attempt_at, created_at, updated_at, processed_at, last_error
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT (tenant_id, workspace_id, id) DO NOTHING;
+        `);
+
+        outboxStmt.run(
+          validatedOutbox.id,
+          validatedOutbox.tenantId,
+          validatedOutbox.workspaceId,
+          validatedOutbox.memoryRecordId,
+          validatedOutbox.memoryVersion,
+          validatedOutbox.candidateSetHash,
+          JSON.stringify(validatedOutbox.evolutionPayload ?? {}),
+          validatedOutbox.status ?? EvolutionDeliveryStatus.PENDING,
+          validatedOutbox.attemptCount ?? 0,
+          validatedOutbox.maxAttempts ?? OUTBOX_MAX_ATTEMPTS_DEFAULT,
+          validatedOutbox.nextAttemptAt ?? null,
+          validatedOutbox.createdAt,
+          validatedOutbox.updatedAt ?? validatedOutbox.createdAt,
+          validatedOutbox.processedAt ?? null,
+          validatedOutbox.lastError ?? null,
+        );
+      }
+
+      this.db.exec('COMMIT;');
+    } catch (err) {
+      try {
+        this.db.exec('ROLLBACK;');
+      } catch {
+        // ignore rollback errors if already rolled back
+      }
+      throw err;
+    }
 
     return JSON.parse(JSON.stringify(record));
   }
@@ -455,79 +558,121 @@ export class SqliteMemoryStore implements IMemoryStore {
       Omit<MemoryRecord, 'id' | 'tenantId' | 'workspaceId' | 'version' | 'createdAt'>
     >,
     expectedVersion: number,
+    outboxItem?: EvolutionOutboxRecordInput,
   ): Promise<MemoryRecord> {
     this.checkFailure();
 
-    const row = this.db
-      .prepare(
-        `SELECT * FROM memory_records
-         WHERE tenant_id = ? AND workspace_id = ? AND id = ?;`,
-      )
-      .get(tenantId, workspaceId, id) as any;
+    this.db.exec('BEGIN IMMEDIATE;');
+    try {
+      const row = this.db
+        .prepare(
+          `SELECT * FROM memory_records
+           WHERE tenant_id = ? AND workspace_id = ? AND id = ?;`,
+        )
+        .get(tenantId, workspaceId, id) as any;
 
-    if (!row) {
-      throw new MemoryNotFoundError(id);
+      if (!row) {
+        throw new MemoryNotFoundError(id);
+      }
+
+      const existing = this.rowToMemoryRecord(row);
+      if (existing.status === MemoryStatus.TOMBSTONED) {
+        throw new MemoryNotFoundError(id);
+      }
+
+      // Optimistic locking (056-SEC-06)
+      if (existing.version !== expectedVersion) {
+        throw new MemoryVersionConflictError(id, existing.version, expectedVersion);
+      }
+
+      // 062-SEC-04: Secret Sanitization
+      if (updates.content) {
+        RedactionFilter.assertNoSecrets(updates.content, 'Updated memory content');
+      }
+      if (updates.title) {
+        RedactionFilter.assertNoSecrets(updates.title, 'Updated memory title');
+      }
+      if (updates.summary) {
+        RedactionFilter.assertNoSecrets(updates.summary, 'Updated memory summary');
+      }
+
+      const newVersion = existing.version + 1;
+      const updatedAt = new Date().toISOString();
+
+      const updated: MemoryRecord = {
+        ...existing,
+        ...updates,
+        version: newVersion,
+        updatedAt,
+      };
+
+      const stmt = this.db.prepare(`
+        UPDATE memory_records SET
+          class = ?, status = ?, sensitivity = ?, title = ?, content = ?,
+          summary = ?, confidence = ?, tags = ?, metadata = ?, provenance = ?,
+          retention_policy = ?, version = ?, updated_at = ?
+        WHERE tenant_id = ? AND workspace_id = ? AND id = ?;
+      `);
+
+      stmt.run(
+        updated.class,
+        updated.status,
+        updated.sensitivity,
+        updated.title ?? null,
+        updated.content,
+        updated.summary ?? null,
+        updated.confidence,
+        JSON.stringify(updated.tags),
+        JSON.stringify(updated.metadata),
+        JSON.stringify(updated.provenance),
+        updated.retentionPolicy ? JSON.stringify(updated.retentionPolicy) : null,
+        updated.version,
+        updated.updatedAt,
+        tenantId,
+        workspaceId,
+        id,
+      );
+
+      if (outboxItem) {
+        const validatedOutbox = EvolutionOutboxRecordInputSchema.parse(outboxItem);
+        const outboxStmt = this.db.prepare(`
+          INSERT INTO memory_evolution_outbox (
+            id, tenant_id, workspace_id, memory_record_id, memory_version,
+            candidate_set_hash, evolution_payload, status, attempt_count,
+            max_attempts, next_attempt_at, created_at, updated_at, processed_at, last_error
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT (tenant_id, workspace_id, id) DO NOTHING;
+        `);
+
+        outboxStmt.run(
+          validatedOutbox.id,
+          validatedOutbox.tenantId,
+          validatedOutbox.workspaceId,
+          validatedOutbox.memoryRecordId,
+          validatedOutbox.memoryVersion,
+          validatedOutbox.candidateSetHash,
+          JSON.stringify(validatedOutbox.evolutionPayload ?? {}),
+          validatedOutbox.status ?? EvolutionDeliveryStatus.PENDING,
+          validatedOutbox.attemptCount ?? 0,
+          validatedOutbox.maxAttempts ?? OUTBOX_MAX_ATTEMPTS_DEFAULT,
+          validatedOutbox.nextAttemptAt ?? null,
+          validatedOutbox.createdAt,
+          validatedOutbox.updatedAt ?? validatedOutbox.createdAt,
+          validatedOutbox.processedAt ?? null,
+          validatedOutbox.lastError ?? null,
+        );
+      }
+
+      this.db.exec('COMMIT;');
+      return updated;
+    } catch (err) {
+      try {
+        this.db.exec('ROLLBACK;');
+      } catch {
+        // ignore
+      }
+      throw err;
     }
-
-    const existing = this.rowToMemoryRecord(row);
-    if (existing.status === MemoryStatus.TOMBSTONED) {
-      throw new MemoryNotFoundError(id);
-    }
-
-    // Optimistic locking (056-SEC-06)
-    if (existing.version !== expectedVersion) {
-      throw new MemoryVersionConflictError(id, existing.version, expectedVersion);
-    }
-
-    // 062-SEC-04: Secret Sanitization
-    if (updates.content) {
-      RedactionFilter.assertNoSecrets(updates.content, 'Updated memory content');
-    }
-    if (updates.title) {
-      RedactionFilter.assertNoSecrets(updates.title, 'Updated memory title');
-    }
-    if (updates.summary) {
-      RedactionFilter.assertNoSecrets(updates.summary, 'Updated memory summary');
-    }
-
-    const newVersion = existing.version + 1;
-    const updatedAt = new Date().toISOString();
-
-    const updated: MemoryRecord = {
-      ...existing,
-      ...updates,
-      version: newVersion,
-      updatedAt,
-    };
-
-    const stmt = this.db.prepare(`
-      UPDATE memory_records SET
-        class = ?, status = ?, sensitivity = ?, title = ?, content = ?,
-        summary = ?, confidence = ?, tags = ?, metadata = ?, provenance = ?,
-        retention_policy = ?, version = ?, updated_at = ?
-      WHERE tenant_id = ? AND workspace_id = ? AND id = ?;
-    `);
-
-    stmt.run(
-      updated.class,
-      updated.status,
-      updated.sensitivity,
-      updated.title ?? null,
-      updated.content,
-      updated.summary ?? null,
-      updated.confidence,
-      JSON.stringify(updated.tags),
-      JSON.stringify(updated.metadata),
-      JSON.stringify(updated.provenance),
-      updated.retentionPolicy ? JSON.stringify(updated.retentionPolicy) : null,
-      updated.version,
-      updated.updatedAt,
-      tenantId,
-      workspaceId,
-      id,
-    );
-
-    return updated;
   }
 
   /**
@@ -1013,7 +1158,8 @@ export class SqliteMemoryStore implements IMemoryStore {
           valid_from = ?,
           valid_to = ?,
           superseded_by = ?,
-          updated_at = ?
+          updated_at = ?,
+          last_memory_version = ?
         WHERE tenant_id = ? AND workspace_id = ? AND id = ? AND version = ?;
       `);
 
@@ -1030,6 +1176,7 @@ export class SqliteMemoryStore implements IMemoryStore {
         validated.validTo ?? null,
         validated.supersededBy ?? null,
         updatedAt,
+        validated.lastMemoryVersion ?? existing.lastMemoryVersion ?? 1,
         validated.tenantId,
         validated.workspaceId,
         validated.id,
@@ -1044,6 +1191,7 @@ export class SqliteMemoryStore implements IMemoryStore {
         ...validated,
         validFrom,
         version: nextVersion,
+        lastMemoryVersion: validated.lastMemoryVersion ?? existing.lastMemoryVersion ?? 1,
         updatedAt,
       };
       return updatedNode;
@@ -1059,13 +1207,15 @@ export class SqliteMemoryStore implements IMemoryStore {
       const initialVersion = node.version ?? 1;
       const validFrom = validated.validFrom ?? validated.createdAt;
       const updatedAt = validated.updatedAt ?? validated.createdAt;
+      const lastMemoryVersion = validated.lastMemoryVersion ?? 1;
 
       const stmt = this.db.prepare(`
         INSERT INTO graph_nodes (
           id, tenant_id, workspace_id, node_type, label, confidence,
           memory_record_id, properties, provenance, version, is_current,
-          valid_from, valid_to, superseded_by, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+          valid_from, valid_to, superseded_by, created_at, updated_at,
+          last_memory_version
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
       `);
 
       stmt.run(
@@ -1085,12 +1235,14 @@ export class SqliteMemoryStore implements IMemoryStore {
         validated.supersededBy ?? null,
         validated.createdAt,
         updatedAt,
+        lastMemoryVersion,
       );
 
       const createdNode: MemoryGraphNodeOutput = {
         ...validated,
         validFrom,
         version: initialVersion,
+        lastMemoryVersion,
         updatedAt,
       };
       return createdNode;
@@ -1160,7 +1312,8 @@ export class SqliteMemoryStore implements IMemoryStore {
           valid_from = ?,
           valid_to = ?,
           superseded_by = ?,
-          updated_at = ?
+          updated_at = ?,
+          last_memory_version = ?
         WHERE tenant_id = ? AND workspace_id = ? AND id = ? AND version = ?;
       `);
 
@@ -1178,6 +1331,7 @@ export class SqliteMemoryStore implements IMemoryStore {
         validated.validTo ?? null,
         validated.supersededBy ?? null,
         updatedAt,
+        validated.lastMemoryVersion ?? existing.lastMemoryVersion ?? 1,
         validated.tenantId,
         validated.workspaceId,
         validated.id,
@@ -1192,6 +1346,7 @@ export class SqliteMemoryStore implements IMemoryStore {
         ...validated,
         validFrom,
         version: nextVersion,
+        lastMemoryVersion: validated.lastMemoryVersion ?? existing.lastMemoryVersion ?? 1,
         updatedAt,
       };
       return updatedEdge;
@@ -1207,13 +1362,15 @@ export class SqliteMemoryStore implements IMemoryStore {
       const initialVersion = edge.version ?? 1;
       const validFrom = validated.validFrom ?? validated.createdAt;
       const updatedAt = validated.updatedAt ?? validated.createdAt;
+      const lastMemoryVersion = validated.lastMemoryVersion ?? 1;
 
       const stmt = this.db.prepare(`
         INSERT INTO graph_edges (
           id, tenant_id, workspace_id, edge_type, source_node_id, target_node_id,
           confidence, weight, properties, provenance, version, is_current,
-          valid_from, valid_to, superseded_by, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+          valid_from, valid_to, superseded_by, created_at, updated_at,
+          last_memory_version
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
       `);
 
       stmt.run(
@@ -1234,12 +1391,14 @@ export class SqliteMemoryStore implements IMemoryStore {
         validated.supersededBy ?? null,
         validated.createdAt,
         updatedAt,
+        lastMemoryVersion,
       );
 
       const createdEdge: MemoryGraphEdgeOutput = {
         ...validated,
         validFrom,
         version: initialVersion,
+        lastMemoryVersion,
         updatedAt,
       };
       return createdEdge;
@@ -1511,6 +1670,25 @@ export class SqliteMemoryStore implements IMemoryStore {
       );
     }
 
+    if (plan.operations.length === 0) {
+      return {
+        evolutionId: plan.evolutionId,
+        tenantId: plan.tenantId,
+        workspaceId: plan.workspaceId,
+        memoryRecordId: plan.memoryRecordId,
+        memoryVersion: plan.memoryVersion,
+        acceptedNodes: [],
+        acceptedEdges: [],
+        supersededNodeIds: [],
+        supersededEdgeIds: [],
+        rejectedNodes: [],
+        rejectedEdges: [],
+        evolvedAt: new Date().toISOString(),
+        executionDurationMs: Math.round(performance.now() - startTime),
+        idempotentSkip: true,
+      };
+    }
+
     const acceptedNodes: string[] = [];
     const acceptedEdges: string[] = [];
     const supersededNodeIds: string[] = [];
@@ -1542,6 +1720,7 @@ export class SqliteMemoryStore implements IMemoryStore {
             const initialVersion = node.version ?? 1;
             const validFrom = node.validFrom ?? node.createdAt;
             const updatedAt = node.updatedAt ?? node.createdAt;
+            const lastMemoryVersion = node.lastMemoryVersion ?? plan.memoryVersion ?? 1;
 
             this.db
               .prepare(
@@ -1549,8 +1728,9 @@ export class SqliteMemoryStore implements IMemoryStore {
               INSERT INTO graph_nodes (
                 id, tenant_id, workspace_id, node_type, label, confidence,
                 memory_record_id, properties, provenance, version, is_current,
-                valid_from, valid_to, superseded_by, created_at, updated_at
-              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                valid_from, valid_to, superseded_by, created_at, updated_at,
+                last_memory_version
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
             `,
               )
               .run(
@@ -1570,6 +1750,7 @@ export class SqliteMemoryStore implements IMemoryStore {
                 node.supersededBy ?? null,
                 node.createdAt,
                 updatedAt,
+                lastMemoryVersion,
               );
           }
           acceptedNodes.push(node.id);
@@ -1597,6 +1778,7 @@ export class SqliteMemoryStore implements IMemoryStore {
 
           const nextVersion = currentVersion + 1;
           const updatedAt = node.updatedAt ?? new Date().toISOString();
+          const lastMemoryVersion = node.lastMemoryVersion ?? plan.memoryVersion ?? 1;
 
           const updateStmt = this.db.prepare(`
             UPDATE graph_nodes SET
@@ -1605,7 +1787,8 @@ export class SqliteMemoryStore implements IMemoryStore {
               properties = ?,
               provenance = ?,
               version = ?,
-              updated_at = ?
+              updated_at = ?,
+              last_memory_version = ?
             WHERE tenant_id = ? AND workspace_id = ? AND id = ? AND version = ?;
           `);
 
@@ -1616,6 +1799,7 @@ export class SqliteMemoryStore implements IMemoryStore {
             node.provenance ? JSON.stringify(node.provenance) : '{}',
             nextVersion,
             updatedAt,
+            lastMemoryVersion,
             node.tenantId,
             node.workspaceId,
             node.id,
@@ -1652,6 +1836,7 @@ export class SqliteMemoryStore implements IMemoryStore {
           const validTo = op.validTo ?? new Date().toISOString();
           const supersededBy = op.supersededBy ?? op.node?.id ?? null;
           const nextVersion = currentVersion + 1;
+          const lastMemoryVersion = plan.memoryVersion ?? 1;
 
           const updateStmt = this.db.prepare(`
             UPDATE graph_nodes SET
@@ -1659,7 +1844,8 @@ export class SqliteMemoryStore implements IMemoryStore {
               valid_to = ?,
               superseded_by = ?,
               version = ?,
-              updated_at = ?
+              updated_at = ?,
+              last_memory_version = ?
             WHERE tenant_id = ? AND workspace_id = ? AND id = ? AND version = ?;
           `);
 
@@ -1668,6 +1854,7 @@ export class SqliteMemoryStore implements IMemoryStore {
             supersededBy,
             nextVersion,
             validTo,
+            lastMemoryVersion,
             plan.tenantId,
             plan.workspaceId,
             targetId,
@@ -1684,6 +1871,7 @@ export class SqliteMemoryStore implements IMemoryStore {
             const initialVersion = newNode.version ?? 1;
             const validFrom = newNode.validFrom ?? validTo;
             const updatedAt = newNode.updatedAt ?? validTo;
+            const newNodeLastMemoryVersion = newNode.lastMemoryVersion ?? plan.memoryVersion ?? 1;
 
             this.db
               .prepare(
@@ -1691,8 +1879,9 @@ export class SqliteMemoryStore implements IMemoryStore {
               INSERT INTO graph_nodes (
                 id, tenant_id, workspace_id, node_type, label, confidence,
                 memory_record_id, properties, provenance, version, is_current,
-                valid_from, valid_to, superseded_by, created_at, updated_at
-              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                valid_from, valid_to, superseded_by, created_at, updated_at,
+                last_memory_version
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
             `,
               )
               .run(
@@ -1712,6 +1901,7 @@ export class SqliteMemoryStore implements IMemoryStore {
                 null,
                 newNode.createdAt,
                 updatedAt,
+                newNodeLastMemoryVersion,
               );
             acceptedNodes.push(newNode.id);
           }
@@ -1736,6 +1926,7 @@ export class SqliteMemoryStore implements IMemoryStore {
             const initialVersion = edge.version ?? 1;
             const validFrom = edge.validFrom ?? edge.createdAt;
             const updatedAt = edge.updatedAt ?? edge.createdAt;
+            const lastMemoryVersion = edge.lastMemoryVersion ?? plan.memoryVersion ?? 1;
 
             this.db
               .prepare(
@@ -1743,8 +1934,9 @@ export class SqliteMemoryStore implements IMemoryStore {
               INSERT INTO graph_edges (
                 id, tenant_id, workspace_id, edge_type, source_node_id, target_node_id,
                 confidence, weight, properties, provenance, version, is_current,
-                valid_from, valid_to, superseded_by, created_at, updated_at
-              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                valid_from, valid_to, superseded_by, created_at, updated_at,
+                last_memory_version
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
             `,
               )
               .run(
@@ -1765,6 +1957,7 @@ export class SqliteMemoryStore implements IMemoryStore {
                 edge.supersededBy ?? null,
                 edge.createdAt,
                 updatedAt,
+                lastMemoryVersion,
               );
           }
           acceptedEdges.push(edge.id);
@@ -1792,6 +1985,7 @@ export class SqliteMemoryStore implements IMemoryStore {
           const validTo = op.validTo ?? new Date().toISOString();
           const supersededBy = op.supersededBy ?? op.edge?.id ?? null;
           const nextVersion = currentVersion + 1;
+          const lastMemoryVersion = plan.memoryVersion ?? 1;
 
           const updateStmt = this.db.prepare(`
             UPDATE graph_edges SET
@@ -1799,7 +1993,8 @@ export class SqliteMemoryStore implements IMemoryStore {
               valid_to = ?,
               superseded_by = ?,
               version = ?,
-              updated_at = ?
+              updated_at = ?,
+              last_memory_version = ?
             WHERE tenant_id = ? AND workspace_id = ? AND id = ? AND version = ?;
           `);
 
@@ -1808,6 +2003,7 @@ export class SqliteMemoryStore implements IMemoryStore {
             supersededBy,
             nextVersion,
             validTo,
+            lastMemoryVersion,
             plan.tenantId,
             plan.workspaceId,
             targetId,
@@ -1824,6 +2020,7 @@ export class SqliteMemoryStore implements IMemoryStore {
             const initialVersion = newEdge.version ?? 1;
             const validFrom = newEdge.validFrom ?? validTo;
             const updatedAt = newEdge.updatedAt ?? validTo;
+            const newEdgeLastMemoryVersion = newEdge.lastMemoryVersion ?? plan.memoryVersion ?? 1;
 
             this.db
               .prepare(
@@ -1831,8 +2028,9 @@ export class SqliteMemoryStore implements IMemoryStore {
               INSERT INTO graph_edges (
                 id, tenant_id, workspace_id, edge_type, source_node_id, target_node_id,
                 confidence, weight, properties, provenance, version, is_current,
-                valid_from, valid_to, superseded_by, created_at, updated_at
-              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                valid_from, valid_to, superseded_by, created_at, updated_at,
+                last_memory_version
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
             `,
               )
               .run(
@@ -1853,6 +2051,7 @@ export class SqliteMemoryStore implements IMemoryStore {
                 null,
                 newEdge.createdAt,
                 updatedAt,
+                newEdgeLastMemoryVersion,
               );
             acceptedEdges.push(newEdge.id);
           }
@@ -2060,6 +2259,187 @@ export class SqliteMemoryStore implements IMemoryStore {
     return this.vectorIndex.search(request);
   }
 
+  // -------------------------------------------------------------------------
+  // Durable Outbox Operations (066-P3-R-01, 066-P3-R-02, 066-P3-R-05)
+  // -------------------------------------------------------------------------
+
+  public async createOutboxRecord(
+    record: EvolutionOutboxRecordInput,
+  ): Promise<EvolutionOutboxRecord> {
+    this.checkFailure();
+    const validated = EvolutionOutboxRecordInputSchema.parse(record);
+    const now = new Date().toISOString();
+    const createdAt = validated.createdAt ?? now;
+    const updatedAt = validated.updatedAt ?? createdAt;
+
+    const stmt = this.db.prepare(`
+      INSERT INTO memory_evolution_outbox (
+        id, tenant_id, workspace_id, memory_record_id, memory_version,
+        candidate_set_hash, evolution_payload, status, attempt_count,
+        max_attempts, next_attempt_at, created_at, updated_at, processed_at, last_error
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT (tenant_id, workspace_id, id) DO NOTHING;
+    `);
+
+    stmt.run(
+      validated.id,
+      validated.tenantId,
+      validated.workspaceId,
+      validated.memoryRecordId,
+      validated.memoryVersion,
+      validated.candidateSetHash,
+      JSON.stringify(validated.evolutionPayload ?? {}),
+      validated.status ?? EvolutionDeliveryStatus.PENDING,
+      validated.attemptCount ?? 0,
+      validated.maxAttempts ?? OUTBOX_MAX_ATTEMPTS_DEFAULT,
+      validated.nextAttemptAt ?? null,
+      createdAt,
+      updatedAt,
+      validated.processedAt ?? null,
+      validated.lastError ?? null,
+    );
+
+    const saved = await this.getOutboxRecord(
+      validated.id,
+      validated.tenantId,
+      validated.workspaceId,
+    );
+    if (!saved) {
+      throw new Error(`Failed to retrieve created or coalesced outbox record: ${validated.id}`);
+    }
+    return saved;
+  }
+
+  public async getOutboxRecord(
+    id: string,
+    tenantId: string,
+    workspaceId: string,
+  ): Promise<EvolutionOutboxRecord | null> {
+    this.checkFailure();
+    const row = this.db
+      .prepare(
+        `SELECT * FROM memory_evolution_outbox
+         WHERE tenant_id = ? AND workspace_id = ? AND id = ?;`,
+      )
+      .get(tenantId, workspaceId, id) as any;
+
+    if (!row) return null;
+    return this.rowToOutboxRecord(row);
+  }
+
+  public async listPendingOutboxRecords(options?: {
+    tenantId?: string;
+    workspaceId?: string;
+    limit?: number;
+    olderThanMs?: number;
+    ignoreLeaseTimeout?: boolean;
+  }): Promise<EvolutionOutboxRecord[]> {
+    this.checkFailure();
+    const nowIso = new Date().toISOString();
+    const leaseCutoff = new Date(Date.now() - OUTBOX_PROCESSING_LEASE_TIMEOUT_MS).toISOString();
+
+    let sql = `
+      SELECT * FROM memory_evolution_outbox
+      WHERE (
+        status = 'PENDING'
+        OR (status = 'FAILED' AND (next_attempt_at IS NULL OR next_attempt_at <= ?))
+        OR (status = 'PROCESSING' AND ${options?.ignoreLeaseTimeout ? '1=1' : 'updated_at <= ?'})
+      )
+    `;
+    const params: any[] = [nowIso];
+    if (!options?.ignoreLeaseTimeout) {
+      params.push(leaseCutoff);
+    }
+
+    if (options?.tenantId && options?.workspaceId) {
+      sql += ' AND tenant_id = ? AND workspace_id = ?';
+      params.push(options.tenantId, options.workspaceId);
+    }
+
+    sql += ' ORDER BY created_at ASC LIMIT ?;';
+    params.push(Math.min(options?.limit ?? 50, 100));
+
+    const rows = this.db.prepare(sql).all(...params) as any[];
+    return rows.map((r) => this.rowToOutboxRecord(r));
+  }
+
+  public async claimOutboxRecord(
+    id: string,
+    tenantId: string,
+    workspaceId: string,
+    options?: { ignoreLeaseTimeout?: boolean },
+  ): Promise<boolean> {
+    this.checkFailure();
+    const nowIso = new Date().toISOString();
+    const leaseCutoff = new Date(Date.now() - OUTBOX_PROCESSING_LEASE_TIMEOUT_MS).toISOString();
+
+    const sql = `
+      UPDATE memory_evolution_outbox
+      SET status = 'PROCESSING', updated_at = ?
+      WHERE tenant_id = ? AND workspace_id = ? AND id = ? AND (
+        status = 'PENDING'
+        OR (status = 'FAILED' AND (next_attempt_at IS NULL OR next_attempt_at <= ?))
+        OR (status = 'PROCESSING' AND ${options?.ignoreLeaseTimeout ? '1=1' : 'updated_at <= ?'})
+      );
+    `;
+    const params = [nowIso, tenantId, workspaceId, id, nowIso];
+    if (!options?.ignoreLeaseTimeout) {
+      params.push(leaseCutoff);
+    }
+
+    const result = this.db.prepare(sql).run(...params);
+    return Number(result.changes) > 0;
+  }
+
+  public async updateOutboxStatus(
+    id: string,
+    tenantId: string,
+    workspaceId: string,
+    update: {
+      status: EvolutionDeliveryStatus;
+      attemptCount?: number;
+      lastError?: string | null;
+      nextAttemptAt?: string | null;
+      processedAt?: string | null;
+    },
+  ): Promise<EvolutionOutboxRecord> {
+    this.checkFailure();
+    const now = new Date().toISOString();
+
+    const stmt = this.db.prepare(`
+      UPDATE memory_evolution_outbox SET
+        status = ?,
+        attempt_count = COALESCE(?, attempt_count),
+        next_attempt_at = ?,
+        last_error = ?,
+        processed_at = COALESCE(?, processed_at),
+        updated_at = ?
+      WHERE tenant_id = ? AND workspace_id = ? AND id = ?;
+    `);
+
+    stmt.run(
+      update.status,
+      update.attemptCount !== undefined ? update.attemptCount : null,
+      update.nextAttemptAt ?? null,
+      update.lastError ?? null,
+      update.processedAt !== undefined
+        ? update.processedAt
+        : update.status === EvolutionDeliveryStatus.COMPLETED
+          ? now
+          : null,
+      now,
+      tenantId,
+      workspaceId,
+      id,
+    );
+
+    const updated = await this.getOutboxRecord(id, tenantId, workspaceId);
+    if (!updated) {
+      throw new Error(`Outbox record not found after update: ${id}`);
+    }
+    return updated;
+  }
+
   public close(): void {
     try {
       this.db.close();
@@ -2077,6 +2457,7 @@ export class SqliteMemoryStore implements IMemoryStore {
       DELETE FROM graph_nodes;
       DELETE FROM graph_edges;
       DELETE FROM vector_embeddings;
+      DELETE FROM memory_evolution_outbox;
     `);
     this.vectorIndex.clear();
   }
@@ -2157,6 +2538,7 @@ export class SqliteMemoryStore implements IMemoryStore {
       properties: JSON.parse(row.properties || '{}'),
       provenance,
       version: row.version ?? 1,
+      lastMemoryVersion: row.last_memory_version ?? 1,
       isCurrent: row.is_current !== undefined ? Boolean(row.is_current) : true,
       validFrom: row.valid_from ?? row.created_at,
       validTo: row.valid_to ?? undefined,
@@ -2204,12 +2586,42 @@ export class SqliteMemoryStore implements IMemoryStore {
       properties: JSON.parse(row.properties || '{}'),
       provenance,
       version: row.version ?? 1,
+      lastMemoryVersion: row.last_memory_version ?? 1,
       isCurrent: row.is_current !== undefined ? Boolean(row.is_current) : true,
       validFrom: row.valid_from ?? row.created_at,
       validTo: row.valid_to ?? undefined,
       supersededBy: row.superseded_by ?? undefined,
       createdAt: row.created_at,
       updatedAt: row.updated_at ?? row.created_at,
+    };
+  }
+
+  private rowToOutboxRecord(row: any): EvolutionOutboxRecord {
+    let payload: Record<string, unknown> | undefined = undefined;
+    if (row.evolution_payload) {
+      try {
+        payload = JSON.parse(row.evolution_payload);
+      } catch {
+        payload = undefined;
+      }
+    }
+
+    return {
+      id: row.id,
+      tenantId: row.tenant_id,
+      workspaceId: row.workspace_id,
+      memoryRecordId: row.memory_record_id,
+      memoryVersion: row.memory_version,
+      candidateSetHash: row.candidate_set_hash,
+      evolutionPayload: payload,
+      status: row.status as EvolutionDeliveryStatus,
+      attemptCount: row.attempt_count,
+      maxAttempts: row.max_attempts ?? OUTBOX_MAX_ATTEMPTS_DEFAULT,
+      nextAttemptAt: row.next_attempt_at ?? null,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at ?? row.created_at,
+      processedAt: row.processed_at ?? null,
+      lastError: row.last_error ?? null,
     };
   }
 

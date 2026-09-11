@@ -19,6 +19,9 @@ import {
   GraphEvolutionPlan,
   EvolutionReceipt,
   GraphEvolutionOptions,
+  EvolutionOutboxRecord,
+  EvolutionOutboxRecordInput,
+  EvolutionDeliveryStatus,
   VectorEmbedding,
   VectorSearchRequest,
   VectorSearchResponse,
@@ -32,7 +35,7 @@ export interface MemoryServiceContext {
 }
 
 export interface IMemoryStore {
-  create(record: MemoryRecord): Promise<MemoryRecord>;
+  create(record: MemoryRecord, outboxItem?: EvolutionOutboxRecordInput): Promise<MemoryRecord>;
   getById(id: string, tenantId: string, workspaceId: string): Promise<MemoryRecord | null>;
   update(
     id: string,
@@ -42,6 +45,7 @@ export interface IMemoryStore {
       Omit<MemoryRecord, 'id' | 'tenantId' | 'workspaceId' | 'version' | 'createdAt'>
     >,
     expectedVersion: number,
+    outboxItem?: EvolutionOutboxRecordInput,
   ): Promise<MemoryRecord>;
   tombstone(
     id: string,
@@ -121,6 +125,39 @@ export interface IMemoryStore {
   ): Promise<number>;
   evolveGraph(plan: GraphEvolutionPlan, ctx?: MemoryServiceContext): Promise<EvolutionReceipt>;
 
+  // Task 066 Reliability Hardening: Durable Outbox Operations (066-P3-R-01, 066-P3-R-04)
+  createOutboxRecord?(record: EvolutionOutboxRecordInput): Promise<EvolutionOutboxRecord>;
+  getOutboxRecord?(
+    id: string,
+    tenantId: string,
+    workspaceId: string,
+  ): Promise<EvolutionOutboxRecord | null>;
+  listPendingOutboxRecords?(options?: {
+    tenantId?: string;
+    workspaceId?: string;
+    limit?: number;
+    olderThanMs?: number;
+    ignoreLeaseTimeout?: boolean;
+  }): Promise<EvolutionOutboxRecord[]>;
+  claimOutboxRecord?(
+    id: string,
+    tenantId: string,
+    workspaceId: string,
+    options?: { ignoreLeaseTimeout?: boolean },
+  ): Promise<boolean>;
+  updateOutboxStatus?(
+    id: string,
+    tenantId: string,
+    workspaceId: string,
+    update: {
+      status: EvolutionDeliveryStatus;
+      attemptCount?: number;
+      lastError?: string | null;
+      nextAttemptAt?: string | null;
+      processedAt?: string | null;
+    },
+  ): Promise<EvolutionOutboxRecord>;
+
   // Task 062 Vector Store Extensions (062-SEC-01, 062-SEC-05, 062-SEC-06)
   saveVector?(vector: VectorEmbedding): Promise<VectorEmbedding>;
   getVector?(
@@ -130,6 +167,19 @@ export interface IMemoryStore {
   ): Promise<VectorEmbedding | null>;
   deleteVector?(memoryRecordId: string, tenantId: string, workspaceId: string): Promise<boolean>;
   searchVectors?(request: VectorSearchRequest): Promise<VectorSearchResponse>;
+}
+
+export interface IMemoryEvolutionProcessor {
+  processRecord(
+    outboxRecord: EvolutionOutboxRecord | EvolutionOutboxRecordInput,
+    ctx?: MemoryServiceContext,
+  ): Promise<EvolutionReceipt>;
+  drainPending(options?: {
+    tenantId?: string;
+    workspaceId?: string;
+    limit?: number;
+    ignoreLeaseTimeout?: boolean;
+  }): Promise<{ processed: number; completed: number; failed: number }>;
 }
 
 export interface IMemoryCompressor {

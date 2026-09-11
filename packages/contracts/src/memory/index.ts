@@ -8,4 +8,5 @@ export * from './compression.js';
 export * from './episodic.js';
 export * from './graph.js';
 export * from './evolution.js';
+export * from './outbox.js';
 export * from './vector.js';

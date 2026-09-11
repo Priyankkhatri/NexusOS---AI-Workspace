@@ -531,12 +531,12 @@ describe('Graph Evolution Persistence & Security (Task 066 Phase 1)', () => {
       // It should automatically execute migration 2 additively!
       const migratedStore = new SqliteMemoryStore({ dbPath: rawDbPath, vectorDimensions: 4 });
 
-      // Verify migration table now records version 2
+      // Verify migration table now records version 3 (M-003 adds outbox + version fencing)
       const appliedVersionRow = migratedStore
         .getDatabase()
         .prepare('SELECT MAX(version) as max_v FROM schema_migrations;')
         .get() as { max_v: number };
-      assert.equal(appliedVersionRow.max_v, 2);
+      assert.equal(appliedVersionRow.max_v, 3);
 
       // Verify legacy node was NOT destroyed and has deterministic migration defaults
       const legacyNode = await migratedStore.getGraphNode(

@@ -31,12 +31,17 @@ import {
   EvolutionReceipt,
   GraphEvolutionOptions,
   GraphExtractionResult,
+  EvolutionDeliveryStatus,
+  EvolutionOutboxRecordInput,
+  computeCandidateSetHash,
+  computeEvolutionDeliveryId,
 } from '@nexusos/contracts';
 import {
   IMemoryStore,
   MemoryServiceContext,
   MemoryNotFoundError,
   MemorySecurityViolationError,
+  IMemoryEvolutionProcessor,
 } from './types.js';
 import { RedactionFilter } from '../security/redaction-filter.js';
 import { Logger } from '../observability/logger.js';
@@ -44,6 +49,7 @@ import { MemoryCompressor } from './memory-compressor.js';
 import { EpisodicLearner } from './episodic-learner.js';
 import { GraphProjectionEngine } from './graph-projection-engine.js';
 import { GraphEvolutionEngine } from './graph-evolution-engine.js';
+import { MemoryEvolutionProcessor } from './memory-evolution-processor.js';
 import { IVectorIndex } from './vector-index.js';
 
 export interface MemoryServiceOptions {
@@ -53,6 +59,7 @@ export interface MemoryServiceOptions {
   episodicLearner?: EpisodicLearner;
   graphEngine?: GraphProjectionEngine;
   evolutionEngine?: GraphEvolutionEngine;
+  evolutionProcessor?: IMemoryEvolutionProcessor;
   autoEvolveGraph?: boolean;
   vectorIndex?: IVectorIndex;
   logger?: Logger;
@@ -65,6 +72,7 @@ export class MemoryService {
   private readonly learner: EpisodicLearner;
   private readonly graphEngine: GraphProjectionEngine;
   private readonly evolutionEngine: GraphEvolutionEngine;
+  private readonly evolutionProcessor: IMemoryEvolutionProcessor;
   private readonly autoEvolveGraph: boolean;
   private readonly vectorIndex?: IVectorIndex;
   private readonly logger: Logger;
@@ -87,6 +95,14 @@ export class MemoryService {
     this.evolutionEngine =
       options.evolutionEngine ??
       new GraphEvolutionEngine({ store: this.store, logger: this.logger, nowProvider: this.now });
+    this.evolutionProcessor =
+      options.evolutionProcessor ??
+      new MemoryEvolutionProcessor({
+        store: this.store,
+        engine: this.evolutionEngine,
+        logger: this.logger,
+        nowProvider: this.now,
+      });
     this.autoEvolveGraph = options.autoEvolveGraph ?? false;
   }
 
@@ -104,6 +120,10 @@ export class MemoryService {
 
   public getEvolutionEngine(): GraphEvolutionEngine {
     return this.evolutionEngine;
+  }
+
+  public getEvolutionProcessor(): IMemoryEvolutionProcessor {
+    return this.evolutionProcessor;
   }
 
   public getVectorIndex(): IVectorIndex | undefined {
@@ -183,7 +203,43 @@ export class MemoryService {
       updatedAt: now,
     };
 
-    const saved = await this.store.create(record);
+    // 066-P3-R-01: Transactional Outbox Item Construction
+    let outboxItem: EvolutionOutboxRecordInput | undefined;
+    if (this.autoEvolveGraph && record.status === MemoryStatus.ACTIVE) {
+      try {
+        const extractor = this.evolutionEngine.getExtractor();
+        const candidates = await extractor.extract(record);
+        const candidateSetHash = computeCandidateSetHash(candidates);
+        const outboxId = computeEvolutionDeliveryId(
+          record.tenantId,
+          record.workspaceId,
+          record.id,
+          record.version,
+          candidateSetHash,
+        );
+
+        outboxItem = {
+          id: outboxId,
+          tenantId: record.tenantId,
+          workspaceId: record.workspaceId,
+          memoryRecordId: record.id,
+          memoryVersion: record.version,
+          candidateSetHash,
+          evolutionPayload: { candidates },
+          status: EvolutionDeliveryStatus.PENDING,
+          attemptCount: 0,
+          maxAttempts: 5,
+          createdAt: now,
+        };
+      } catch (err) {
+        this.logger.warn(
+          `Candidate extraction for outbox failed for memory ${record.id}: ${err instanceof Error ? err.message : String(err)}`,
+          { details: { memoryId: record.id, error: String(err) } },
+        );
+      }
+    }
+
+    const saved = await this.store.create(record, outboxItem);
 
     this.logger.info(`Persistent memory record created: ${saved.id}`, {
       details: {
@@ -194,17 +250,31 @@ export class MemoryService {
         sensitivity: saved.sensitivity,
         confidence: saved.confidence,
         provenanceType: saved.provenance.sourceType,
+        outboxRegistered: !!outboxItem,
       },
     });
 
     if (this.autoEvolveGraph && saved.status === MemoryStatus.ACTIVE) {
-      try {
-        await this.evolutionEngine.evolveFromRecord(saved, context);
-      } catch (err) {
-        this.logger.warn(
-          `Auto graph evolution failed for memory ${saved.id}: ${err instanceof Error ? err.message : String(err)}`,
-          { details: { memoryId: saved.id, error: String(err) } },
-        );
+      if (outboxItem) {
+        // Fast-path delivery via Outbox Processor (066-P3-R-01, 066-P3-R-07)
+        try {
+          await this.evolutionProcessor.processRecord(outboxItem, context);
+        } catch (err) {
+          this.logger.warn(
+            `Fast-path outbox evolution processing failed for memory ${saved.id} (will be recovered): ${err instanceof Error ? err.message : String(err)}`,
+            { details: { memoryId: saved.id, error: String(err) } },
+          );
+        }
+      } else {
+        // Fallback if extraction previously failed before transaction
+        try {
+          await this.evolutionEngine.evolveFromRecord(saved, context);
+        } catch (err) {
+          this.logger.warn(
+            `Direct graph evolution failed for memory ${saved.id}: ${err instanceof Error ? err.message : String(err)}`,
+            { details: { memoryId: saved.id, error: String(err) } },
+          );
+        }
       }
     }
 
@@ -441,12 +511,58 @@ export class MemoryService {
       RedactionFilter.assertNoSecrets(validated.summary, 'Updated memory summary');
     }
 
+    // 066-P3-R-01: Transactional Outbox Item Construction for update
+    let outboxItem: EvolutionOutboxRecordInput | undefined;
+    if (this.autoEvolveGraph) {
+      const existing = await this.store.getById(id, context.tenantId, context.workspaceId);
+      if (existing && existing.status === MemoryStatus.ACTIVE) {
+        try {
+          const simulatedRecord: MemoryRecord = {
+            ...existing,
+            ...validated,
+            version: existing.version + 1,
+            updatedAt: this.now(),
+          };
+          const extractor = this.evolutionEngine.getExtractor();
+          const candidates = await extractor.extract(simulatedRecord);
+          const candidateSetHash = computeCandidateSetHash(candidates);
+          const outboxId = computeEvolutionDeliveryId(
+            simulatedRecord.tenantId,
+            simulatedRecord.workspaceId,
+            simulatedRecord.id,
+            simulatedRecord.version,
+            candidateSetHash,
+          );
+
+          outboxItem = {
+            id: outboxId,
+            tenantId: simulatedRecord.tenantId,
+            workspaceId: simulatedRecord.workspaceId,
+            memoryRecordId: simulatedRecord.id,
+            memoryVersion: simulatedRecord.version,
+            candidateSetHash,
+            evolutionPayload: { candidates },
+            status: EvolutionDeliveryStatus.PENDING,
+            attemptCount: 0,
+            maxAttempts: 5,
+            createdAt: this.now(),
+          };
+        } catch (err) {
+          this.logger.warn(
+            `Candidate extraction for update outbox failed for memory ${id}: ${err instanceof Error ? err.message : String(err)}`,
+            { details: { memoryId: id, error: String(err) } },
+          );
+        }
+      }
+    }
+
     const updated = await this.store.update(
       id,
       context.tenantId,
       context.workspaceId,
       validated,
       validated.expectedVersion,
+      outboxItem,
     );
 
     this.logger.info(`Persistent memory record updated: ${updated.id}`, {
@@ -455,17 +571,31 @@ export class MemoryService {
         tenantId: updated.tenantId,
         workspaceId: updated.workspaceId,
         version: updated.version,
+        outboxRegistered: !!outboxItem,
       },
     });
 
     if (this.autoEvolveGraph && updated.status === MemoryStatus.ACTIVE) {
-      try {
-        await this.evolutionEngine.evolveFromRecord(updated, context);
-      } catch (err) {
-        this.logger.warn(
-          `Auto graph evolution failed for memory update ${updated.id}: ${err instanceof Error ? err.message : String(err)}`,
-          { details: { memoryId: updated.id, error: String(err) } },
-        );
+      if (outboxItem) {
+        // Fast-path delivery via Outbox Processor (066-P3-R-01, 066-P3-R-07)
+        try {
+          await this.evolutionProcessor.processRecord(outboxItem, context);
+        } catch (err) {
+          this.logger.warn(
+            `Fast-path outbox evolution processing failed for memory update ${updated.id} (will be recovered): ${err instanceof Error ? err.message : String(err)}`,
+            { details: { memoryId: updated.id, error: String(err) } },
+          );
+        }
+      } else {
+        // Fallback if extraction previously failed before transaction
+        try {
+          await this.evolutionEngine.evolveFromRecord(updated, context);
+        } catch (err) {
+          this.logger.warn(
+            `Direct graph evolution failed for memory update ${updated.id}: ${err instanceof Error ? err.message : String(err)}`,
+            { details: { memoryId: updated.id, error: String(err) } },
+          );
+        }
       }
     }
 
@@ -753,5 +883,22 @@ export class MemoryService {
       throw new MemoryNotFoundError(memoryRecordId);
     }
     return this.evolutionEngine.evolveCandidates(record, candidates, context, options);
+  }
+
+  // -------------------------------------------------------------------------
+  // Task 066 Phase 3 Reliability Hardening: Outbox Recovery (066-P3-R-05)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Drain and recover pending, retryable failed, or crashed evolution jobs.
+   * Invoked upon system startup, scheduled intervals, or maintenance tasks.
+   */
+  public async recoverPendingEvolutions(options?: {
+    tenantId?: string;
+    workspaceId?: string;
+    limit?: number;
+    ignoreLeaseTimeout?: boolean;
+  }): Promise<{ processed: number; completed: number; failed: number }> {
+    return this.evolutionProcessor.drainPending(options);
   }
 }

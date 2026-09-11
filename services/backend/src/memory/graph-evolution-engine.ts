@@ -14,6 +14,8 @@ import {
   EvolutionRejectedEdge,
   MemoryGraphNodeInput,
   MemoryGraphEdgeInput,
+  computeCandidateSetHash,
+  computeEvolutionDeliveryId,
 } from '@nexusos/contracts';
 import {
   IMemoryStore,
@@ -91,6 +93,10 @@ export class GraphEvolutionEngine implements IGraphEvolutionEngine {
     this.extractor = options.extractor ?? new GraphExtractor();
     this.logger = options.logger ?? new Logger('info');
     this.now = options.nowProvider ?? (() => new Date().toISOString());
+  }
+
+  public getExtractor(): IGraphExtractor {
+    return this.extractor;
   }
 
   /**
@@ -253,6 +259,24 @@ export class GraphEvolutionEngine implements IGraphEvolutionEngine {
         );
       }
 
+      // 066-P3-R-04: Monotonic Version Fencing (Phase 7 & Phase 8)
+      // Only reject strictly-stale incoming versions. Same-version re-evolution is
+      // legitimate (refinements, supersessions, idempotent replay) and is guarded by
+      // the store's OCC expectedVersion check at persist time.
+      if (existing) {
+        const lastAppliedVersion = existing.lastMemoryVersion ?? 1;
+
+        // Rule: incomingVersion < lastAppliedVersion => reject as stale
+        if (record.version < lastAppliedVersion) {
+          rejectedNodes.push({
+            candidateId: candNode.candidateId,
+            label: candNode.label,
+            reason: `STALE_MEMORY_VERSION: incoming memory version ${record.version} < applied graph version ${lastAppliedVersion}`,
+          });
+          continue;
+        }
+      }
+
       // 066-P3-SEC-03: Extracted facts strictly enforce verified: false
       const unverifiedProvenance = {
         sourceType: record.provenance?.sourceType ?? MemorySourceType.SYSTEM_SYNTHESIS,
@@ -278,6 +302,7 @@ export class GraphEvolutionEngine implements IGraphEvolutionEngine {
           },
           provenance: unverifiedProvenance,
           version: 1,
+          lastMemoryVersion: record.version,
           isCurrent: true,
           validFrom: evolvedAt,
           createdAt: evolvedAt,
@@ -319,6 +344,7 @@ export class GraphEvolutionEngine implements IGraphEvolutionEngine {
             },
             provenance: unverifiedProvenance,
             version: 1,
+            lastMemoryVersion: record.version,
             isCurrent: true,
             validFrom: evolvedAt,
             createdAt: evolvedAt,
@@ -357,6 +383,7 @@ export class GraphEvolutionEngine implements IGraphEvolutionEngine {
               properties: { reason: 'fact_contradiction_supersession' },
               provenance: unverifiedProvenance,
               version: 1,
+              lastMemoryVersion: record.version,
               isCurrent: true,
               validFrom: evolvedAt,
               createdAt: evolvedAt,
@@ -376,6 +403,7 @@ export class GraphEvolutionEngine implements IGraphEvolutionEngine {
               canonicalKey,
             },
             provenance: unverifiedProvenance,
+            lastMemoryVersion: record.version,
             updatedAt: evolvedAt,
           };
 
@@ -461,6 +489,22 @@ export class GraphEvolutionEngine implements IGraphEvolutionEngine {
         record.workspaceId,
       );
 
+      if (existingEdge) {
+        const lastAppliedVersion = existingEdge.lastMemoryVersion ?? 1;
+
+        // Rule: incomingVersion < lastAppliedVersion => reject as stale
+        // Same-version re-evolution is handled by OCC at the store layer.
+        if (record.version < lastAppliedVersion) {
+          rejectedEdges.push({
+            candidateId: candEdge.candidateId,
+            sourceNodeId: canonicalSourceId,
+            targetNodeId: canonicalTargetId,
+            reason: `STALE_MEMORY_VERSION: incoming memory version ${record.version} < applied graph edge version ${lastAppliedVersion}`,
+          });
+          continue;
+        }
+      }
+
       if (!existingEdge) {
         // Edge does not exist: ADD_EDGE
         const newEdge: MemoryGraphEdgeInput = {
@@ -475,6 +519,7 @@ export class GraphEvolutionEngine implements IGraphEvolutionEngine {
           properties: candEdge.properties ?? {},
           provenance: unverifiedProvenance,
           version: 1,
+          lastMemoryVersion: record.version,
           isCurrent: true,
           validFrom: evolvedAt,
           createdAt: evolvedAt,
@@ -506,6 +551,7 @@ export class GraphEvolutionEngine implements IGraphEvolutionEngine {
             properties: candEdge.properties ?? {},
             provenance: unverifiedProvenance,
             version: 1,
+            lastMemoryVersion: record.version,
             isCurrent: true,
             validFrom: evolvedAt,
             createdAt: evolvedAt,
@@ -528,15 +574,19 @@ export class GraphEvolutionEngine implements IGraphEvolutionEngine {
     // -------------------------------------------------------------------------
     // Assemble Plan & Execute Atomic Evolution via Store (066-P3-SEC-07)
     // -------------------------------------------------------------------------
-    const evolutionHash = createHash('sha256')
-      .update(
-        `${record.tenantId}:${record.workspaceId}:${record.id}:${record.version}:${evolvedAt}`,
-      )
-      .digest('hex')
-      .slice(0, 16);
+    const candidateSetHash = computeCandidateSetHash(candidates);
+    const deterministicEvolutionId =
+      options?.evolutionId ??
+      computeEvolutionDeliveryId(
+        record.tenantId,
+        record.workspaceId,
+        record.id,
+        record.version,
+        candidateSetHash,
+      );
 
     const plan: GraphEvolutionPlan = {
-      evolutionId: `evo-${evolutionHash}`,
+      evolutionId: deterministicEvolutionId,
       tenantId: record.tenantId,
       workspaceId: record.workspaceId,
       memoryRecordId: record.id,

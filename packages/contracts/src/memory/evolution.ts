@@ -132,6 +132,7 @@ export const GraphEvolutionOptionsSchema = z.object({
   minConfidence: z.number().min(0).max(1).default(0.5).optional(),
   evolvedAt: z.string().datetime().optional(),
   dryRun: z.boolean().default(false).optional(),
+  evolutionId: z.string().optional(),
 });
 
 export type GraphEvolutionOptions = z.infer<typeof GraphEvolutionOptionsSchema>;

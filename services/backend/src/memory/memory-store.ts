@@ -23,6 +23,13 @@ import {
   GraphEvolutionPlan,
   EvolutionReceipt,
   GraphEvolutionOperationType,
+  EvolutionDeliveryStatus,
+  EvolutionOutboxRecord,
+  EvolutionOutboxRecordInput,
+  EvolutionOutboxRecordSchema,
+  EvolutionOutboxRecordInputSchema,
+  OUTBOX_MAX_ATTEMPTS_DEFAULT,
+  OUTBOX_PROCESSING_LEASE_TIMEOUT_MS,
 } from '@nexusos/contracts';
 import {
   IMemoryStore,
@@ -58,6 +65,8 @@ export class InMemoryMemoryStore implements IMemoryStore {
   private readonly graphEdges = new Map<string, MemoryGraphEdgeOutput>();
   // Vector embeddings: "tenantId:workspaceId:memoryRecordId" -> VectorEmbedding
   private readonly vectorEmbeddings = new Map<string, VectorEmbedding>();
+  // Outbox storage: "tenantId:workspaceId:id" -> EvolutionOutboxRecord
+  private readonly outboxRecords = new Map<string, EvolutionOutboxRecord>();
   private readonly vectorIndex: VectorIndex;
 
   public simulateFailure = false;
@@ -87,7 +96,10 @@ export class InMemoryMemoryStore implements IMemoryStore {
   // Core Memory CRUD
   // -------------------------------------------------------------------------
 
-  public async create(record: MemoryRecord): Promise<MemoryRecord> {
+  public async create(
+    record: MemoryRecord,
+    outboxItem?: EvolutionOutboxRecordInput,
+  ): Promise<MemoryRecord> {
     this.checkFailure();
 
     if (!record.tenantId || !record.workspaceId || !record.id) {
@@ -104,6 +116,11 @@ export class InMemoryMemoryStore implements IMemoryStore {
     // Deep clone to ensure immutability in store
     const cloned = JSON.parse(JSON.stringify(record)) as MemoryRecord;
     this.records.set(key, cloned);
+
+    if (outboxItem) {
+      await this.createOutboxRecord(outboxItem);
+    }
+
     return JSON.parse(JSON.stringify(cloned));
   }
 
@@ -145,6 +162,7 @@ export class InMemoryMemoryStore implements IMemoryStore {
       Omit<MemoryRecord, 'id' | 'tenantId' | 'workspaceId' | 'version' | 'createdAt'>
     >,
     expectedVersion: number,
+    outboxItem?: EvolutionOutboxRecordInput,
   ): Promise<MemoryRecord> {
     this.checkFailure();
 
@@ -174,6 +192,11 @@ export class InMemoryMemoryStore implements IMemoryStore {
     };
 
     this.records.set(key, JSON.parse(JSON.stringify(updated)));
+
+    if (outboxItem) {
+      await this.createOutboxRecord(outboxItem);
+    }
+
     return JSON.parse(JSON.stringify(updated));
   }
 
@@ -496,6 +519,7 @@ export class InMemoryMemoryStore implements IMemoryStore {
         ...validated,
         validFrom,
         version: nextVersion,
+        lastMemoryVersion: validated.lastMemoryVersion ?? existing.lastMemoryVersion ?? 1,
         updatedAt,
       };
       this.graphNodes.set(key, JSON.parse(JSON.stringify(updatedNode)));
@@ -515,6 +539,7 @@ export class InMemoryMemoryStore implements IMemoryStore {
         ...validated,
         validFrom,
         version: initialVersion,
+        lastMemoryVersion: validated.lastMemoryVersion ?? 1,
         updatedAt,
       };
       this.graphNodes.set(key, JSON.parse(JSON.stringify(createdNode)));
@@ -561,6 +586,7 @@ export class InMemoryMemoryStore implements IMemoryStore {
         ...validated,
         validFrom,
         version: nextVersion,
+        lastMemoryVersion: validated.lastMemoryVersion ?? existing.lastMemoryVersion ?? 1,
         updatedAt,
       };
       this.graphEdges.set(key, JSON.parse(JSON.stringify(updatedEdge)));
@@ -580,6 +606,7 @@ export class InMemoryMemoryStore implements IMemoryStore {
         ...validated,
         validFrom,
         version: initialVersion,
+        lastMemoryVersion: validated.lastMemoryVersion ?? 1,
         updatedAt,
       };
       this.graphEdges.set(key, JSON.parse(JSON.stringify(createdEdge)));
@@ -823,6 +850,25 @@ export class InMemoryMemoryStore implements IMemoryStore {
       );
     }
 
+    if (plan.operations.length === 0) {
+      return {
+        evolutionId: plan.evolutionId,
+        tenantId: plan.tenantId,
+        workspaceId: plan.workspaceId,
+        memoryRecordId: plan.memoryRecordId,
+        memoryVersion: plan.memoryVersion,
+        acceptedNodes: [],
+        acceptedEdges: [],
+        supersededNodeIds: [],
+        supersededEdgeIds: [],
+        rejectedNodes: [],
+        rejectedEdges: [],
+        evolvedAt: new Date().toISOString(),
+        executionDurationMs: Math.round(performance.now() - startTime),
+        idempotentSkip: true,
+      };
+    }
+
     // Snapshot state for atomic rollback
     const nodesBackup = new Map(this.graphNodes);
     const edgesBackup = new Map(this.graphEdges);
@@ -850,11 +896,13 @@ export class InMemoryMemoryStore implements IMemoryStore {
             const initialVersion = node.version ?? 1;
             const validFrom = node.validFrom ?? node.createdAt;
             const updatedAt = node.updatedAt ?? node.createdAt;
+            const lastMemoryVersion = node.lastMemoryVersion ?? plan.memoryVersion ?? 1;
 
             const createdNode: MemoryGraphNodeOutput = {
               ...node,
               validFrom,
               version: initialVersion,
+              lastMemoryVersion,
               updatedAt,
             };
             this.graphNodes.set(key, JSON.parse(JSON.stringify(createdNode)));
@@ -879,11 +927,13 @@ export class InMemoryMemoryStore implements IMemoryStore {
 
           const nextVersion = currentVersion + 1;
           const updatedAt = node.updatedAt ?? new Date().toISOString();
+          const lastMemoryVersion = node.lastMemoryVersion ?? plan.memoryVersion ?? 1;
 
           const updatedNode: MemoryGraphNodeOutput = {
             ...existing,
             ...node,
             version: nextVersion,
+            lastMemoryVersion,
             updatedAt,
           };
           this.graphNodes.set(key, JSON.parse(JSON.stringify(updatedNode)));
@@ -909,6 +959,7 @@ export class InMemoryMemoryStore implements IMemoryStore {
           const validTo = op.validTo ?? new Date().toISOString();
           const supersededBy = op.supersededBy ?? op.node?.id ?? undefined;
           const nextVersion = currentVersion + 1;
+          const lastMemoryVersion = plan.memoryVersion ?? 1;
 
           const supersededNode: MemoryGraphNodeOutput = {
             ...existing,
@@ -916,6 +967,7 @@ export class InMemoryMemoryStore implements IMemoryStore {
             validTo,
             supersededBy,
             version: nextVersion,
+            lastMemoryVersion,
             updatedAt: validTo,
           };
           this.graphNodes.set(key, JSON.parse(JSON.stringify(supersededNode)));
@@ -927,6 +979,7 @@ export class InMemoryMemoryStore implements IMemoryStore {
             const initialVersion = newNode.version ?? 1;
             const validFrom = newNode.validFrom ?? validTo;
             const updatedAt = newNode.updatedAt ?? validTo;
+            const newNodeLastMemoryVersion = newNode.lastMemoryVersion ?? plan.memoryVersion ?? 1;
 
             const createdNode: MemoryGraphNodeOutput = {
               ...newNode,
@@ -935,6 +988,7 @@ export class InMemoryMemoryStore implements IMemoryStore {
               validTo: undefined,
               supersededBy: undefined,
               version: initialVersion,
+              lastMemoryVersion: newNodeLastMemoryVersion,
               updatedAt,
             };
             this.graphNodes.set(newKey, JSON.parse(JSON.stringify(createdNode)));
@@ -956,11 +1010,13 @@ export class InMemoryMemoryStore implements IMemoryStore {
             const initialVersion = edge.version ?? 1;
             const validFrom = edge.validFrom ?? edge.createdAt;
             const updatedAt = edge.updatedAt ?? edge.createdAt;
+            const lastMemoryVersion = edge.lastMemoryVersion ?? plan.memoryVersion ?? 1;
 
             const createdEdge: MemoryGraphEdgeOutput = {
               ...edge,
               validFrom,
               version: initialVersion,
+              lastMemoryVersion,
               updatedAt,
             };
             this.graphEdges.set(key, JSON.parse(JSON.stringify(createdEdge)));
@@ -987,6 +1043,7 @@ export class InMemoryMemoryStore implements IMemoryStore {
           const validTo = op.validTo ?? new Date().toISOString();
           const supersededBy = op.supersededBy ?? op.edge?.id ?? undefined;
           const nextVersion = currentVersion + 1;
+          const lastMemoryVersion = plan.memoryVersion ?? 1;
 
           const supersededEdge: MemoryGraphEdgeOutput = {
             ...existing,
@@ -994,6 +1051,7 @@ export class InMemoryMemoryStore implements IMemoryStore {
             validTo,
             supersededBy,
             version: nextVersion,
+            lastMemoryVersion,
             updatedAt: validTo,
           };
           this.graphEdges.set(key, JSON.parse(JSON.stringify(supersededEdge)));
@@ -1005,6 +1063,7 @@ export class InMemoryMemoryStore implements IMemoryStore {
             const initialVersion = newEdge.version ?? 1;
             const validFrom = newEdge.validFrom ?? validTo;
             const updatedAt = newEdge.updatedAt ?? validTo;
+            const newEdgeLastMemoryVersion = newEdge.lastMemoryVersion ?? plan.memoryVersion ?? 1;
 
             const createdEdge: MemoryGraphEdgeOutput = {
               ...newEdge,
@@ -1013,6 +1072,7 @@ export class InMemoryMemoryStore implements IMemoryStore {
               validTo: undefined,
               supersededBy: undefined,
               version: initialVersion,
+              lastMemoryVersion: newEdgeLastMemoryVersion,
               updatedAt,
             };
             this.graphEdges.set(newKey, JSON.parse(JSON.stringify(createdEdge)));
@@ -1176,6 +1236,173 @@ export class InMemoryMemoryStore implements IMemoryStore {
     return this.vectorIndex.search(request);
   }
 
+  // -------------------------------------------------------------------------
+  // Durable Outbox Operations (066-P3-R-01, 066-P3-R-02, 066-P3-R-05)
+  // -------------------------------------------------------------------------
+
+  public async createOutboxRecord(
+    record: EvolutionOutboxRecordInput,
+  ): Promise<EvolutionOutboxRecord> {
+    this.checkFailure();
+    const validated = EvolutionOutboxRecordInputSchema.parse(record);
+    const key = this.getKey(validated.tenantId, validated.workspaceId, validated.id);
+    const existing = this.outboxRecords.get(key);
+    if (existing) {
+      return JSON.parse(JSON.stringify(existing));
+    }
+    const now = new Date().toISOString();
+    const outboxRecord: EvolutionOutboxRecord = {
+      id: validated.id,
+      tenantId: validated.tenantId,
+      workspaceId: validated.workspaceId,
+      memoryRecordId: validated.memoryRecordId,
+      memoryVersion: validated.memoryVersion,
+      candidateSetHash: validated.candidateSetHash,
+      evolutionPayload: validated.evolutionPayload,
+      status: validated.status ?? EvolutionDeliveryStatus.PENDING,
+      attemptCount: validated.attemptCount ?? 0,
+      maxAttempts: validated.maxAttempts ?? OUTBOX_MAX_ATTEMPTS_DEFAULT,
+      nextAttemptAt: validated.nextAttemptAt ?? null,
+      createdAt: validated.createdAt ?? now,
+      updatedAt: validated.updatedAt ?? validated.createdAt ?? now,
+      processedAt: validated.processedAt ?? null,
+      lastError: validated.lastError ?? null,
+    };
+    this.outboxRecords.set(key, outboxRecord);
+    return JSON.parse(JSON.stringify(outboxRecord));
+  }
+
+  public async getOutboxRecord(
+    id: string,
+    tenantId: string,
+    workspaceId: string,
+  ): Promise<EvolutionOutboxRecord | null> {
+    this.checkFailure();
+    const key = this.getKey(tenantId, workspaceId, id);
+    const record = this.outboxRecords.get(key);
+    return record ? JSON.parse(JSON.stringify(record)) : null;
+  }
+
+  public async listPendingOutboxRecords(options?: {
+    tenantId?: string;
+    workspaceId?: string;
+    limit?: number;
+    olderThanMs?: number;
+    ignoreLeaseTimeout?: boolean;
+  }): Promise<EvolutionOutboxRecord[]> {
+    this.checkFailure();
+    const nowMs = Date.now();
+    const limit = options?.limit ?? 50;
+    const results: EvolutionOutboxRecord[] = [];
+
+    for (const record of this.outboxRecords.values()) {
+      if (options?.tenantId && record.tenantId !== options.tenantId) continue;
+      if (options?.workspaceId && record.workspaceId !== options.workspaceId) continue;
+
+      let eligible = false;
+      if (record.status === EvolutionDeliveryStatus.PENDING) {
+        eligible = true;
+      } else if (record.status === EvolutionDeliveryStatus.FAILED) {
+        if (!record.nextAttemptAt || new Date(record.nextAttemptAt).getTime() <= nowMs) {
+          eligible = true;
+        }
+      } else if (record.status === EvolutionDeliveryStatus.PROCESSING) {
+        if (options?.ignoreLeaseTimeout) {
+          eligible = true;
+        } else {
+          const updatedMs = new Date(record.updatedAt).getTime();
+          if (nowMs - updatedMs >= OUTBOX_PROCESSING_LEASE_TIMEOUT_MS) {
+            eligible = true;
+          }
+        }
+      }
+
+      if (eligible) {
+        results.push(JSON.parse(JSON.stringify(record)));
+        if (results.length >= limit) break;
+      }
+    }
+
+    return results.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  }
+
+  public async claimOutboxRecord(
+    id: string,
+    tenantId: string,
+    workspaceId: string,
+    options?: { ignoreLeaseTimeout?: boolean },
+  ): Promise<boolean> {
+    this.checkFailure();
+    const key = this.getKey(tenantId, workspaceId, id);
+    const record = this.outboxRecords.get(key);
+    if (!record) return false;
+
+    const nowMs = Date.now();
+    let eligible = false;
+    if (record.status === EvolutionDeliveryStatus.PENDING) {
+      eligible = true;
+    } else if (record.status === EvolutionDeliveryStatus.FAILED) {
+      if (!record.nextAttemptAt || new Date(record.nextAttemptAt).getTime() <= nowMs) {
+        eligible = true;
+      }
+    } else if (record.status === EvolutionDeliveryStatus.PROCESSING) {
+      if (options?.ignoreLeaseTimeout) {
+        eligible = true;
+      } else {
+        const updatedMs = new Date(record.updatedAt).getTime();
+        if (nowMs - updatedMs >= OUTBOX_PROCESSING_LEASE_TIMEOUT_MS) {
+          eligible = true;
+        }
+      }
+    }
+
+    if (!eligible) return false;
+
+    record.status = EvolutionDeliveryStatus.PROCESSING;
+    record.updatedAt = new Date().toISOString();
+    return true;
+  }
+
+  public async updateOutboxStatus(
+    id: string,
+    tenantId: string,
+    workspaceId: string,
+    update: {
+      status: EvolutionDeliveryStatus;
+      attemptCount?: number;
+      lastError?: string | null;
+      nextAttemptAt?: string | null;
+      processedAt?: string | null;
+    },
+  ): Promise<EvolutionOutboxRecord> {
+    this.checkFailure();
+    const key = this.getKey(tenantId, workspaceId, id);
+    const record = this.outboxRecords.get(key);
+    if (!record) {
+      throw new Error(`Outbox record not found: ${id}`);
+    }
+
+    const now = new Date().toISOString();
+    record.status = update.status;
+    if (update.attemptCount !== undefined) {
+      record.attemptCount = update.attemptCount;
+    }
+    if (update.nextAttemptAt !== undefined) {
+      record.nextAttemptAt = update.nextAttemptAt;
+    }
+    if (update.lastError !== undefined) {
+      record.lastError = update.lastError;
+    }
+    if (update.processedAt !== undefined) {
+      record.processedAt = update.processedAt;
+    } else if (update.status === EvolutionDeliveryStatus.COMPLETED) {
+      record.processedAt = now;
+    }
+    record.updatedAt = now;
+
+    return JSON.parse(JSON.stringify(record));
+  }
+
   public clear(): void {
     this.records.clear();
     this.proposals.clear();
@@ -1185,5 +1412,6 @@ export class InMemoryMemoryStore implements IMemoryStore {
     this.graphEdges.clear();
     this.vectorEmbeddings.clear();
     this.vectorIndex.clear();
+    this.outboxRecords.clear();
   }
 }
