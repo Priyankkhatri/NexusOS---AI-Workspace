@@ -7,4 +7,5 @@ export * from './base.js';
 export * from './compression.js';
 export * from './episodic.js';
 export * from './graph.js';
+export * from './evolution.js';
 export * from './vector.js';

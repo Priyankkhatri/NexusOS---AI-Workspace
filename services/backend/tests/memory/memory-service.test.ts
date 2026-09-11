@@ -308,4 +308,105 @@ describe('Backend Governed Persistent Memory Service', () => {
       /056-STORE-FAIL/,
     );
   });
+
+  describe('Task 066 Phase 3: Graph Evolution Integration', () => {
+    it('evolves memory graph on demand via evolveMemoryGraph', async () => {
+      const record = await service.createMemory(
+        {
+          tenantId: 'tenant-test',
+          workspaceId: 'ws-default',
+          ownerId: 'user-primary',
+          class: MemoryClass.SEMANTIC,
+          title: 'Graph Evolution Integration',
+          content:
+            'The core file is services/backend/src/memory/memory-service.ts which coordinates stores.',
+          confidence: 0.95,
+          provenance: {
+            sourceType: MemorySourceType.USER_EXPLICIT,
+            creatorPrincipalId: 'user-primary',
+            timestamp: new Date().toISOString(),
+            verified: true,
+          },
+        },
+        context,
+      );
+
+      const receipt = await service.evolveMemoryGraph(record.id, context);
+      assert.ok(receipt);
+      assert.equal(receipt.tenantId, 'tenant-test');
+      assert.equal(receipt.workspaceId, 'ws-default');
+      assert.equal(receipt.memoryRecordId, record.id);
+      assert.ok(receipt.acceptedNodes.length > 0);
+
+      // Verify non-authoritative advisory invariant
+      for (const nodeId of receipt.acceptedNodes) {
+        const node = await store.getGraphNode(nodeId, 'tenant-test', 'ws-default');
+        assert.ok(node);
+        assert.equal(node.provenance?.verified, false);
+      }
+    });
+
+    it('automatically evolves graph when autoEvolveGraph is true', async () => {
+      const autoService = new MemoryService({ store, autoEvolveGraph: true });
+
+      const record = await autoService.createMemory(
+        {
+          tenantId: 'tenant-test',
+          workspaceId: 'ws-default',
+          ownerId: 'user-primary',
+          class: MemoryClass.SEMANTIC,
+          title: 'Auto Evolution Record',
+          content: 'Configures apps/desktop-agent/src/index.ts component.',
+          confidence: 0.98,
+          provenance: {
+            sourceType: MemorySourceType.USER_EXPLICIT,
+            creatorPrincipalId: 'user-primary',
+            timestamp: new Date().toISOString(),
+            verified: true,
+          },
+        },
+        context,
+      );
+
+      assert.ok(record.id);
+
+      // Verify graph node was created automatically
+      const graph = await store.queryGraph({
+        tenantId: 'tenant-test',
+        workspaceId: 'ws-default',
+      });
+      assert.ok(graph.nodes.length > 0);
+    });
+
+    it('ensures memory creation succeeds even if graph projection fails', async () => {
+      const autoService = new MemoryService({ store, autoEvolveGraph: true });
+      // Inject failure specifically in evolution
+      store.simulateFailureInEvolution = true;
+
+      const record = await autoService.createMemory(
+        {
+          tenantId: 'tenant-test',
+          workspaceId: 'ws-default',
+          ownerId: 'user-primary',
+          class: MemoryClass.SEMANTIC,
+          title: 'Resilience Test Record',
+          content: 'Contains services/backend/src/store.ts reference.',
+          confidence: 0.95,
+          provenance: {
+            sourceType: MemorySourceType.USER_EXPLICIT,
+            creatorPrincipalId: 'user-primary',
+            timestamp: new Date().toISOString(),
+            verified: true,
+          },
+        },
+        context,
+      );
+
+      // Memory record must be successfully created and retrievable
+      assert.ok(record.id);
+      const fetched = await service.getMemory(record.id, context);
+      assert.ok(fetched);
+      assert.equal(fetched.id, record.id);
+    });
+  });
 });

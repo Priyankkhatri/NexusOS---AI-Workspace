@@ -9,3 +9,4 @@ export * from './graph-projection-engine.js';
 export * from './vector-index.js';
 export * from './sqlite-memory-store.js';
 export * from './graph-extractor.js';
+export * from './graph-evolution-engine.js';

@@ -20,12 +20,16 @@ import {
   VectorSearchRequest,
   VectorSearchResponse,
   DEFAULT_VECTOR_DIMENSION,
+  GraphEvolutionPlan,
+  EvolutionReceipt,
+  GraphEvolutionOperationType,
 } from '@nexusos/contracts';
 import {
   IMemoryStore,
   MemoryNotFoundError,
   MemoryVersionConflictError,
   MemorySecurityViolationError,
+  MemoryServiceContext,
 } from './types.js';
 import { VectorIndex } from './vector-index.js';
 
@@ -57,6 +61,8 @@ export class InMemoryMemoryStore implements IMemoryStore {
   private readonly vectorIndex: VectorIndex;
 
   public simulateFailure = false;
+  public simulateFailureInEvolution = false;
+  public simulateFailureInEvolutionMidway = false;
 
   constructor(options?: InMemoryStoreOptions) {
     if (options?.simulateFailure) {
@@ -604,12 +610,23 @@ export class InMemoryMemoryStore implements IMemoryStore {
     const limit = request.limit ?? 25;
     const allowedNodeTypes = request.nodeTypes ? new Set(request.nodeTypes) : null;
     const allowedEdgeTypes = request.edgeTypes ? new Set(request.edgeTypes) : null;
+    const asOfTime = request.asOf ? new Date(request.asOf).getTime() : null;
+    const includeSuperseded = request.includeSuperseded ?? false;
 
     // Collect all nodes and edges belonging strictly to this tenant and workspace (058-SEC-03)
     const wsNodes = new Map<string, MemoryGraphNodeOutput>();
     for (const n of this.graphNodes.values()) {
       if (n.tenantId === tenantId && n.workspaceId === workspaceId) {
-        if (!allowedNodeTypes || allowedNodeTypes.has(n.nodeType)) {
+        let isVisible = true;
+        if (asOfTime !== null) {
+          const from = new Date(n.validFrom ?? n.createdAt).getTime();
+          const to = n.validTo ? new Date(n.validTo).getTime() : Infinity;
+          isVisible = from <= asOfTime && asOfTime < to;
+        } else if (!includeSuperseded) {
+          isVisible = Boolean(n.isCurrent);
+        }
+
+        if (isVisible && (!allowedNodeTypes || allowedNodeTypes.has(n.nodeType))) {
           if (n.confidence >= minConfidence) {
             wsNodes.set(n.id, JSON.parse(JSON.stringify(n)));
           }
@@ -620,7 +637,16 @@ export class InMemoryMemoryStore implements IMemoryStore {
     const wsEdges: MemoryGraphEdgeOutput[] = [];
     for (const e of this.graphEdges.values()) {
       if (e.tenantId === tenantId && e.workspaceId === workspaceId) {
-        if (!allowedEdgeTypes || allowedEdgeTypes.has(e.edgeType)) {
+        let isVisible = true;
+        if (asOfTime !== null) {
+          const from = new Date(e.validFrom ?? e.createdAt).getTime();
+          const to = e.validTo ? new Date(e.validTo).getTime() : Infinity;
+          isVisible = from <= asOfTime && asOfTime < to;
+        } else if (!includeSuperseded) {
+          isVisible = Boolean(e.isCurrent);
+        }
+
+        if (isVisible && (!allowedEdgeTypes || allowedEdgeTypes.has(e.edgeType))) {
           if (e.confidence >= minConfidence) {
             wsEdges.push(JSON.parse(JSON.stringify(e)));
           }
@@ -751,11 +777,15 @@ export class InMemoryMemoryStore implements IMemoryStore {
       }
     }
 
-    // 2. Find and delete edges referencing these nodes
+    // 2. Find and delete edges referencing these nodes or citing memoryRecordId directly
     let deletedEdgesCount = 0;
     for (const [key, edge] of this.graphEdges.entries()) {
       if (edge.tenantId === tenantId && edge.workspaceId === workspaceId) {
-        if (targetNodeIds.has(edge.sourceNodeId) || targetNodeIds.has(edge.targetNodeId)) {
+        if (
+          targetNodeIds.has(edge.sourceNodeId) ||
+          targetNodeIds.has(edge.targetNodeId) ||
+          edge.provenance?.sourceId === memoryRecordId
+        ) {
           this.graphEdges.delete(key);
           deletedEdgesCount++;
         }
@@ -766,6 +796,263 @@ export class InMemoryMemoryStore implements IMemoryStore {
       revokedNodes: targetNodeIds.size,
       revokedEdges: deletedEdgesCount,
     };
+  }
+
+  // -------------------------------------------------------------------------
+  // Governed Graph Evolution Batch Operation (Task 066 Phase 3)
+  // -------------------------------------------------------------------------
+
+  public async evolveGraph(
+    plan: GraphEvolutionPlan,
+    ctx?: MemoryServiceContext,
+  ): Promise<EvolutionReceipt> {
+    this.checkFailure();
+    const startTime = performance.now();
+
+    if (ctx) {
+      if (ctx.tenantId !== plan.tenantId || ctx.workspaceId !== plan.workspaceId) {
+        throw new MemorySecurityViolationError(
+          `066-P3-SEC-02: Security violation. Caller context (${ctx.tenantId}/${ctx.workspaceId}) cannot evolve graph in (${plan.tenantId}/${plan.workspaceId}).`,
+        );
+      }
+    }
+
+    if (this.simulateFailureInEvolution) {
+      throw new Error(
+        '066-P3-SEC-07-SIMULATED-FAIL: Injected evolution failure before transaction',
+      );
+    }
+
+    // Snapshot state for atomic rollback
+    const nodesBackup = new Map(this.graphNodes);
+    const edgesBackup = new Map(this.graphEdges);
+
+    const acceptedNodes: string[] = [];
+    const acceptedEdges: string[] = [];
+    const supersededNodeIds: string[] = [];
+    const supersededEdgeIds: string[] = [];
+
+    try {
+      for (const op of plan.operations) {
+        if (op.operationType === GraphEvolutionOperationType.ADD_NODE) {
+          if (!op.node) {
+            throw new Error('ADD_NODE operation requires node payload');
+          }
+          const node = MemoryGraphNodeSchema.parse(op.node);
+          if (node.tenantId !== plan.tenantId || node.workspaceId !== plan.workspaceId) {
+            throw new MemorySecurityViolationError(
+              `066-P3-SEC-02: Node tenant/workspace mismatch in evolution plan`,
+            );
+          }
+
+          const key = this.getKey(node.tenantId, node.workspaceId, node.id);
+          if (!this.graphNodes.has(key)) {
+            const initialVersion = node.version ?? 1;
+            const validFrom = node.validFrom ?? node.createdAt;
+            const updatedAt = node.updatedAt ?? node.createdAt;
+
+            const createdNode: MemoryGraphNodeOutput = {
+              ...node,
+              validFrom,
+              version: initialVersion,
+              updatedAt,
+            };
+            this.graphNodes.set(key, JSON.parse(JSON.stringify(createdNode)));
+          }
+          acceptedNodes.push(node.id);
+        } else if (op.operationType === GraphEvolutionOperationType.REFINE_NODE) {
+          if (!op.node) {
+            throw new Error('REFINE_NODE operation requires node payload');
+          }
+          const node = MemoryGraphNodeSchema.parse(op.node);
+          const key = this.getKey(node.tenantId, node.workspaceId, node.id);
+          const existing = this.graphNodes.get(key);
+
+          if (!existing) {
+            throw new MemoryNotFoundError(node.id);
+          }
+
+          const currentVersion = existing.version;
+          if (op.expectedVersion !== undefined && op.expectedVersion !== currentVersion) {
+            throw new MemoryVersionConflictError(node.id, currentVersion, op.expectedVersion);
+          }
+
+          const nextVersion = currentVersion + 1;
+          const updatedAt = node.updatedAt ?? new Date().toISOString();
+
+          const updatedNode: MemoryGraphNodeOutput = {
+            ...existing,
+            ...node,
+            version: nextVersion,
+            updatedAt,
+          };
+          this.graphNodes.set(key, JSON.parse(JSON.stringify(updatedNode)));
+          acceptedNodes.push(node.id);
+        } else if (op.operationType === GraphEvolutionOperationType.SUPERSEDE_NODE) {
+          const targetId = op.targetId;
+          if (!targetId) {
+            throw new Error('SUPERSEDE_NODE operation requires targetId');
+          }
+
+          const key = this.getKey(plan.tenantId, plan.workspaceId, targetId);
+          const existing = this.graphNodes.get(key);
+
+          if (!existing) {
+            throw new MemoryNotFoundError(targetId);
+          }
+
+          const currentVersion = existing.version;
+          if (op.expectedVersion !== undefined && op.expectedVersion !== currentVersion) {
+            throw new MemoryVersionConflictError(targetId, currentVersion, op.expectedVersion);
+          }
+
+          const validTo = op.validTo ?? new Date().toISOString();
+          const supersededBy = op.supersededBy ?? op.node?.id ?? undefined;
+          const nextVersion = currentVersion + 1;
+
+          const supersededNode: MemoryGraphNodeOutput = {
+            ...existing,
+            isCurrent: false,
+            validTo,
+            supersededBy,
+            version: nextVersion,
+            updatedAt: validTo,
+          };
+          this.graphNodes.set(key, JSON.parse(JSON.stringify(supersededNode)));
+          supersededNodeIds.push(targetId);
+
+          if (op.node) {
+            const newNode = MemoryGraphNodeSchema.parse(op.node);
+            const newKey = this.getKey(newNode.tenantId, newNode.workspaceId, newNode.id);
+            const initialVersion = newNode.version ?? 1;
+            const validFrom = newNode.validFrom ?? validTo;
+            const updatedAt = newNode.updatedAt ?? validTo;
+
+            const createdNode: MemoryGraphNodeOutput = {
+              ...newNode,
+              isCurrent: true,
+              validFrom,
+              validTo: undefined,
+              supersededBy: undefined,
+              version: initialVersion,
+              updatedAt,
+            };
+            this.graphNodes.set(newKey, JSON.parse(JSON.stringify(createdNode)));
+            acceptedNodes.push(newNode.id);
+          }
+        } else if (op.operationType === GraphEvolutionOperationType.ADD_EDGE) {
+          if (!op.edge) {
+            throw new Error('ADD_EDGE operation requires edge payload');
+          }
+          const edge = MemoryGraphEdgeSchema.parse(op.edge);
+          if (edge.tenantId !== plan.tenantId || edge.workspaceId !== plan.workspaceId) {
+            throw new MemorySecurityViolationError(
+              `066-P3-SEC-02: Edge tenant/workspace mismatch in evolution plan`,
+            );
+          }
+
+          const key = this.getKey(edge.tenantId, edge.workspaceId, edge.id);
+          if (!this.graphEdges.has(key)) {
+            const initialVersion = edge.version ?? 1;
+            const validFrom = edge.validFrom ?? edge.createdAt;
+            const updatedAt = edge.updatedAt ?? edge.createdAt;
+
+            const createdEdge: MemoryGraphEdgeOutput = {
+              ...edge,
+              validFrom,
+              version: initialVersion,
+              updatedAt,
+            };
+            this.graphEdges.set(key, JSON.parse(JSON.stringify(createdEdge)));
+          }
+          acceptedEdges.push(edge.id);
+        } else if (op.operationType === GraphEvolutionOperationType.SUPERSEDE_EDGE) {
+          const targetId = op.targetId;
+          if (!targetId) {
+            throw new Error('SUPERSEDE_EDGE operation requires targetId');
+          }
+
+          const key = this.getKey(plan.tenantId, plan.workspaceId, targetId);
+          const existing = this.graphEdges.get(key);
+
+          if (!existing) {
+            throw new MemoryNotFoundError(targetId);
+          }
+
+          const currentVersion = existing.version;
+          if (op.expectedVersion !== undefined && op.expectedVersion !== currentVersion) {
+            throw new MemoryVersionConflictError(targetId, currentVersion, op.expectedVersion);
+          }
+
+          const validTo = op.validTo ?? new Date().toISOString();
+          const supersededBy = op.supersededBy ?? op.edge?.id ?? undefined;
+          const nextVersion = currentVersion + 1;
+
+          const supersededEdge: MemoryGraphEdgeOutput = {
+            ...existing,
+            isCurrent: false,
+            validTo,
+            supersededBy,
+            version: nextVersion,
+            updatedAt: validTo,
+          };
+          this.graphEdges.set(key, JSON.parse(JSON.stringify(supersededEdge)));
+          supersededEdgeIds.push(targetId);
+
+          if (op.edge) {
+            const newEdge = MemoryGraphEdgeSchema.parse(op.edge);
+            const newKey = this.getKey(newEdge.tenantId, newEdge.workspaceId, newEdge.id);
+            const initialVersion = newEdge.version ?? 1;
+            const validFrom = newEdge.validFrom ?? validTo;
+            const updatedAt = newEdge.updatedAt ?? validTo;
+
+            const createdEdge: MemoryGraphEdgeOutput = {
+              ...newEdge,
+              isCurrent: true,
+              validFrom,
+              validTo: undefined,
+              supersededBy: undefined,
+              version: initialVersion,
+              updatedAt,
+            };
+            this.graphEdges.set(newKey, JSON.parse(JSON.stringify(createdEdge)));
+            acceptedEdges.push(newEdge.id);
+          }
+        }
+
+        if (this.simulateFailureInEvolutionMidway) {
+          throw new Error('066-P3-SEC-07-SIMULATED-FAIL: Injected mid-batch evolution failure');
+        }
+      }
+
+      return {
+        evolutionId: plan.evolutionId,
+        tenantId: plan.tenantId,
+        workspaceId: plan.workspaceId,
+        memoryRecordId: plan.memoryRecordId,
+        memoryVersion: plan.memoryVersion,
+        acceptedNodes,
+        acceptedEdges,
+        supersededNodeIds,
+        supersededEdgeIds,
+        rejectedNodes: [],
+        rejectedEdges: [],
+        evolvedAt: new Date().toISOString(),
+        executionDurationMs: Math.round(performance.now() - startTime),
+        idempotentSkip: false,
+      };
+    } catch (err) {
+      // Atomic rollback: restore snapshot
+      this.graphNodes.clear();
+      for (const [k, v] of nodesBackup.entries()) {
+        this.graphNodes.set(k, v);
+      }
+      this.graphEdges.clear();
+      for (const [k, v] of edgesBackup.entries()) {
+        this.graphEdges.set(k, v);
+      }
+      throw err;
+    }
   }
 
   public async markDerivedCompressionsTombstoned(

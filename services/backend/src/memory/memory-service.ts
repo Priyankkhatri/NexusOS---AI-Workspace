@@ -28,6 +28,9 @@ import {
   VectorSearchRequest,
   VectorSearchRequestSchema,
   VectorSearchResponse,
+  EvolutionReceipt,
+  GraphEvolutionOptions,
+  GraphExtractionResult,
 } from '@nexusos/contracts';
 import {
   IMemoryStore,
@@ -40,6 +43,7 @@ import { Logger } from '../observability/logger.js';
 import { MemoryCompressor } from './memory-compressor.js';
 import { EpisodicLearner } from './episodic-learner.js';
 import { GraphProjectionEngine } from './graph-projection-engine.js';
+import { GraphEvolutionEngine } from './graph-evolution-engine.js';
 import { IVectorIndex } from './vector-index.js';
 
 export interface MemoryServiceOptions {
@@ -48,6 +52,8 @@ export interface MemoryServiceOptions {
   learner?: EpisodicLearner;
   episodicLearner?: EpisodicLearner;
   graphEngine?: GraphProjectionEngine;
+  evolutionEngine?: GraphEvolutionEngine;
+  autoEvolveGraph?: boolean;
   vectorIndex?: IVectorIndex;
   logger?: Logger;
   nowProvider?: () => string;
@@ -58,6 +64,8 @@ export class MemoryService {
   private readonly compressor: MemoryCompressor;
   private readonly learner: EpisodicLearner;
   private readonly graphEngine: GraphProjectionEngine;
+  private readonly evolutionEngine: GraphEvolutionEngine;
+  private readonly autoEvolveGraph: boolean;
   private readonly vectorIndex?: IVectorIndex;
   private readonly logger: Logger;
   private readonly now: () => string;
@@ -76,6 +84,10 @@ export class MemoryService {
       new EpisodicLearner({ store: this.store, logger: this.logger, nowProvider: this.now });
     this.graphEngine =
       options.graphEngine ?? new GraphProjectionEngine({ store: this.store, logger: this.logger });
+    this.evolutionEngine =
+      options.evolutionEngine ??
+      new GraphEvolutionEngine({ store: this.store, logger: this.logger, nowProvider: this.now });
+    this.autoEvolveGraph = options.autoEvolveGraph ?? false;
   }
 
   public getCompressor(): MemoryCompressor {
@@ -88,6 +100,10 @@ export class MemoryService {
 
   public getGraphEngine(): GraphProjectionEngine {
     return this.graphEngine;
+  }
+
+  public getEvolutionEngine(): GraphEvolutionEngine {
+    return this.evolutionEngine;
   }
 
   public getVectorIndex(): IVectorIndex | undefined {
@@ -180,6 +196,17 @@ export class MemoryService {
         provenanceType: saved.provenance.sourceType,
       },
     });
+
+    if (this.autoEvolveGraph && saved.status === MemoryStatus.ACTIVE) {
+      try {
+        await this.evolutionEngine.evolveFromRecord(saved, context);
+      } catch (err) {
+        this.logger.warn(
+          `Auto graph evolution failed for memory ${saved.id}: ${err instanceof Error ? err.message : String(err)}`,
+          { details: { memoryId: saved.id, error: String(err) } },
+        );
+      }
+    }
 
     return saved;
   }
@@ -431,6 +458,17 @@ export class MemoryService {
       },
     });
 
+    if (this.autoEvolveGraph && updated.status === MemoryStatus.ACTIVE) {
+      try {
+        await this.evolutionEngine.evolveFromRecord(updated, context);
+      } catch (err) {
+        this.logger.warn(
+          `Auto graph evolution failed for memory update ${updated.id}: ${err instanceof Error ? err.message : String(err)}`,
+          { details: { memoryId: updated.id, error: String(err) } },
+        );
+      }
+    }
+
     return updated;
   }
 
@@ -679,5 +717,41 @@ export class MemoryService {
   ): Promise<MemoryGraphQueryResponse> {
     this.assertTenantAndWorkspaceMatch(context, request);
     return this.graphEngine.query(request, context);
+  }
+
+  // -------------------------------------------------------------------------
+  // Task 066 Phase 3: Governed Graph Evolution Pipeline (066-P3-SEC-01..08)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Evolve knowledge graph from a stored MemoryRecord.
+   * Extracts candidates via GraphExtractor and evolves graph state atomically.
+   */
+  public async evolveMemoryGraph(
+    memoryRecordId: string,
+    context: MemoryServiceContext,
+    options?: GraphEvolutionOptions,
+  ): Promise<EvolutionReceipt | null> {
+    const record = await this.getMemory(memoryRecordId, context);
+    if (!record) {
+      return null;
+    }
+    return this.evolutionEngine.evolveFromRecord(record, context, options);
+  }
+
+  /**
+   * Evolve knowledge graph from pre-extracted candidate facts against a parent MemoryRecord.
+   */
+  public async evolveGraphFromCandidates(
+    memoryRecordId: string,
+    candidates: GraphExtractionResult,
+    context: MemoryServiceContext,
+    options?: GraphEvolutionOptions,
+  ): Promise<EvolutionReceipt> {
+    const record = await this.getMemory(memoryRecordId, context);
+    if (!record) {
+      throw new MemoryNotFoundError(memoryRecordId);
+    }
+    return this.evolutionEngine.evolveCandidates(record, candidates, context, options);
   }
 }

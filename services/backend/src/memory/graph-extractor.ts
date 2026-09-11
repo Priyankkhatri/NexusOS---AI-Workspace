@@ -203,7 +203,7 @@ function safeUtf8Truncate(text: string, maxBytes: number): { text: string; trunc
  * Strips whitespace, hyphens, and underscores so e.g. "DatabaseModule", "database-module", "database_module"
  * map to the same canonical key "databasemodule".
  */
-function normalizeToCanonicalKey(label: string): string {
+export function normalizeToCanonicalKey(label: string): string {
   return label
     .normalize('NFKC')
     .toLowerCase()

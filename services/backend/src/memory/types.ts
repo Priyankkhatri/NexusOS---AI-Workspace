@@ -16,6 +16,9 @@ import {
   MemoryGraphQueryResponse,
   GraphExtractionResult,
   GraphExtractorOptions,
+  GraphEvolutionPlan,
+  EvolutionReceipt,
+  GraphEvolutionOptions,
   VectorEmbedding,
   VectorSearchRequest,
   VectorSearchResponse,
@@ -116,6 +119,7 @@ export interface IMemoryStore {
     tenantId: string,
     workspaceId: string,
   ): Promise<number>;
+  evolveGraph(plan: GraphEvolutionPlan, ctx?: MemoryServiceContext): Promise<EvolutionReceipt>;
 
   // Task 062 Vector Store Extensions (062-SEC-01, 062-SEC-05, 062-SEC-06)
   saveVector?(vector: VectorEmbedding): Promise<VectorEmbedding>;
@@ -249,4 +253,18 @@ export class MemoryExtractionPayloadExceededError extends Error {
 export interface IGraphExtractor {
   extract(record: MemoryRecord, options?: GraphExtractorOptions): Promise<GraphExtractionResult>;
   extractSync(record: MemoryRecord, options?: GraphExtractorOptions): GraphExtractionResult;
+}
+
+export interface IGraphEvolutionEngine {
+  evolveFromRecord(
+    record: MemoryRecord,
+    ctx: MemoryServiceContext,
+    options?: GraphEvolutionOptions,
+  ): Promise<EvolutionReceipt>;
+  evolveCandidates(
+    record: MemoryRecord,
+    candidates: GraphExtractionResult,
+    ctx: MemoryServiceContext,
+    options?: GraphEvolutionOptions,
+  ): Promise<EvolutionReceipt>;
 }

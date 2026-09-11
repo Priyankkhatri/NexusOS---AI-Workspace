@@ -23,11 +23,16 @@ import {
   MemoryProvenanceOutput,
   MemorySourceType,
   DEFAULT_VECTOR_DIMENSION,
+  GraphEvolutionPlan,
+  EvolutionReceipt,
+  GraphEvolutionOperationType,
 } from '@nexusos/contracts';
 import {
   IMemoryStore,
   MemoryNotFoundError,
   MemoryVersionConflictError,
+  MemorySecurityViolationError,
+  MemoryServiceContext,
   VectorDimensionMismatchError,
 } from './types.js';
 import { VectorIndex } from './vector-index.js';
@@ -66,6 +71,8 @@ export class SqliteMemoryStore implements IMemoryStore {
 
   public simulateFailure = false;
   public simulateFailureInCascade = false;
+  public simulateFailureInEvolution = false;
+  public simulateFailureInEvolutionMidway = false;
 
   constructor(options?: SqliteMemoryStoreOptions) {
     this.dbPath = options?.dbPath ?? options?.databasePath ?? ':memory:';
@@ -1271,6 +1278,8 @@ export class SqliteMemoryStore implements IMemoryStore {
     const minConfidence = request.minConfidence ?? 0.0;
     const allowedNodeTypes = request.nodeTypes ? new Set(request.nodeTypes) : null;
     const allowedEdgeTypes = request.edgeTypes ? new Set(request.edgeTypes) : null;
+    const asOfTime = request.asOf ? new Date(request.asOf).getTime() : null;
+    const includeSuperseded = request.includeSuperseded ?? false;
 
     // Fetch tenant + workspace scoped nodes and edges from SQLite
     const nodeRows = this.db
@@ -1282,7 +1291,16 @@ export class SqliteMemoryStore implements IMemoryStore {
     const wsNodes = new Map<string, MemoryGraphNodeOutput>();
     for (const r of nodeRows) {
       const node = this.rowToGraphNode(r);
-      if (!allowedNodeTypes || allowedNodeTypes.has(node.nodeType)) {
+      let isVisible = true;
+      if (asOfTime !== null) {
+        const from = new Date(node.validFrom ?? node.createdAt).getTime();
+        const to = node.validTo ? new Date(node.validTo).getTime() : Infinity;
+        isVisible = from <= asOfTime && asOfTime < to;
+      } else if (!includeSuperseded) {
+        isVisible = Boolean(node.isCurrent);
+      }
+
+      if (isVisible && (!allowedNodeTypes || allowedNodeTypes.has(node.nodeType))) {
         wsNodes.set(node.id, node);
       }
     }
@@ -1296,7 +1314,16 @@ export class SqliteMemoryStore implements IMemoryStore {
     const wsEdges: MemoryGraphEdgeOutput[] = [];
     for (const r of edgeRows) {
       const edge = this.rowToGraphEdge(r);
-      if (!allowedEdgeTypes || allowedEdgeTypes.has(edge.edgeType)) {
+      let isVisible = true;
+      if (asOfTime !== null) {
+        const from = new Date(edge.validFrom ?? edge.createdAt).getTime();
+        const to = edge.validTo ? new Date(edge.validTo).getTime() : Infinity;
+        isVisible = from <= asOfTime && asOfTime < to;
+      } else if (!includeSuperseded) {
+        isVisible = Boolean(edge.isCurrent);
+      }
+
+      if (isVisible && (!allowedEdgeTypes || allowedEdgeTypes.has(edge.edgeType))) {
         wsEdges.push(edge);
       }
     }
@@ -1435,10 +1462,433 @@ export class SqliteMemoryStore implements IMemoryStore {
         .run(tenantId, workspaceId, memoryRecordId);
       const revokedNodes = Number(nodeDel.changes);
 
+      // Also clean up any edges whose provenance directly cites this memory record
+      const provEdgeDel = this.db
+        .prepare(
+          `DELETE FROM graph_edges
+           WHERE tenant_id = ? AND workspace_id = ?
+             AND json_extract(provenance, '$.sourceId') = ?;`,
+        )
+        .run(tenantId, workspaceId, memoryRecordId);
+      revokedEdges += Number(provEdgeDel.changes);
+
       return { revokedNodes, revokedEdges };
+    } else {
+      // Even if no nodes were directly owned, clean up edges citing this memory record
+      const provEdgeDel = this.db
+        .prepare(
+          `DELETE FROM graph_edges
+           WHERE tenant_id = ? AND workspace_id = ?
+             AND json_extract(provenance, '$.sourceId') = ?;`,
+        )
+        .run(tenantId, workspaceId, memoryRecordId);
+      return { revokedNodes: 0, revokedEdges: Number(provEdgeDel.changes) };
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Governed Graph Evolution Batch Operation (Task 066 Phase 3)
+  // -------------------------------------------------------------------------
+
+  public async evolveGraph(
+    plan: GraphEvolutionPlan,
+    ctx?: MemoryServiceContext,
+  ): Promise<EvolutionReceipt> {
+    this.checkFailure();
+    const startTime = performance.now();
+
+    if (ctx) {
+      if (ctx.tenantId !== plan.tenantId || ctx.workspaceId !== plan.workspaceId) {
+        throw new MemorySecurityViolationError(
+          `066-P3-SEC-02: Security violation. Caller context (${ctx.tenantId}/${ctx.workspaceId}) cannot evolve graph in (${plan.tenantId}/${plan.workspaceId}).`,
+        );
+      }
     }
 
-    return { revokedNodes: 0, revokedEdges: 0 };
+    if (this.simulateFailureInEvolution) {
+      throw new Error(
+        '066-P3-SEC-07-SIMULATED-FAIL: Injected evolution failure before transaction',
+      );
+    }
+
+    const acceptedNodes: string[] = [];
+    const acceptedEdges: string[] = [];
+    const supersededNodeIds: string[] = [];
+    const supersededEdgeIds: string[] = [];
+
+    this.db.exec('BEGIN IMMEDIATE;');
+    try {
+      for (const op of plan.operations) {
+        if (op.operationType === GraphEvolutionOperationType.ADD_NODE) {
+          if (!op.node) {
+            throw new Error('ADD_NODE operation requires node payload');
+          }
+          const node = MemoryGraphNodeSchema.parse(op.node);
+          if (node.tenantId !== plan.tenantId || node.workspaceId !== plan.workspaceId) {
+            throw new MemorySecurityViolationError(
+              `066-P3-SEC-02: Node tenant/workspace mismatch in evolution plan`,
+            );
+          }
+
+          const existing = this.db
+            .prepare(
+              'SELECT id, version FROM graph_nodes WHERE tenant_id = ? AND workspace_id = ? AND id = ?;',
+            )
+            .get(node.tenantId, node.workspaceId, node.id) as
+            | { id: string; version: number }
+            | undefined;
+
+          if (!existing) {
+            const initialVersion = node.version ?? 1;
+            const validFrom = node.validFrom ?? node.createdAt;
+            const updatedAt = node.updatedAt ?? node.createdAt;
+
+            this.db
+              .prepare(
+                `
+              INSERT INTO graph_nodes (
+                id, tenant_id, workspace_id, node_type, label, confidence,
+                memory_record_id, properties, provenance, version, is_current,
+                valid_from, valid_to, superseded_by, created_at, updated_at
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            `,
+              )
+              .run(
+                node.id,
+                node.tenantId,
+                node.workspaceId,
+                node.nodeType,
+                node.label,
+                node.confidence,
+                node.memoryRecordId ?? null,
+                JSON.stringify(node.properties ?? {}),
+                node.provenance ? JSON.stringify(node.provenance) : '{}',
+                initialVersion,
+                node.isCurrent ? 1 : 0,
+                validFrom,
+                node.validTo ?? null,
+                node.supersededBy ?? null,
+                node.createdAt,
+                updatedAt,
+              );
+          }
+          acceptedNodes.push(node.id);
+        } else if (op.operationType === GraphEvolutionOperationType.REFINE_NODE) {
+          if (!op.node) {
+            throw new Error('REFINE_NODE operation requires node payload');
+          }
+          const node = MemoryGraphNodeSchema.parse(op.node);
+          const existing = this.db
+            .prepare(
+              'SELECT version, is_current FROM graph_nodes WHERE tenant_id = ? AND workspace_id = ? AND id = ?;',
+            )
+            .get(node.tenantId, node.workspaceId, node.id) as
+            | { version: number; is_current: number }
+            | undefined;
+
+          if (!existing) {
+            throw new MemoryNotFoundError(node.id);
+          }
+
+          const currentVersion = existing.version;
+          if (op.expectedVersion !== undefined && op.expectedVersion !== currentVersion) {
+            throw new MemoryVersionConflictError(node.id, currentVersion, op.expectedVersion);
+          }
+
+          const nextVersion = currentVersion + 1;
+          const updatedAt = node.updatedAt ?? new Date().toISOString();
+
+          const updateStmt = this.db.prepare(`
+            UPDATE graph_nodes SET
+              label = ?,
+              confidence = ?,
+              properties = ?,
+              provenance = ?,
+              version = ?,
+              updated_at = ?
+            WHERE tenant_id = ? AND workspace_id = ? AND id = ? AND version = ?;
+          `);
+
+          const result = updateStmt.run(
+            node.label,
+            node.confidence,
+            JSON.stringify(node.properties ?? {}),
+            node.provenance ? JSON.stringify(node.provenance) : '{}',
+            nextVersion,
+            updatedAt,
+            node.tenantId,
+            node.workspaceId,
+            node.id,
+            currentVersion,
+          );
+
+          if (result.changes === 0) {
+            throw new MemoryVersionConflictError(node.id, currentVersion, currentVersion);
+          }
+          acceptedNodes.push(node.id);
+        } else if (op.operationType === GraphEvolutionOperationType.SUPERSEDE_NODE) {
+          const targetId = op.targetId;
+          if (!targetId) {
+            throw new Error('SUPERSEDE_NODE operation requires targetId');
+          }
+
+          const existing = this.db
+            .prepare(
+              'SELECT version, is_current FROM graph_nodes WHERE tenant_id = ? AND workspace_id = ? AND id = ?;',
+            )
+            .get(plan.tenantId, plan.workspaceId, targetId) as
+            | { version: number; is_current: number }
+            | undefined;
+
+          if (!existing) {
+            throw new MemoryNotFoundError(targetId);
+          }
+
+          const currentVersion = existing.version;
+          if (op.expectedVersion !== undefined && op.expectedVersion !== currentVersion) {
+            throw new MemoryVersionConflictError(targetId, currentVersion, op.expectedVersion);
+          }
+
+          const validTo = op.validTo ?? new Date().toISOString();
+          const supersededBy = op.supersededBy ?? op.node?.id ?? null;
+          const nextVersion = currentVersion + 1;
+
+          const updateStmt = this.db.prepare(`
+            UPDATE graph_nodes SET
+              is_current = 0,
+              valid_to = ?,
+              superseded_by = ?,
+              version = ?,
+              updated_at = ?
+            WHERE tenant_id = ? AND workspace_id = ? AND id = ? AND version = ?;
+          `);
+
+          const result = updateStmt.run(
+            validTo,
+            supersededBy,
+            nextVersion,
+            validTo,
+            plan.tenantId,
+            plan.workspaceId,
+            targetId,
+            currentVersion,
+          );
+
+          if (result.changes === 0) {
+            throw new MemoryVersionConflictError(targetId, currentVersion, currentVersion);
+          }
+          supersededNodeIds.push(targetId);
+
+          if (op.node) {
+            const newNode = MemoryGraphNodeSchema.parse(op.node);
+            const initialVersion = newNode.version ?? 1;
+            const validFrom = newNode.validFrom ?? validTo;
+            const updatedAt = newNode.updatedAt ?? validTo;
+
+            this.db
+              .prepare(
+                `
+              INSERT INTO graph_nodes (
+                id, tenant_id, workspace_id, node_type, label, confidence,
+                memory_record_id, properties, provenance, version, is_current,
+                valid_from, valid_to, superseded_by, created_at, updated_at
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            `,
+              )
+              .run(
+                newNode.id,
+                newNode.tenantId,
+                newNode.workspaceId,
+                newNode.nodeType,
+                newNode.label,
+                newNode.confidence,
+                newNode.memoryRecordId ?? null,
+                JSON.stringify(newNode.properties ?? {}),
+                newNode.provenance ? JSON.stringify(newNode.provenance) : '{}',
+                initialVersion,
+                1,
+                validFrom,
+                null,
+                null,
+                newNode.createdAt,
+                updatedAt,
+              );
+            acceptedNodes.push(newNode.id);
+          }
+        } else if (op.operationType === GraphEvolutionOperationType.ADD_EDGE) {
+          if (!op.edge) {
+            throw new Error('ADD_EDGE operation requires edge payload');
+          }
+          const edge = MemoryGraphEdgeSchema.parse(op.edge);
+          if (edge.tenantId !== plan.tenantId || edge.workspaceId !== plan.workspaceId) {
+            throw new MemorySecurityViolationError(
+              `066-P3-SEC-02: Edge tenant/workspace mismatch in evolution plan`,
+            );
+          }
+
+          const existing = this.db
+            .prepare(
+              'SELECT id FROM graph_edges WHERE tenant_id = ? AND workspace_id = ? AND id = ?;',
+            )
+            .get(edge.tenantId, edge.workspaceId, edge.id);
+
+          if (!existing) {
+            const initialVersion = edge.version ?? 1;
+            const validFrom = edge.validFrom ?? edge.createdAt;
+            const updatedAt = edge.updatedAt ?? edge.createdAt;
+
+            this.db
+              .prepare(
+                `
+              INSERT INTO graph_edges (
+                id, tenant_id, workspace_id, edge_type, source_node_id, target_node_id,
+                confidence, weight, properties, provenance, version, is_current,
+                valid_from, valid_to, superseded_by, created_at, updated_at
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            `,
+              )
+              .run(
+                edge.id,
+                edge.tenantId,
+                edge.workspaceId,
+                edge.edgeType,
+                edge.sourceNodeId,
+                edge.targetNodeId,
+                edge.confidence,
+                edge.weight,
+                JSON.stringify(edge.properties ?? {}),
+                JSON.stringify(edge.provenance),
+                initialVersion,
+                edge.isCurrent ? 1 : 0,
+                validFrom,
+                edge.validTo ?? null,
+                edge.supersededBy ?? null,
+                edge.createdAt,
+                updatedAt,
+              );
+          }
+          acceptedEdges.push(edge.id);
+        } else if (op.operationType === GraphEvolutionOperationType.SUPERSEDE_EDGE) {
+          const targetId = op.targetId;
+          if (!targetId) {
+            throw new Error('SUPERSEDE_EDGE operation requires targetId');
+          }
+
+          const existing = this.db
+            .prepare(
+              'SELECT version FROM graph_edges WHERE tenant_id = ? AND workspace_id = ? AND id = ?;',
+            )
+            .get(plan.tenantId, plan.workspaceId, targetId) as { version: number } | undefined;
+
+          if (!existing) {
+            throw new MemoryNotFoundError(targetId);
+          }
+
+          const currentVersion = existing.version;
+          if (op.expectedVersion !== undefined && op.expectedVersion !== currentVersion) {
+            throw new MemoryVersionConflictError(targetId, currentVersion, op.expectedVersion);
+          }
+
+          const validTo = op.validTo ?? new Date().toISOString();
+          const supersededBy = op.supersededBy ?? op.edge?.id ?? null;
+          const nextVersion = currentVersion + 1;
+
+          const updateStmt = this.db.prepare(`
+            UPDATE graph_edges SET
+              is_current = 0,
+              valid_to = ?,
+              superseded_by = ?,
+              version = ?,
+              updated_at = ?
+            WHERE tenant_id = ? AND workspace_id = ? AND id = ? AND version = ?;
+          `);
+
+          const result = updateStmt.run(
+            validTo,
+            supersededBy,
+            nextVersion,
+            validTo,
+            plan.tenantId,
+            plan.workspaceId,
+            targetId,
+            currentVersion,
+          );
+
+          if (result.changes === 0) {
+            throw new MemoryVersionConflictError(targetId, currentVersion, currentVersion);
+          }
+          supersededEdgeIds.push(targetId);
+
+          if (op.edge) {
+            const newEdge = MemoryGraphEdgeSchema.parse(op.edge);
+            const initialVersion = newEdge.version ?? 1;
+            const validFrom = newEdge.validFrom ?? validTo;
+            const updatedAt = newEdge.updatedAt ?? validTo;
+
+            this.db
+              .prepare(
+                `
+              INSERT INTO graph_edges (
+                id, tenant_id, workspace_id, edge_type, source_node_id, target_node_id,
+                confidence, weight, properties, provenance, version, is_current,
+                valid_from, valid_to, superseded_by, created_at, updated_at
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            `,
+              )
+              .run(
+                newEdge.id,
+                newEdge.tenantId,
+                newEdge.workspaceId,
+                newEdge.edgeType,
+                newEdge.sourceNodeId,
+                newEdge.targetNodeId,
+                newEdge.confidence,
+                newEdge.weight,
+                JSON.stringify(newEdge.properties ?? {}),
+                JSON.stringify(newEdge.provenance),
+                initialVersion,
+                1,
+                validFrom,
+                null,
+                null,
+                newEdge.createdAt,
+                updatedAt,
+              );
+            acceptedEdges.push(newEdge.id);
+          }
+        }
+
+        if (this.simulateFailureInEvolutionMidway) {
+          throw new Error('066-P3-SEC-07-SIMULATED-FAIL: Injected mid-batch evolution failure');
+        }
+      }
+
+      this.db.exec('COMMIT;');
+
+      return {
+        evolutionId: plan.evolutionId,
+        tenantId: plan.tenantId,
+        workspaceId: plan.workspaceId,
+        memoryRecordId: plan.memoryRecordId,
+        memoryVersion: plan.memoryVersion,
+        acceptedNodes,
+        acceptedEdges,
+        supersededNodeIds,
+        supersededEdgeIds,
+        rejectedNodes: [],
+        rejectedEdges: [],
+        evolvedAt: new Date().toISOString(),
+        executionDurationMs: Math.round(performance.now() - startTime),
+        idempotentSkip: false,
+      };
+    } catch (err) {
+      try {
+        this.db.exec('ROLLBACK;');
+      } catch {
+        // ignore rollback errors if already rolled back
+      }
+      throw err;
+    }
   }
 
   public async markDerivedCompressionsTombstoned(

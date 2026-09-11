@@ -7,7 +7,7 @@
 **Milestone**: Sprint 3 Milestone 2 (`S3-02`) — Real-Time Graph Evolution  
 **Baseline Commit**: `928f9f2e077e3fcef01f510c739ce7b96618d15b`  
 **Author**: NexusOS Core Architecture Team  
-**Status**: DISCOVERY COMPLETE — Ready for Review & Implementation Authorization  
+**Status**: DISCOVERY COMPLETE — Ready for Review & Implementation Authorization
 
 ---
 
@@ -102,15 +102,15 @@ flowchart TD
 
 A thorough audit of the active codebase confirms that extensive foundations are already implemented and must be reused without duplication:
 
-| Foundation Component | Existing Implementation | Reusability in Phase 3 |
-|---|---|---|
-| **Canonical Temporal Schemas** | `packages/contracts/src/memory/graph.ts` (`MemoryGraphNodeSchema`, `MemoryGraphEdgeSchema`) | 100% reusable. Fully supports `version`, `isCurrent`, `validFrom`, `validTo`, `supersededBy`, and `updatedAt`. |
-| **Optimistic Concurrency Control** | `SqliteMemoryStore.saveGraphNode()` and `saveGraphEdge()` | 100% reusable. Checks `expectedVersion`, enforces monotonicity, and throws `MemoryVersionConflictError` on collision. |
-| **Extraction Candidate Generation** | `services/backend/src/memory/graph-extractor.ts` (`GraphExtractor`) | 100% reusable. Outputs deterministic, deduplicated, bounded (<=20 nodes, <=30 edges) candidates with `verified: false`. |
-| **Secret Sanitization** | `services/backend/src/security/redaction-filter.ts` (`RedactionFilter.assertNoSecrets()`) | 100% reusable. Linear-time credential and token scanning. |
-| **Multi-Tenant Partitioning** | SQLite composite primary keys `(tenant_id, workspace_id, id)` and context checks | 100% reusable. Guarantees cross-tenant boundary isolation. |
-| **Atomic Cascade Forgetting** | `SqliteMemoryStore.revokeGraphForMemoryInternal()` | Core logic exists. Must be extended to cleanly handle edge provenance and supersession integrity. |
-| **Cycle-Immune Traversal** | `SqliteMemoryStore.queryGraph()` | 100% reusable. Hard limits (`maxDepth <= 4`, `limit <= 100`, BFS visited sets). |
+| Foundation Component                | Existing Implementation                                                                     | Reusability in Phase 3                                                                                                  |
+| ----------------------------------- | ------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| **Canonical Temporal Schemas**      | `packages/contracts/src/memory/graph.ts` (`MemoryGraphNodeSchema`, `MemoryGraphEdgeSchema`) | 100% reusable. Fully supports `version`, `isCurrent`, `validFrom`, `validTo`, `supersededBy`, and `updatedAt`.          |
+| **Optimistic Concurrency Control**  | `SqliteMemoryStore.saveGraphNode()` and `saveGraphEdge()`                                   | 100% reusable. Checks `expectedVersion`, enforces monotonicity, and throws `MemoryVersionConflictError` on collision.   |
+| **Extraction Candidate Generation** | `services/backend/src/memory/graph-extractor.ts` (`GraphExtractor`)                         | 100% reusable. Outputs deterministic, deduplicated, bounded (<=20 nodes, <=30 edges) candidates with `verified: false`. |
+| **Secret Sanitization**             | `services/backend/src/security/redaction-filter.ts` (`RedactionFilter.assertNoSecrets()`)   | 100% reusable. Linear-time credential and token scanning.                                                               |
+| **Multi-Tenant Partitioning**       | SQLite composite primary keys `(tenant_id, workspace_id, id)` and context checks            | 100% reusable. Guarantees cross-tenant boundary isolation.                                                              |
+| **Atomic Cascade Forgetting**       | `SqliteMemoryStore.revokeGraphForMemoryInternal()`                                          | Core logic exists. Must be extended to cleanly handle edge provenance and supersession integrity.                       |
+| **Cycle-Immune Traversal**          | `SqliteMemoryStore.queryGraph()`                                                            | 100% reusable. Hard limits (`maxDepth <= 4`, `limit <= 100`, BFS visited sets).                                         |
 
 ---
 
@@ -166,6 +166,7 @@ Gate 5: Referential Integrity & Dangling Edge Suppression
 ### 6.3 Representation of Rejected Candidates
 
 Candidates failing any governance gate are not silently dropped. The evolution pipeline produces a structured `EvolutionReceipt`:
+
 - `acceptedNodes`: Count and IDs of persisted nodes.
 - `acceptedEdges`: Count and IDs of persisted edges.
 - `rejectedNodes`: Array of `{ candidateId, label, reason: 'SECRET_DETECTED' | 'LOW_CONFIDENCE' | 'TENANT_MISMATCH' | 'SOURCE_TOMBSTONED' }`.
@@ -183,8 +184,8 @@ Candidates failing any governance gate are not silently dropped. The evolution p
   Persistent node IDs are deterministically derived from the workspace scope, node type, and canonicalized label:
   $$\text{persistentNodeId} = \text{node-} + \text{SHA256}(\text{tenantId} + ":" + \text{workspaceId} + ":" + \text{nodeType} + ":" + \text{canonicalKey})[0..16]$$
   where $\text{canonicalKey} = \text{normalizeToCanonicalKey}(\text{label})$.
-  
-  *Example*: "PostgresDB" in Record 1 and "postgres-db" in Record 2 map to the exact same persistent entity ID `node-a1b2c3d4e5f60718`.
+
+  _Example_: "PostgresDB" in Record 1 and "postgres-db" in Record 2 map to the exact same persistent entity ID `node-a1b2c3d4e5f60718`.
 
 ### 7.2 Same-Entity Refinement vs. Contradiction
 
@@ -195,14 +196,14 @@ flowchart TD
     C[Candidate Ingestion] --> M{Matches Active Entity or Edge?}
     M -- No --> A[ADD: Insert New Node/Edge with version=1, isCurrent=true, validFrom=now]
     M -- Yes --> T{Is Contradictory or Refinement?}
-    
+
     T -- Same Fact / Refinement --> R[REFINE IN-PLACE:
       - expectedVersion check
       - version = version + 1
       - confidence = max(existing, candidate)
       - merge properties
       - updatedAt = now]
-      
+
     T -- Contradictory Fact --> S[TEMPORAL SUPERSESSION:
       1. Fetch existing Fact A
       2. Invalidate Fact A:
@@ -257,6 +258,7 @@ Every temporal mutation must satisfy the formal contract refinements in `package
 ### 9.1 The Atomicity Imperative
 
 A graph evolution operation can involve multiple related mutations:
+
 1. Invalidate Old Fact A (`UPDATE graph_nodes SET is_current = 0, valid_to = ?, superseded_by = ? WHERE id = ? AND version = ?`).
 2. Insert New Fact B (`INSERT INTO graph_nodes ...`).
 3. Establish Supersession Edge (`INSERT INTO graph_edges (source_node_id = B, target_node_id = A, edge_type = 'SUPERSEDES', ...)`).
@@ -269,13 +271,14 @@ If any operation in this chain fails (e.g., OCC conflict, constraint failure, se
 `SqliteMemoryStore` utilizes `node:sqlite`'s `DatabaseSync`. The existing store already employs `BEGIN IMMEDIATE` / `COMMIT` / `ROLLBACK` blocks for migrations and memory tombstoning.
 
 Phase 3 introduces `SqliteMemoryStore.evolveGraph()`:
+
 ```typescript
 public async evolveGraph(
   plan: GraphEvolutionPlan,
   ctx: MemoryServiceContext,
 ): Promise<EvolutionReceipt> {
   this.checkFailure();
-  
+
   // Enforce caller tenant/workspace isolation
   this.assertContext(plan, ctx);
 
@@ -307,11 +310,11 @@ This guarantees 100% ACID atomicity: zero partial graph states under any failure
 We audit the candidate integration layers:
 
 - **Option A: Embed all logic in `MemoryService`**:
-  *Assessment*: REJECTED. `MemoryService` is already 684 lines managing memory CRUD, search, lexical ranking, proposals, episodes, playbooks, vectors, and tombstones. Adding graph extraction orchestration, conflict resolution, and topological validation would violate Single Responsibility and overload `MemoryService`.
+  _Assessment_: REJECTED. `MemoryService` is already 684 lines managing memory CRUD, search, lexical ranking, proposals, episodes, playbooks, vectors, and tombstones. Adding graph extraction orchestration, conflict resolution, and topological validation would violate Single Responsibility and overload `MemoryService`.
 - **Option B: Embed all logic in `GraphProjectionEngine`**:
-  *Assessment*: SUB-OPTIMAL. `GraphProjectionEngine` is a focused query and manual projection engine (148 lines).
+  _Assessment_: SUB-OPTIMAL. `GraphProjectionEngine` is a focused query and manual projection engine (148 lines).
 - **Option C: Dedicated `GraphEvolutionEngine` coordinated by `MemoryService`**:
-  *Assessment*: **RECOMMENDED ARCHITECTURE**.
+  _Assessment_: **RECOMMENDED ARCHITECTURE**.
   - A new, dedicated `GraphEvolutionEngine` (`services/backend/src/memory/graph-evolution-engine.ts`) implements `IGraphEvolutionEngine`.
   - It encapsulates extraction coordination, governance validation, contradiction detection, and evolution plan generation.
   - `MemoryService` maintains a reference to `GraphEvolutionEngine` (similar to `compressor`, `learner`, and `graphEngine`).
@@ -358,6 +361,7 @@ In an evolved graph, entities may be derived from multiple records or linked via
 > **Graph is strictly DATA / PROJECTION, NEVER AUTHORITY.**
 
 Under no circumstances can a graph node, edge property, or traversal path grant:
+
 - Execution leases or capability tokens
 - Policy overrides or RBAC role elevation
 - Memory governance bypass
@@ -369,16 +373,16 @@ Any attempt to inject claims such as `label: "Role: SuperAdmin"` or `properties:
 
 To avoid naming collisions with Phase 1 persistence and Phase 2 extractor invariants, Phase 3 defines the authoritative **`066-P3-SEC-*`** matrix:
 
-| Invariant ID | Name | Architectural Control | Verification Method |
-|---|---|---|---|
-| **066-P3-SEC-01** | **Authority Separation** | Graph projections are non-authoritative data; cannot grant leases, roles, or policy decisions. | Test: Verify graph entities claiming administrative authority confer zero system capabilities. |
-| **066-P3-SEC-02** | **Tenant & Workspace Isolation** | All evolution operations and persistent queries enforce strict `(tenantId, workspaceId)` matching. Cross-tenant edges are rejected fail-closed. | Test: Attempt cross-tenant evolution and cross-workspace edge creation; assert `MemorySecurityViolationError`. |
-| **066-P3-SEC-03** | **Fail-Closed Secret Sanitization** | All candidate labels, properties, and metadata must pass `RedactionFilter.assertNoSecrets()` before persistence. | Test: Inject API keys and bearer tokens into candidate labels/properties; verify mutation transaction aborts cleanly. |
-| **066-P3-SEC-04** | **Provenance Integrity** | Every persisted node and edge preserves immutable provenance tracing to the originating `MemoryRecord` ID. | Test: Query evolved nodes/edges and verify `provenance.sourceId === memoryRecord.id`. |
-| **066-P3-SEC-05** | **Unverified Isolation** | Heuristic candidate assertions are persisted strictly with `verified: false`. Cannot elevate authority without explicit HITL/receipt proof. | Test: Verify `verified: false` on all evolved graph elements, even if parent record claimed verified. |
-| **066-P3-SEC-06** | **Temporal & Version Integrity** | Enforce monotonic version increments, valid `[validFrom, validTo]` intervals, and rejection of stale candidates via OCC. | Test: Attempt version decrement, invalid intervals, and stale concurrent evolution; assert OCC conflict error. |
-| **066-P3-SEC-07** | **Atomic Evolution & Rollback** | Multi-entity evolution operations execute in a single atomic SQLite transaction; zero partial state on failure. | Test: Induce failure midway through supersession batch; verify database state remains completely unchanged. |
-| **066-P3-SEC-08** | **Forgetting Cascade & Non-Discoverability** | Tombstoning a memory record purges all derived graph projections from both current and historical traversal views. | Test: Tombstone parent record; assert 0 derived nodes and 0 derived edges returned in current and `asOf` queries. |
+| Invariant ID      | Name                                         | Architectural Control                                                                                                                           | Verification Method                                                                                                   |
+| ----------------- | -------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| **066-P3-SEC-01** | **Authority Separation**                     | Graph projections are non-authoritative data; cannot grant leases, roles, or policy decisions.                                                  | Test: Verify graph entities claiming administrative authority confer zero system capabilities.                        |
+| **066-P3-SEC-02** | **Tenant & Workspace Isolation**             | All evolution operations and persistent queries enforce strict `(tenantId, workspaceId)` matching. Cross-tenant edges are rejected fail-closed. | Test: Attempt cross-tenant evolution and cross-workspace edge creation; assert `MemorySecurityViolationError`.        |
+| **066-P3-SEC-03** | **Fail-Closed Secret Sanitization**          | All candidate labels, properties, and metadata must pass `RedactionFilter.assertNoSecrets()` before persistence.                                | Test: Inject API keys and bearer tokens into candidate labels/properties; verify mutation transaction aborts cleanly. |
+| **066-P3-SEC-04** | **Provenance Integrity**                     | Every persisted node and edge preserves immutable provenance tracing to the originating `MemoryRecord` ID.                                      | Test: Query evolved nodes/edges and verify `provenance.sourceId === memoryRecord.id`.                                 |
+| **066-P3-SEC-05** | **Unverified Isolation**                     | Heuristic candidate assertions are persisted strictly with `verified: false`. Cannot elevate authority without explicit HITL/receipt proof.     | Test: Verify `verified: false` on all evolved graph elements, even if parent record claimed verified.                 |
+| **066-P3-SEC-06** | **Temporal & Version Integrity**             | Enforce monotonic version increments, valid `[validFrom, validTo]` intervals, and rejection of stale candidates via OCC.                        | Test: Attempt version decrement, invalid intervals, and stale concurrent evolution; assert OCC conflict error.        |
+| **066-P3-SEC-07** | **Atomic Evolution & Rollback**              | Multi-entity evolution operations execute in a single atomic SQLite transaction; zero partial state on failure.                                 | Test: Induce failure midway through supersession batch; verify database state remains completely unchanged.           |
+| **066-P3-SEC-08** | **Forgetting Cascade & Non-Discoverability** | Tombstoning a memory record purges all derived graph projections from both current and historical traversal views.                              | Test: Tombstone parent record; assert 0 derived nodes and 0 derived edges returned in current and `asOf` queries.     |
 
 ---
 
@@ -386,15 +390,15 @@ To avoid naming collisions with Phase 1 persistence and Phase 2 extractor invari
 
 Phase 3 reuses established repository bounds and introduces strict operational ceilings:
 
-| Parameter | Limit | Enforcement Location | Rationale |
-|---|---|---|---|
-| **Max Nodes per Evolution** | 20 nodes | `GraphExtractor` / `GraphEvolutionEngine` | Inherited from Phase 2 bound (`DEFAULT_MAX_NODES = 20`). Prevents graph bloat. |
-| **Max Edges per Evolution** | 30 edges | `GraphExtractor` / `GraphEvolutionEngine` | Inherited from Phase 2 bound (`DEFAULT_MAX_EDGES = 30`). Bounded relation complexity. |
-| **Max Evolution Batch Operations** | 100 operations | `SqliteMemoryStore.evolveGraph()` | Upper bound on single SQLite transaction size (`20 nodes + 30 edges + supersessions`). |
-| **Max Supersession Chain Depth** | 10 hops | `GraphEvolutionEngine.resolveSupersession()` | Prevents deep recursive supersession chains and circular supersession attacks. |
-| **Max Evolution Duration** | 50 ms | `GraphEvolutionEngine.evolveFromRecord()` | Ensures synchronous memory writes do not block the event loop. |
-| **Max Traversal Depth** | 4 hops | `MemoryGraphQueryRequestSchema` | Inherited from Task 062 (`maxDepth <= 4`). Prevents combinatorial explosion. |
-| **Max Traversal Limit** | 100 items | `MemoryGraphQueryRequestSchema` | Inherited from Task 062 (`limit <= 100`). Memory safety. |
+| Parameter                          | Limit          | Enforcement Location                         | Rationale                                                                              |
+| ---------------------------------- | -------------- | -------------------------------------------- | -------------------------------------------------------------------------------------- |
+| **Max Nodes per Evolution**        | 20 nodes       | `GraphExtractor` / `GraphEvolutionEngine`    | Inherited from Phase 2 bound (`DEFAULT_MAX_NODES = 20`). Prevents graph bloat.         |
+| **Max Edges per Evolution**        | 30 edges       | `GraphExtractor` / `GraphEvolutionEngine`    | Inherited from Phase 2 bound (`DEFAULT_MAX_EDGES = 30`). Bounded relation complexity.  |
+| **Max Evolution Batch Operations** | 100 operations | `SqliteMemoryStore.evolveGraph()`            | Upper bound on single SQLite transaction size (`20 nodes + 30 edges + supersessions`). |
+| **Max Supersession Chain Depth**   | 10 hops        | `GraphEvolutionEngine.resolveSupersession()` | Prevents deep recursive supersession chains and circular supersession attacks.         |
+| **Max Evolution Duration**         | 50 ms          | `GraphEvolutionEngine.evolveFromRecord()`    | Ensures synchronous memory writes do not block the event loop.                         |
+| **Max Traversal Depth**            | 4 hops         | `MemoryGraphQueryRequestSchema`              | Inherited from Task 062 (`maxDepth <= 4`). Prevents combinatorial explosion.           |
+| **Max Traversal Limit**            | 100 items      | `MemoryGraphQueryRequestSchema`              | Inherited from Task 062 (`limit <= 100`). Memory safety.                               |
 
 ---
 
@@ -403,31 +407,31 @@ Phase 3 reuses established repository bounds and introduces strict operational c
 ### CREATE (New Files)
 
 1. **`packages/contracts/src/memory/evolution.ts`**
-   - *Responsibility*: Canonical Zod contracts for graph evolution operations, requests, responses, and receipts (`GraphEvolutionOperationSchema`, `GraphEvolutionRequestSchema`, `GraphEvolutionResultSchema`, `EvolutionReceiptSchema`).
-   - *Export*: Re-exported from `packages/contracts/src/index.ts` and `packages/contracts/src/memory/index.ts`.
+   - _Responsibility_: Canonical Zod contracts for graph evolution operations, requests, responses, and receipts (`GraphEvolutionOperationSchema`, `GraphEvolutionRequestSchema`, `GraphEvolutionResultSchema`, `EvolutionReceiptSchema`).
+   - _Export_: Re-exported from `packages/contracts/src/index.ts` and `packages/contracts/src/memory/index.ts`.
 2. **`services/backend/src/memory/graph-evolution-engine.ts`**
-   - *Responsibility*: Core engine implementing `IGraphEvolutionEngine`. Coordinates `GraphExtractor`, executes candidate governance validation, resolves entity canonicalization and supersession, and submits atomic evolution plans to the store.
+   - _Responsibility_: Core engine implementing `IGraphEvolutionEngine`. Coordinates `GraphExtractor`, executes candidate governance validation, resolves entity canonicalization and supersession, and submits atomic evolution plans to the store.
 3. **`services/backend/tests/memory/graph-evolution-engine.test.ts`**
-   - *Responsibility*: Comprehensive unit tests covering governance validation, entity canonicalization, same-entity refinement, contradictory fact supersession, and error handling.
+   - _Responsibility_: Comprehensive unit tests covering governance validation, entity canonicalization, same-entity refinement, contradictory fact supersession, and error handling.
 4. **`tests/hardening/graph-evolution-security.test.ts`**
-   - *Responsibility*: Full security regression suite asserting `066-P3-SEC-01` through `066-P3-SEC-08`.
+   - _Responsibility_: Full security regression suite asserting `066-P3-SEC-01` through `066-P3-SEC-08`.
 
 ### MODIFY (Existing Files)
 
 1. **`packages/contracts/src/memory/index.ts`**
-   - *Reason*: Re-export new evolution contracts.
+   - _Reason_: Re-export new evolution contracts.
 2. **`packages/contracts/src/index.ts`**
-   - *Reason*: Re-export new evolution contracts at package root.
+   - _Reason_: Re-export new evolution contracts at package root.
 3. **`services/backend/src/memory/types.ts`**
-   - *Reason*: Define `IGraphEvolutionEngine`, `GraphEvolutionOptions`, and extend `IMemoryStore` with `evolveGraph()`.
+   - _Reason_: Define `IGraphEvolutionEngine`, `GraphEvolutionOptions`, and extend `IMemoryStore` with `evolveGraph()`.
 4. **`services/backend/src/memory/sqlite-memory-store.ts`**
-   - *Reason*: Implement `evolveGraph()` with atomic `BEGIN IMMEDIATE ... COMMIT/ROLLBACK` transaction; harden `revokeGraphForMemoryInternal()` for edge provenance.
+   - _Reason_: Implement `evolveGraph()` with atomic `BEGIN IMMEDIATE ... COMMIT/ROLLBACK` transaction; harden `revokeGraphForMemoryInternal()` for edge provenance.
 5. **`services/backend/src/memory/memory-store.ts`**
-   - *Reason*: Implement `evolveGraph()` in in-memory store for unit test parity.
+   - _Reason_: Implement `evolveGraph()` in in-memory store for unit test parity.
 6. **`services/backend/src/memory/memory-service.ts`**
-   - *Reason*: Integrate `GraphEvolutionEngine` instance, expose `evolveMemoryGraph()`, and connect post-commit evolution trigger in `createMemory()` / `updateMemory()`.
+   - _Reason_: Integrate `GraphEvolutionEngine` instance, expose `evolveMemoryGraph()`, and connect post-commit evolution trigger in `createMemory()` / `updateMemory()`.
 7. **`services/backend/src/memory/graph-projection-engine.ts`**
-   - *Reason*: Add `evolveFromRecord()` convenience delegation to `GraphEvolutionEngine`.
+   - _Reason_: Add `evolveFromRecord()` convenience delegation to `GraphEvolutionEngine`.
 
 ### DO NOT TOUCH (Strict Boundary)
 
@@ -514,14 +518,14 @@ The following are strictly out of scope for Task 066 Phase 3:
 ## 18. Risks & Open Questions
 
 1. **Memory Record Write Latency**:
-   - *Risk*: Running extraction and graph evolution synchronously during `createMemory` could increase memory write latency.
-   - *Mitigation*: Bounds from Phase 2 clamp inputs to 32 KB, nodes to 20, and edges to 30. Benchmarks prove extraction executes in < 2ms and SQLite WAL writes execute in < 5ms. Total overhead is < 10ms.
+   - _Risk_: Running extraction and graph evolution synchronously during `createMemory` could increase memory write latency.
+   - _Mitigation_: Bounds from Phase 2 clamp inputs to 32 KB, nodes to 20, and edges to 30. Benchmarks prove extraction executes in < 2ms and SQLite WAL writes execute in < 5ms. Total overhead is < 10ms.
 2. **Fact Verification Mechanism**:
-   - *Open Question*: When and how will unverified facts ever become verified in future sprints?
-   - *Resolution*: Fact verification requires a dedicated Human-In-The-Loop review workflow or verified cryptographic task execution receipts. For Sprint 3, all heuristic graph facts remain truthfully `verified: false`.
+   - _Open Question_: When and how will unverified facts ever become verified in future sprints?
+   - _Resolution_: Fact verification requires a dedicated Human-In-The-Loop review workflow or verified cryptographic task execution receipts. For Sprint 3, all heuristic graph facts remain truthfully `verified: false`.
 3. **Long Supersession Chains**:
-   - *Risk*: High-frequency updates to the same entity could create deep supersession linked lists.
-   - *Mitigation*: Hard bound of 10 hops in supersession traversal; compaction policy can collapse historical chains if required in future maintenance tasks.
+   - _Risk_: High-frequency updates to the same entity could create deep supersession linked lists.
+   - _Mitigation_: Hard bound of 10 hops in supersession traversal; compaction policy can collapse historical chains if required in future maintenance tasks.
 
 ---
 
@@ -536,12 +540,12 @@ The following are strictly out of scope for Task 066 Phase 3:
 
 ## 20. Source Verification Matrix
 
-| Claim / Requirement | Source Verification | Status |
-|---|---|---|
-| Temporal columns exist in SQLite | `services/backend/src/memory/sqlite-memory-store.ts:286-320` | **Source-Verified** |
-| Optimistic locking on nodes/edges | `services/backend/src/memory/sqlite-memory-store.ts:978-985, 1123-1131` | **Source-Verified** |
-| Extractor emits unverified candidates | `services/backend/src/memory/graph-extractor.ts:700-720` | **Source-Verified** |
-| Zero synthetic root nodes in extractor | Commit `928f9f2e077e3fcef01f510c739ce7b96618d15b` | **Source-Verified** |
-| Memory tombstoning cascade exists | `services/backend/src/memory/memory-service.ts:460-482` | **Source-Verified** |
-| Fact verification authority limitation | `packages/contracts/src/memory/base.ts:43-55` | **Source-Verified** |
-| Dedicated evolution engine pattern | Architecture audit of `MemoryService` line count and responsibilities | **Architectural Recommendation** |
+| Claim / Requirement                    | Source Verification                                                     | Status                           |
+| -------------------------------------- | ----------------------------------------------------------------------- | -------------------------------- |
+| Temporal columns exist in SQLite       | `services/backend/src/memory/sqlite-memory-store.ts:286-320`            | **Source-Verified**              |
+| Optimistic locking on nodes/edges      | `services/backend/src/memory/sqlite-memory-store.ts:978-985, 1123-1131` | **Source-Verified**              |
+| Extractor emits unverified candidates  | `services/backend/src/memory/graph-extractor.ts:700-720`                | **Source-Verified**              |
+| Zero synthetic root nodes in extractor | Commit `928f9f2e077e3fcef01f510c739ce7b96618d15b`                       | **Source-Verified**              |
+| Memory tombstoning cascade exists      | `services/backend/src/memory/memory-service.ts:460-482`                 | **Source-Verified**              |
+| Fact verification authority limitation | `packages/contracts/src/memory/base.ts:43-55`                           | **Source-Verified**              |
+| Dedicated evolution engine pattern     | Architecture audit of `MemoryService` line count and responsibilities   | **Architectural Recommendation** |
