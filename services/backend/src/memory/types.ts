@@ -8,8 +8,10 @@ import {
   EpisodicEpisodeInput,
   ProceduralPlaybookProposal,
   ProceduralPlaybookProposalInput,
-  MemoryGraphNode,
-  MemoryGraphEdge,
+  MemoryGraphNodeInput,
+  MemoryGraphNodeOutput,
+  MemoryGraphEdgeInput,
+  MemoryGraphEdgeOutput,
   MemoryGraphQueryRequest,
   MemoryGraphQueryResponse,
   VectorEmbedding,
@@ -83,10 +85,24 @@ export interface IMemoryStore {
     options?: { planningEligibleOnly?: boolean },
   ): Promise<ProceduralPlaybookProposal[]>;
 
-  saveGraphNode(node: MemoryGraphNode): Promise<MemoryGraphNode>;
-  getGraphNode(id: string, tenantId: string, workspaceId: string): Promise<MemoryGraphNode | null>;
-  saveGraphEdge(edge: MemoryGraphEdge): Promise<MemoryGraphEdge>;
-  getGraphEdge(id: string, tenantId: string, workspaceId: string): Promise<MemoryGraphEdge | null>;
+  saveGraphNode(
+    node: MemoryGraphNodeInput,
+    options?: { expectedVersion?: number },
+  ): Promise<MemoryGraphNodeOutput>;
+  getGraphNode(
+    id: string,
+    tenantId: string,
+    workspaceId: string,
+  ): Promise<MemoryGraphNodeOutput | null>;
+  saveGraphEdge(
+    edge: MemoryGraphEdgeInput,
+    options?: { expectedVersion?: number },
+  ): Promise<MemoryGraphEdgeOutput>;
+  getGraphEdge(
+    id: string,
+    tenantId: string,
+    workspaceId: string,
+  ): Promise<MemoryGraphEdgeOutput | null>;
   queryGraph(request: MemoryGraphQueryRequest): Promise<MemoryGraphQueryResponse>;
   revokeGraphForMemory(
     memoryRecordId: string,
@@ -147,8 +163,16 @@ export interface IEpisodicLearner {
 }
 
 export interface IGraphProjectionEngine {
-  upsertNode(node: MemoryGraphNode, ctx: MemoryServiceContext): Promise<MemoryGraphNode>;
-  upsertEdge(edge: MemoryGraphEdge, ctx: MemoryServiceContext): Promise<MemoryGraphEdge>;
+  upsertNode(
+    node: MemoryGraphNodeInput,
+    ctx: MemoryServiceContext,
+    options?: { expectedVersion?: number },
+  ): Promise<MemoryGraphNodeOutput>;
+  upsertEdge(
+    edge: MemoryGraphEdgeInput,
+    ctx: MemoryServiceContext,
+    options?: { expectedVersion?: number },
+  ): Promise<MemoryGraphEdgeOutput>;
   query(
     request: MemoryGraphQueryRequest,
     ctx: MemoryServiceContext,

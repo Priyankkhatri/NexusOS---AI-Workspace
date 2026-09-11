@@ -1,7 +1,9 @@
 import {
-  MemoryGraphNode,
+  MemoryGraphNodeInput,
+  MemoryGraphNodeOutput,
   MemoryGraphNodeSchema,
-  MemoryGraphEdge,
+  MemoryGraphEdgeInput,
+  MemoryGraphEdgeOutput,
   MemoryGraphEdgeSchema,
   MemoryGraphQueryRequest,
   MemoryGraphQueryRequestSchema,
@@ -40,9 +42,10 @@ export class GraphProjectionEngine implements IGraphProjectionEngine {
   }
 
   public async upsertNode(
-    node: MemoryGraphNode,
+    node: MemoryGraphNodeInput,
     ctx: MemoryServiceContext,
-  ): Promise<MemoryGraphNode> {
+    options?: { expectedVersion?: number },
+  ): Promise<MemoryGraphNodeOutput> {
     const validated = MemoryGraphNodeSchema.parse(node);
 
     // 058-SEC-03: Tenant & Workspace validation
@@ -62,14 +65,15 @@ export class GraphProjectionEngine implements IGraphProjectionEngine {
       }
     }
 
-    const saved = await this.store.saveGraphNode(validated);
+    const saved = await this.store.saveGraphNode(validated, options);
     return saved;
   }
 
   public async upsertEdge(
-    edge: MemoryGraphEdge,
+    edge: MemoryGraphEdgeInput,
     ctx: MemoryServiceContext,
-  ): Promise<MemoryGraphEdge> {
+    options?: { expectedVersion?: number },
+  ): Promise<MemoryGraphEdgeOutput> {
     const validated = MemoryGraphEdgeSchema.parse(edge);
 
     // 058-SEC-03: Tenant & Workspace validation
@@ -87,7 +91,7 @@ export class GraphProjectionEngine implements IGraphProjectionEngine {
       }
     }
 
-    const saved = await this.store.saveGraphEdge(validated);
+    const saved = await this.store.saveGraphEdge(validated, options);
     return saved;
   }
 

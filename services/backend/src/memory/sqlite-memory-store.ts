@@ -8,8 +8,12 @@ import {
   SENSITIVITY_HIERARCHY,
   EpisodicEpisode,
   ProceduralPlaybookProposal,
-  MemoryGraphNode,
-  MemoryGraphEdge,
+  MemoryGraphNodeInput,
+  MemoryGraphNodeOutput,
+  MemoryGraphNodeSchema,
+  MemoryGraphEdgeInput,
+  MemoryGraphEdgeOutput,
+  MemoryGraphEdgeSchema,
   MemoryGraphQueryRequest,
   MemoryGraphQueryResponse,
   isPlaybookPlanningEligible,
@@ -112,11 +116,14 @@ export class SqliteMemoryStore implements IMemoryStore {
       );
     `);
 
-    const currentVersionRow = this.db
-      .prepare('SELECT MAX(version) as max_v FROM schema_migrations;')
-      .get() as { max_v: number | null };
+    const getVersion = (): number => {
+      const row = this.db.prepare('SELECT MAX(version) as max_v FROM schema_migrations;').get() as {
+        max_v: number | null;
+      };
+      return row?.max_v ?? 0;
+    };
 
-    const currentVersion = currentVersionRow?.max_v ?? 0;
+    let currentVersion = getVersion();
 
     if (currentVersion < 1) {
       this.db.exec('BEGIN IMMEDIATE;');
@@ -260,6 +267,44 @@ export class SqliteMemoryStore implements IMemoryStore {
 
           INSERT INTO schema_migrations (version, applied_at, description)
           VALUES (1, datetime('now'), 'Task 062 Initial Persistent Schema');
+        `);
+        this.db.exec('COMMIT;');
+      } catch (err) {
+        this.db.exec('ROLLBACK;');
+        throw err;
+      }
+      currentVersion = getVersion();
+    }
+
+    if (currentVersion < 2) {
+      this.db.exec('BEGIN IMMEDIATE;');
+      try {
+        this.db.exec(`
+          -- Additive columns for graph_nodes (066-P1-SEC-03, 066-P1-SEC-05)
+          ALTER TABLE graph_nodes ADD COLUMN version INTEGER NOT NULL DEFAULT 1;
+          ALTER TABLE graph_nodes ADD COLUMN is_current INTEGER NOT NULL DEFAULT 1;
+          ALTER TABLE graph_nodes ADD COLUMN valid_from TEXT;
+          ALTER TABLE graph_nodes ADD COLUMN valid_to TEXT;
+          ALTER TABLE graph_nodes ADD COLUMN superseded_by TEXT;
+          ALTER TABLE graph_nodes ADD COLUMN provenance TEXT;
+          ALTER TABLE graph_nodes ADD COLUMN updated_at TEXT;
+
+          CREATE INDEX IF NOT EXISTS idx_graph_nodes_current
+            ON graph_nodes (tenant_id, workspace_id, is_current);
+
+          -- Additive columns for graph_edges (066-P1-SEC-03, 066-P1-SEC-05)
+          ALTER TABLE graph_edges ADD COLUMN version INTEGER NOT NULL DEFAULT 1;
+          ALTER TABLE graph_edges ADD COLUMN is_current INTEGER NOT NULL DEFAULT 1;
+          ALTER TABLE graph_edges ADD COLUMN valid_from TEXT;
+          ALTER TABLE graph_edges ADD COLUMN valid_to TEXT;
+          ALTER TABLE graph_edges ADD COLUMN superseded_by TEXT;
+          ALTER TABLE graph_edges ADD COLUMN updated_at TEXT;
+
+          CREATE INDEX IF NOT EXISTS idx_graph_edges_current
+            ON graph_edges (tenant_id, workspace_id, is_current);
+
+          INSERT INTO schema_migrations (version, applied_at, description)
+          VALUES (2, datetime('now'), 'Task 066 Graph Evolution Temporal & Versioned Foundation');
         `);
         this.db.exec('COMMIT;');
       } catch (err) {
@@ -902,43 +947,140 @@ export class SqliteMemoryStore implements IMemoryStore {
   }
 
   // -------------------------------------------------------------------------
-  // Knowledge Graph Operations (062-SEC-05)
+  // Knowledge Graph Operations (062-SEC-05, 066-P1-SEC-02, 066-P1-SEC-03)
   // -------------------------------------------------------------------------
 
-  public async saveGraphNode(node: MemoryGraphNode): Promise<MemoryGraphNode> {
+  public async saveGraphNode(
+    node: MemoryGraphNodeInput,
+    options?: { expectedVersion?: number },
+  ): Promise<MemoryGraphNodeOutput> {
     this.checkFailure();
-    const stmt = this.db.prepare(`
-      INSERT INTO graph_nodes (
-        id, tenant_id, workspace_id, node_type, label, confidence,
-        memory_record_id, properties, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(tenant_id, workspace_id, id) DO UPDATE SET
-        label = excluded.label,
-        confidence = excluded.confidence,
-        memory_record_id = excluded.memory_record_id,
-        properties = excluded.properties;
-    `);
+    const validated = MemoryGraphNodeSchema.parse(node);
 
-    stmt.run(
-      node.id,
-      node.tenantId,
-      node.workspaceId,
-      node.nodeType,
-      node.label,
-      node.confidence,
-      node.memoryRecordId ?? null,
-      JSON.stringify(node.properties ?? {}),
-      node.createdAt,
+    const existing = await this.getGraphNode(
+      validated.id,
+      validated.tenantId,
+      validated.workspaceId,
     );
 
-    return JSON.parse(JSON.stringify(node));
+    if (existing) {
+      const currentVersion = existing.version;
+
+      // 066-P1-SEC-02: Optimistic Locking check
+      if (options?.expectedVersion !== undefined && options.expectedVersion !== currentVersion) {
+        throw new MemoryVersionConflictError(validated.id, currentVersion, options.expectedVersion);
+      }
+
+      // 066-P1-SEC-02: Monotonicity check: cannot roll version backwards
+      if (node.version !== undefined && node.version < currentVersion) {
+        throw new MemoryVersionConflictError(validated.id, currentVersion, node.version);
+      }
+
+      // 066-P1-SEC-02: Compute next monotonic version
+      let nextVersion = currentVersion + 1;
+      if (node.version !== undefined && node.version > currentVersion) {
+        nextVersion = node.version;
+      }
+
+      const updatedAt = validated.updatedAt ?? new Date().toISOString();
+
+      const stmt = this.db.prepare(`
+        UPDATE graph_nodes SET
+          node_type = ?,
+          label = ?,
+          confidence = ?,
+          memory_record_id = ?,
+          properties = ?,
+          provenance = ?,
+          version = ?,
+          is_current = ?,
+          valid_from = ?,
+          valid_to = ?,
+          superseded_by = ?,
+          updated_at = ?
+        WHERE tenant_id = ? AND workspace_id = ? AND id = ? AND version = ?;
+      `);
+
+      const result = stmt.run(
+        validated.nodeType,
+        validated.label,
+        validated.confidence,
+        validated.memoryRecordId ?? null,
+        JSON.stringify(validated.properties ?? {}),
+        validated.provenance ? JSON.stringify(validated.provenance) : null,
+        nextVersion,
+        validated.isCurrent ? 1 : 0,
+        validated.validFrom ?? null,
+        validated.validTo ?? null,
+        validated.supersededBy ?? null,
+        updatedAt,
+        validated.tenantId,
+        validated.workspaceId,
+        validated.id,
+        currentVersion,
+      );
+
+      if (result.changes === 0) {
+        throw new MemoryVersionConflictError(validated.id, currentVersion, currentVersion);
+      }
+
+      const updatedNode: MemoryGraphNodeOutput = {
+        ...validated,
+        version: nextVersion,
+        updatedAt,
+      };
+      return updatedNode;
+    } else {
+      if (
+        options?.expectedVersion !== undefined &&
+        options.expectedVersion !== 0 &&
+        options.expectedVersion !== 1
+      ) {
+        throw new MemoryVersionConflictError(validated.id, 0, options.expectedVersion);
+      }
+
+      const initialVersion = node.version ?? 1;
+
+      const stmt = this.db.prepare(`
+        INSERT INTO graph_nodes (
+          id, tenant_id, workspace_id, node_type, label, confidence,
+          memory_record_id, properties, provenance, version, is_current,
+          valid_from, valid_to, superseded_by, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+      `);
+
+      stmt.run(
+        validated.id,
+        validated.tenantId,
+        validated.workspaceId,
+        validated.nodeType,
+        validated.label,
+        validated.confidence,
+        validated.memoryRecordId ?? null,
+        JSON.stringify(validated.properties ?? {}),
+        validated.provenance ? JSON.stringify(validated.provenance) : null,
+        initialVersion,
+        validated.isCurrent ? 1 : 0,
+        validated.validFrom ?? null,
+        validated.validTo ?? null,
+        validated.supersededBy ?? null,
+        validated.createdAt,
+        validated.updatedAt ?? null,
+      );
+
+      const createdNode: MemoryGraphNodeOutput = {
+        ...validated,
+        version: initialVersion,
+      };
+      return createdNode;
+    }
   }
 
   public async getGraphNode(
     id: string,
     tenantId: string,
     workspaceId: string,
-  ): Promise<MemoryGraphNode | null> {
+  ): Promise<MemoryGraphNodeOutput | null> {
     this.checkFailure();
     const row = this.db
       .prepare('SELECT * FROM graph_nodes WHERE tenant_id = ? AND workspace_id = ? AND id = ?;')
@@ -948,43 +1090,140 @@ export class SqliteMemoryStore implements IMemoryStore {
     return this.rowToGraphNode(row);
   }
 
-  public async saveGraphEdge(edge: MemoryGraphEdge): Promise<MemoryGraphEdge> {
+  public async saveGraphEdge(
+    edge: MemoryGraphEdgeInput,
+    options?: { expectedVersion?: number },
+  ): Promise<MemoryGraphEdgeOutput> {
     this.checkFailure();
-    const stmt = this.db.prepare(`
-      INSERT INTO graph_edges (
-        id, tenant_id, workspace_id, edge_type, source_node_id, target_node_id,
-        confidence, weight, properties, provenance, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(tenant_id, workspace_id, id) DO UPDATE SET
-        edge_type = excluded.edge_type,
-        confidence = excluded.confidence,
-        weight = excluded.weight,
-        properties = excluded.properties,
-        provenance = excluded.provenance;
-    `);
+    const validated = MemoryGraphEdgeSchema.parse(edge);
 
-    stmt.run(
-      edge.id,
-      edge.tenantId,
-      edge.workspaceId,
-      edge.edgeType,
-      edge.sourceNodeId,
-      edge.targetNodeId,
-      edge.confidence,
-      edge.weight,
-      JSON.stringify(edge.properties ?? {}),
-      JSON.stringify(edge.provenance),
-      edge.createdAt,
+    const existing = await this.getGraphEdge(
+      validated.id,
+      validated.tenantId,
+      validated.workspaceId,
     );
 
-    return JSON.parse(JSON.stringify(edge));
+    if (existing) {
+      const currentVersion = existing.version;
+
+      // 066-P1-SEC-02: Optimistic Locking check
+      if (options?.expectedVersion !== undefined && options.expectedVersion !== currentVersion) {
+        throw new MemoryVersionConflictError(validated.id, currentVersion, options.expectedVersion);
+      }
+
+      // 066-P1-SEC-02: Monotonicity check: cannot roll version backwards
+      if (edge.version !== undefined && edge.version < currentVersion) {
+        throw new MemoryVersionConflictError(validated.id, currentVersion, edge.version);
+      }
+
+      // 066-P1-SEC-02: Compute next monotonic version
+      let nextVersion = currentVersion + 1;
+      if (edge.version !== undefined && edge.version > currentVersion) {
+        nextVersion = edge.version;
+      }
+
+      const updatedAt = validated.updatedAt ?? new Date().toISOString();
+
+      const stmt = this.db.prepare(`
+        UPDATE graph_edges SET
+          edge_type = ?,
+          source_node_id = ?,
+          target_node_id = ?,
+          confidence = ?,
+          weight = ?,
+          properties = ?,
+          provenance = ?,
+          version = ?,
+          is_current = ?,
+          valid_from = ?,
+          valid_to = ?,
+          superseded_by = ?,
+          updated_at = ?
+        WHERE tenant_id = ? AND workspace_id = ? AND id = ? AND version = ?;
+      `);
+
+      const result = stmt.run(
+        validated.edgeType,
+        validated.sourceNodeId,
+        validated.targetNodeId,
+        validated.confidence,
+        validated.weight,
+        JSON.stringify(validated.properties ?? {}),
+        JSON.stringify(validated.provenance),
+        nextVersion,
+        validated.isCurrent ? 1 : 0,
+        validated.validFrom ?? null,
+        validated.validTo ?? null,
+        validated.supersededBy ?? null,
+        updatedAt,
+        validated.tenantId,
+        validated.workspaceId,
+        validated.id,
+        currentVersion,
+      );
+
+      if (result.changes === 0) {
+        throw new MemoryVersionConflictError(validated.id, currentVersion, currentVersion);
+      }
+
+      const updatedEdge: MemoryGraphEdgeOutput = {
+        ...validated,
+        version: nextVersion,
+        updatedAt,
+      };
+      return updatedEdge;
+    } else {
+      if (
+        options?.expectedVersion !== undefined &&
+        options.expectedVersion !== 0 &&
+        options.expectedVersion !== 1
+      ) {
+        throw new MemoryVersionConflictError(validated.id, 0, options.expectedVersion);
+      }
+
+      const initialVersion = edge.version ?? 1;
+
+      const stmt = this.db.prepare(`
+        INSERT INTO graph_edges (
+          id, tenant_id, workspace_id, edge_type, source_node_id, target_node_id,
+          confidence, weight, properties, provenance, version, is_current,
+          valid_from, valid_to, superseded_by, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+      `);
+
+      stmt.run(
+        validated.id,
+        validated.tenantId,
+        validated.workspaceId,
+        validated.edgeType,
+        validated.sourceNodeId,
+        validated.targetNodeId,
+        validated.confidence,
+        validated.weight,
+        JSON.stringify(validated.properties ?? {}),
+        JSON.stringify(validated.provenance),
+        initialVersion,
+        validated.isCurrent ? 1 : 0,
+        validated.validFrom ?? null,
+        validated.validTo ?? null,
+        validated.supersededBy ?? null,
+        validated.createdAt,
+        validated.updatedAt ?? null,
+      );
+
+      const createdEdge: MemoryGraphEdgeOutput = {
+        ...validated,
+        version: initialVersion,
+      };
+      return createdEdge;
+    }
   }
 
   public async getGraphEdge(
     id: string,
     tenantId: string,
     workspaceId: string,
-  ): Promise<MemoryGraphEdge | null> {
+  ): Promise<MemoryGraphEdgeOutput | null> {
     this.checkFailure();
     const row = this.db
       .prepare('SELECT * FROM graph_edges WHERE tenant_id = ? AND workspace_id = ? AND id = ?;')
@@ -1020,7 +1259,7 @@ export class SqliteMemoryStore implements IMemoryStore {
       )
       .all(tenantId, workspaceId, minConfidence) as any[];
 
-    const wsNodes = new Map<string, MemoryGraphNode>();
+    const wsNodes = new Map<string, MemoryGraphNodeOutput>();
     for (const r of nodeRows) {
       const node = this.rowToGraphNode(r);
       if (!allowedNodeTypes || allowedNodeTypes.has(node.nodeType)) {
@@ -1034,7 +1273,7 @@ export class SqliteMemoryStore implements IMemoryStore {
       )
       .all(tenantId, workspaceId, minConfidence) as any[];
 
-    const wsEdges: MemoryGraphEdge[] = [];
+    const wsEdges: MemoryGraphEdgeOutput[] = [];
     for (const r of edgeRows) {
       const edge = this.rowToGraphEdge(r);
       if (!allowedEdgeTypes || allowedEdgeTypes.has(edge.edgeType)) {
@@ -1057,7 +1296,7 @@ export class SqliteMemoryStore implements IMemoryStore {
 
       const visitedNodes = new Set<string>([startNodeId]);
       const visitedEdgeIds = new Set<string>();
-      const resultEdges: MemoryGraphEdge[] = [];
+      const resultEdges: MemoryGraphEdgeOutput[] = [];
       let currentFrontier = new Set<string>([startNodeId]);
       let currentDepth = 0;
 
@@ -1421,21 +1660,28 @@ export class SqliteMemoryStore implements IMemoryStore {
     };
   }
 
-  private rowToGraphNode(row: any): MemoryGraphNode {
+  private rowToGraphNode(row: any): MemoryGraphNodeOutput {
     return {
       id: row.id,
       tenantId: row.tenant_id,
       workspaceId: row.workspace_id,
       nodeType: row.node_type,
       label: row.label,
-      confidence: row.confidence,
+      confidence: row.confidence ?? 1.0,
       memoryRecordId: row.memory_record_id ?? undefined,
       properties: JSON.parse(row.properties || '{}'),
+      provenance: row.provenance ? JSON.parse(row.provenance) : undefined,
+      version: row.version ?? 1,
+      isCurrent: row.is_current !== undefined ? Boolean(row.is_current) : true,
+      validFrom: row.valid_from ?? undefined,
+      validTo: row.valid_to ?? undefined,
+      supersededBy: row.superseded_by ?? undefined,
       createdAt: row.created_at,
+      updatedAt: row.updated_at ?? undefined,
     };
   }
 
-  private rowToGraphEdge(row: any): MemoryGraphEdge {
+  private rowToGraphEdge(row: any): MemoryGraphEdgeOutput {
     return {
       id: row.id,
       tenantId: row.tenant_id,
@@ -1443,11 +1689,17 @@ export class SqliteMemoryStore implements IMemoryStore {
       edgeType: row.edge_type,
       sourceNodeId: row.source_node_id,
       targetNodeId: row.target_node_id,
-      confidence: row.confidence,
-      weight: row.weight,
+      confidence: row.confidence ?? 1.0,
+      weight: row.weight ?? 1.0,
       properties: JSON.parse(row.properties || '{}'),
       provenance: JSON.parse(row.provenance || '{}'),
+      version: row.version ?? 1,
+      isCurrent: row.is_current !== undefined ? Boolean(row.is_current) : true,
+      validFrom: row.valid_from ?? undefined,
+      validTo: row.valid_to ?? undefined,
+      supersededBy: row.superseded_by ?? undefined,
       createdAt: row.created_at,
+      updatedAt: row.updated_at ?? undefined,
     };
   }
 

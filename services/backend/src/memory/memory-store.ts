@@ -7,8 +7,12 @@ import {
   SENSITIVITY_HIERARCHY,
   EpisodicEpisode,
   ProceduralPlaybookProposal,
-  MemoryGraphNode,
-  MemoryGraphEdge,
+  MemoryGraphNodeInput,
+  MemoryGraphNodeOutput,
+  MemoryGraphNodeSchema,
+  MemoryGraphEdgeInput,
+  MemoryGraphEdgeOutput,
+  MemoryGraphEdgeSchema,
   MemoryGraphQueryRequest,
   MemoryGraphQueryResponse,
   isPlaybookPlanningEligible,
@@ -31,9 +35,9 @@ export interface InMemoryStoreOptions {
 }
 
 /**
- * Governed Persistent Memory Store Implementation
- * Provides multi-tenant partitioning, version-aware atomic updates, tombstones, safe search,
- * episodic episode persistence, procedural playbooks, and knowledge graph projections.
+ * In-Memory Memory Store
+ * Implements IMemoryStore with thread-safe JS Maps and vector simulation.
+ * Strict multi-tenant isolation via compound keys "tenantId:workspaceId:id".
  */
 export class InMemoryMemoryStore implements IMemoryStore {
   // Primary storage: composite key "tenantId:workspaceId:memoryId" -> MemoryRecord
@@ -44,10 +48,10 @@ export class InMemoryMemoryStore implements IMemoryStore {
   private readonly episodes = new Map<string, EpisodicEpisode>();
   // Playbooks storage: "tenantId:workspaceId:playbookId" -> ProceduralPlaybookProposal
   private readonly playbooks = new Map<string, ProceduralPlaybookProposal>();
-  // Graph nodes: "tenantId:workspaceId:nodeId" -> MemoryGraphNode
-  private readonly graphNodes = new Map<string, MemoryGraphNode>();
-  // Graph edges: "tenantId:workspaceId:edgeId" -> MemoryGraphEdge
-  private readonly graphEdges = new Map<string, MemoryGraphEdge>();
+  // Graph nodes: "tenantId:workspaceId:nodeId" -> MemoryGraphNodeOutput
+  private readonly graphNodes = new Map<string, MemoryGraphNodeOutput>();
+  // Graph edges: "tenantId:workspaceId:edgeId" -> MemoryGraphEdgeOutput
+  private readonly graphEdges = new Map<string, MemoryGraphEdgeOutput>();
   // Vector embeddings: "tenantId:workspaceId:memoryRecordId" -> VectorEmbedding
   private readonly vectorEmbeddings = new Map<string, VectorEmbedding>();
   private readonly vectorIndex: VectorIndex;
@@ -459,19 +463,57 @@ export class InMemoryMemoryStore implements IMemoryStore {
   // Task 058 Store: Knowledge Graph Projections (058-SEC-03)
   // -------------------------------------------------------------------------
 
-  public async saveGraphNode(node: MemoryGraphNode): Promise<MemoryGraphNode> {
+  public async saveGraphNode(
+    node: MemoryGraphNodeInput,
+    options?: { expectedVersion?: number },
+  ): Promise<MemoryGraphNodeOutput> {
     this.checkFailure();
-    const key = this.getKey(node.tenantId, node.workspaceId, node.id);
-    const cloned = JSON.parse(JSON.stringify(node)) as MemoryGraphNode;
-    this.graphNodes.set(key, cloned);
-    return JSON.parse(JSON.stringify(cloned));
+    const validated = MemoryGraphNodeSchema.parse(node);
+    const key = this.getKey(validated.tenantId, validated.workspaceId, validated.id);
+    const existing = this.graphNodes.get(key);
+
+    if (existing) {
+      const currentVersion = existing.version;
+      if (options?.expectedVersion !== undefined && options.expectedVersion !== currentVersion) {
+        throw new MemoryVersionConflictError(validated.id, currentVersion, options.expectedVersion);
+      }
+      if (node.version !== undefined && node.version < currentVersion) {
+        throw new MemoryVersionConflictError(validated.id, currentVersion, node.version);
+      }
+      let nextVersion = currentVersion + 1;
+      if (node.version !== undefined && node.version > currentVersion) {
+        nextVersion = node.version;
+      }
+      const updatedNode: MemoryGraphNodeOutput = {
+        ...validated,
+        version: nextVersion,
+        updatedAt: validated.updatedAt ?? new Date().toISOString(),
+      };
+      this.graphNodes.set(key, JSON.parse(JSON.stringify(updatedNode)));
+      return JSON.parse(JSON.stringify(updatedNode));
+    } else {
+      if (
+        options?.expectedVersion !== undefined &&
+        options.expectedVersion !== 0 &&
+        options.expectedVersion !== 1
+      ) {
+        throw new MemoryVersionConflictError(validated.id, 0, options.expectedVersion);
+      }
+      const initialVersion = node.version ?? 1;
+      const createdNode: MemoryGraphNodeOutput = {
+        ...validated,
+        version: initialVersion,
+      };
+      this.graphNodes.set(key, JSON.parse(JSON.stringify(createdNode)));
+      return JSON.parse(JSON.stringify(createdNode));
+    }
   }
 
   public async getGraphNode(
     id: string,
     tenantId: string,
     workspaceId: string,
-  ): Promise<MemoryGraphNode | null> {
+  ): Promise<MemoryGraphNodeOutput | null> {
     this.checkFailure();
     const key = this.getKey(tenantId, workspaceId, id);
     const node = this.graphNodes.get(key);
@@ -479,19 +521,57 @@ export class InMemoryMemoryStore implements IMemoryStore {
     return JSON.parse(JSON.stringify(node));
   }
 
-  public async saveGraphEdge(edge: MemoryGraphEdge): Promise<MemoryGraphEdge> {
+  public async saveGraphEdge(
+    edge: MemoryGraphEdgeInput,
+    options?: { expectedVersion?: number },
+  ): Promise<MemoryGraphEdgeOutput> {
     this.checkFailure();
-    const key = this.getKey(edge.tenantId, edge.workspaceId, edge.id);
-    const cloned = JSON.parse(JSON.stringify(edge)) as MemoryGraphEdge;
-    this.graphEdges.set(key, cloned);
-    return JSON.parse(JSON.stringify(cloned));
+    const validated = MemoryGraphEdgeSchema.parse(edge);
+    const key = this.getKey(validated.tenantId, validated.workspaceId, validated.id);
+    const existing = this.graphEdges.get(key);
+
+    if (existing) {
+      const currentVersion = existing.version;
+      if (options?.expectedVersion !== undefined && options.expectedVersion !== currentVersion) {
+        throw new MemoryVersionConflictError(validated.id, currentVersion, options.expectedVersion);
+      }
+      if (edge.version !== undefined && edge.version < currentVersion) {
+        throw new MemoryVersionConflictError(validated.id, currentVersion, edge.version);
+      }
+      let nextVersion = currentVersion + 1;
+      if (edge.version !== undefined && edge.version > currentVersion) {
+        nextVersion = edge.version;
+      }
+      const updatedEdge: MemoryGraphEdgeOutput = {
+        ...validated,
+        version: nextVersion,
+        updatedAt: validated.updatedAt ?? new Date().toISOString(),
+      };
+      this.graphEdges.set(key, JSON.parse(JSON.stringify(updatedEdge)));
+      return JSON.parse(JSON.stringify(updatedEdge));
+    } else {
+      if (
+        options?.expectedVersion !== undefined &&
+        options.expectedVersion !== 0 &&
+        options.expectedVersion !== 1
+      ) {
+        throw new MemoryVersionConflictError(validated.id, 0, options.expectedVersion);
+      }
+      const initialVersion = edge.version ?? 1;
+      const createdEdge: MemoryGraphEdgeOutput = {
+        ...validated,
+        version: initialVersion,
+      };
+      this.graphEdges.set(key, JSON.parse(JSON.stringify(createdEdge)));
+      return JSON.parse(JSON.stringify(createdEdge));
+    }
   }
 
   public async getGraphEdge(
     id: string,
     tenantId: string,
     workspaceId: string,
-  ): Promise<MemoryGraphEdge | null> {
+  ): Promise<MemoryGraphEdgeOutput | null> {
     this.checkFailure();
     const key = this.getKey(tenantId, workspaceId, id);
     const edge = this.graphEdges.get(key);
@@ -512,7 +592,7 @@ export class InMemoryMemoryStore implements IMemoryStore {
     const allowedEdgeTypes = request.edgeTypes ? new Set(request.edgeTypes) : null;
 
     // Collect all nodes and edges belonging strictly to this tenant and workspace (058-SEC-03)
-    const wsNodes = new Map<string, MemoryGraphNode>();
+    const wsNodes = new Map<string, MemoryGraphNodeOutput>();
     for (const n of this.graphNodes.values()) {
       if (n.tenantId === tenantId && n.workspaceId === workspaceId) {
         if (!allowedNodeTypes || allowedNodeTypes.has(n.nodeType)) {
@@ -523,7 +603,7 @@ export class InMemoryMemoryStore implements IMemoryStore {
       }
     }
 
-    const wsEdges: MemoryGraphEdge[] = [];
+    const wsEdges: MemoryGraphEdgeOutput[] = [];
     for (const e of this.graphEdges.values()) {
       if (e.tenantId === tenantId && e.workspaceId === workspaceId) {
         if (!allowedEdgeTypes || allowedEdgeTypes.has(e.edgeType)) {
@@ -551,7 +631,7 @@ export class InMemoryMemoryStore implements IMemoryStore {
 
       const visitedNodes = new Set<string>([startNodeId]);
       const visitedEdgeIds = new Set<string>();
-      const resultEdges: MemoryGraphEdge[] = [];
+      const resultEdges: MemoryGraphEdgeOutput[] = [];
       let currentFrontier = new Set<string>([startNodeId]);
       let currentDepth = 0;
 

@@ -29,38 +29,147 @@ export enum MemoryGraphEdgeType {
 export const MemoryGraphEdgeTypeSchema = z.nativeEnum(MemoryGraphEdgeType);
 
 // ---------------------------------------------------------------------------
-// 2. Graph Node & Edge Schemas (058-SEC-03)
+// 2. Graph Node & Edge Schemas (058-SEC-03, 066-P1-SEC-03)
 // ---------------------------------------------------------------------------
 
-export const MemoryGraphNodeSchema = z.object({
-  id: z.string().min(1),
-  tenantId: z.string().min(1),
-  workspaceId: z.string().min(1),
-  nodeType: MemoryGraphNodeTypeSchema,
-  label: z.string().min(1).max(256),
-  memoryRecordId: z.string().optional(),
-  properties: z.record(z.unknown()).default({}),
-  confidence: z.number().min(0).max(1).default(1.0),
-  createdAt: z.string().datetime(),
-});
+export const MemoryGraphNodeSchema = z
+  .object({
+    id: z.string().min(1),
+    tenantId: z.string().min(1),
+    workspaceId: z.string().min(1),
+    nodeType: MemoryGraphNodeTypeSchema,
+    label: z.string().min(1).max(256),
+    memoryRecordId: z.string().optional(),
+    properties: z.record(z.unknown()).default({}),
+    confidence: z.number().min(0).max(1).default(1.0),
+    provenance: MemoryProvenanceSchema.optional(),
+    version: z.number().int().positive().default(1),
+    isCurrent: z.boolean().default(true),
+    validFrom: z.string().datetime().optional(),
+    validTo: z.string().datetime().nullable().optional(),
+    supersededBy: z.string().optional(),
+    createdAt: z.string().datetime(),
+    updatedAt: z.string().datetime().optional(),
+  })
+  .refine(
+    (data) => {
+      if (data.validTo && data.isCurrent) {
+        return false;
+      }
+      return true;
+    },
+    {
+      message:
+        '066-P1-SEC-03: Current graph node cannot have a closed validity window (validTo must be null/undefined when isCurrent is true)',
+      path: ['validTo'],
+    },
+  )
+  .refine(
+    (data) => {
+      if (data.supersededBy && data.isCurrent) {
+        return false;
+      }
+      return true;
+    },
+    {
+      message:
+        '066-P1-SEC-03: Current graph node cannot have supersededBy set when isCurrent is true',
+      path: ['supersededBy'],
+    },
+  )
+  .refine(
+    (data) => {
+      if (data.validTo) {
+        const fromTime = new Date(data.validFrom ?? data.createdAt).getTime();
+        const toTime = new Date(data.validTo).getTime();
+        if (fromTime > toTime) {
+          return false;
+        }
+      }
+      return true;
+    },
+    {
+      message: '066-P1-SEC-03: validFrom must be less than or equal to validTo',
+      path: ['validTo'],
+    },
+  );
 
-export type MemoryGraphNode = z.infer<typeof MemoryGraphNodeSchema>;
+export type MemoryGraphNodeOutput = z.infer<typeof MemoryGraphNodeSchema>;
+export type MemoryGraphNode = Omit<MemoryGraphNodeOutput, 'version' | 'isCurrent'> & {
+  version?: number;
+  isCurrent?: boolean;
+};
+export type MemoryGraphNodeInput = z.input<typeof MemoryGraphNodeSchema>;
 
-export const MemoryGraphEdgeSchema = z.object({
-  id: z.string().min(1),
-  tenantId: z.string().min(1),
-  workspaceId: z.string().min(1),
-  sourceNodeId: z.string().min(1),
-  targetNodeId: z.string().min(1),
-  edgeType: MemoryGraphEdgeTypeSchema,
-  weight: z.number().min(0).default(1.0),
-  confidence: z.number().min(0).max(1).default(1.0),
-  properties: z.record(z.unknown()).default({}),
-  provenance: MemoryProvenanceSchema,
-  createdAt: z.string().datetime(),
-});
+export const MemoryGraphEdgeSchema = z
+  .object({
+    id: z.string().min(1),
+    tenantId: z.string().min(1),
+    workspaceId: z.string().min(1),
+    sourceNodeId: z.string().min(1),
+    targetNodeId: z.string().min(1),
+    edgeType: MemoryGraphEdgeTypeSchema,
+    weight: z.number().min(0).default(1.0),
+    confidence: z.number().min(0).max(1).default(1.0),
+    properties: z.record(z.unknown()).default({}),
+    provenance: MemoryProvenanceSchema,
+    version: z.number().int().positive().default(1),
+    isCurrent: z.boolean().default(true),
+    validFrom: z.string().datetime().optional(),
+    validTo: z.string().datetime().nullable().optional(),
+    supersededBy: z.string().optional(),
+    createdAt: z.string().datetime(),
+    updatedAt: z.string().datetime().optional(),
+  })
+  .refine(
+    (data) => {
+      if (data.validTo && data.isCurrent) {
+        return false;
+      }
+      return true;
+    },
+    {
+      message:
+        '066-P1-SEC-03: Current graph edge cannot have a closed validity window (validTo must be null/undefined when isCurrent is true)',
+      path: ['validTo'],
+    },
+  )
+  .refine(
+    (data) => {
+      if (data.supersededBy && data.isCurrent) {
+        return false;
+      }
+      return true;
+    },
+    {
+      message:
+        '066-P1-SEC-03: Current graph edge cannot have supersededBy set when isCurrent is true',
+      path: ['supersededBy'],
+    },
+  )
+  .refine(
+    (data) => {
+      if (data.validTo) {
+        const fromTime = new Date(data.validFrom ?? data.createdAt).getTime();
+        const toTime = new Date(data.validTo).getTime();
+        if (fromTime > toTime) {
+          return false;
+        }
+      }
+      return true;
+    },
+    {
+      message: '066-P1-SEC-03: validFrom must be less than or equal to validTo',
+      path: ['validTo'],
+    },
+  );
 
-export type MemoryGraphEdge = z.infer<typeof MemoryGraphEdgeSchema>;
+export type MemoryGraphEdgeOutput = z.infer<typeof MemoryGraphEdgeSchema>;
+export type MemoryGraphEdge = Omit<MemoryGraphEdgeOutput, 'version' | 'isCurrent'> & {
+  version?: number;
+  isCurrent?: boolean;
+};
+export type MemoryGraphEdgeInput = z.input<typeof MemoryGraphEdgeSchema>;
 
 // ---------------------------------------------------------------------------
 // 3. Graph Query Contracts (058-SEC-03: Strict Workspace Isolation)
@@ -75,6 +184,8 @@ export const MemoryGraphQueryRequestSchema = z.object({
   maxDepth: z.number().int().positive().max(4).default(2),
   minConfidence: z.number().min(0).max(1).default(0.0),
   limit: z.number().int().positive().max(100).default(25),
+  asOf: z.string().datetime().optional(),
+  includeSuperseded: z.boolean().default(false),
 });
 
 export type MemoryGraphQueryRequest = z.input<typeof MemoryGraphQueryRequestSchema>;
