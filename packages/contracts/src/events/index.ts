@@ -52,3 +52,5 @@ export function createEventEnvelope(
     ...extra,
   });
 }
+
+export * from './stream.js';
