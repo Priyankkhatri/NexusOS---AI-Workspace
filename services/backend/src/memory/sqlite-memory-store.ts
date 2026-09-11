@@ -20,6 +20,8 @@ import {
   VectorEmbedding,
   VectorSearchRequest,
   VectorSearchResponse,
+  MemoryProvenanceOutput,
+  MemorySourceType,
   DEFAULT_VECTOR_DIMENSION,
 } from '@nexusos/contracts';
 import {
@@ -286,8 +288,11 @@ export class SqliteMemoryStore implements IMemoryStore {
           ALTER TABLE graph_nodes ADD COLUMN valid_from TEXT;
           ALTER TABLE graph_nodes ADD COLUMN valid_to TEXT;
           ALTER TABLE graph_nodes ADD COLUMN superseded_by TEXT;
-          ALTER TABLE graph_nodes ADD COLUMN provenance TEXT;
+          ALTER TABLE graph_nodes ADD COLUMN provenance TEXT NOT NULL DEFAULT '{}';
           ALTER TABLE graph_nodes ADD COLUMN updated_at TEXT;
+
+          UPDATE graph_nodes SET valid_from = created_at WHERE valid_from IS NULL;
+          UPDATE graph_nodes SET updated_at = created_at WHERE updated_at IS NULL;
 
           CREATE INDEX IF NOT EXISTS idx_graph_nodes_current
             ON graph_nodes (tenant_id, workspace_id, is_current);
@@ -299,6 +304,9 @@ export class SqliteMemoryStore implements IMemoryStore {
           ALTER TABLE graph_edges ADD COLUMN valid_to TEXT;
           ALTER TABLE graph_edges ADD COLUMN superseded_by TEXT;
           ALTER TABLE graph_edges ADD COLUMN updated_at TEXT;
+
+          UPDATE graph_edges SET valid_from = created_at WHERE valid_from IS NULL;
+          UPDATE graph_edges SET updated_at = created_at WHERE updated_at IS NULL;
 
           CREATE INDEX IF NOT EXISTS idx_graph_edges_current
             ON graph_edges (tenant_id, workspace_id, is_current);
@@ -982,6 +990,7 @@ export class SqliteMemoryStore implements IMemoryStore {
         nextVersion = node.version;
       }
 
+      const validFrom = validated.validFrom ?? existing.validFrom ?? existing.createdAt;
       const updatedAt = validated.updatedAt ?? new Date().toISOString();
 
       const stmt = this.db.prepare(`
@@ -1007,10 +1016,10 @@ export class SqliteMemoryStore implements IMemoryStore {
         validated.confidence,
         validated.memoryRecordId ?? null,
         JSON.stringify(validated.properties ?? {}),
-        validated.provenance ? JSON.stringify(validated.provenance) : null,
+        validated.provenance ? JSON.stringify(validated.provenance) : '{}',
         nextVersion,
         validated.isCurrent ? 1 : 0,
-        validated.validFrom ?? null,
+        validFrom,
         validated.validTo ?? null,
         validated.supersededBy ?? null,
         updatedAt,
@@ -1026,6 +1035,7 @@ export class SqliteMemoryStore implements IMemoryStore {
 
       const updatedNode: MemoryGraphNodeOutput = {
         ...validated,
+        validFrom,
         version: nextVersion,
         updatedAt,
       };
@@ -1040,6 +1050,8 @@ export class SqliteMemoryStore implements IMemoryStore {
       }
 
       const initialVersion = node.version ?? 1;
+      const validFrom = validated.validFrom ?? validated.createdAt;
+      const updatedAt = validated.updatedAt ?? validated.createdAt;
 
       const stmt = this.db.prepare(`
         INSERT INTO graph_nodes (
@@ -1058,19 +1070,21 @@ export class SqliteMemoryStore implements IMemoryStore {
         validated.confidence,
         validated.memoryRecordId ?? null,
         JSON.stringify(validated.properties ?? {}),
-        validated.provenance ? JSON.stringify(validated.provenance) : null,
+        validated.provenance ? JSON.stringify(validated.provenance) : '{}',
         initialVersion,
         validated.isCurrent ? 1 : 0,
-        validated.validFrom ?? null,
+        validFrom,
         validated.validTo ?? null,
         validated.supersededBy ?? null,
         validated.createdAt,
-        validated.updatedAt ?? null,
+        updatedAt,
       );
 
       const createdNode: MemoryGraphNodeOutput = {
         ...validated,
+        validFrom,
         version: initialVersion,
+        updatedAt,
       };
       return createdNode;
     }
@@ -1122,6 +1136,7 @@ export class SqliteMemoryStore implements IMemoryStore {
         nextVersion = edge.version;
       }
 
+      const validFrom = validated.validFrom ?? existing.validFrom ?? existing.createdAt;
       const updatedAt = validated.updatedAt ?? new Date().toISOString();
 
       const stmt = this.db.prepare(`
@@ -1152,7 +1167,7 @@ export class SqliteMemoryStore implements IMemoryStore {
         JSON.stringify(validated.provenance),
         nextVersion,
         validated.isCurrent ? 1 : 0,
-        validated.validFrom ?? null,
+        validFrom,
         validated.validTo ?? null,
         validated.supersededBy ?? null,
         updatedAt,
@@ -1168,6 +1183,7 @@ export class SqliteMemoryStore implements IMemoryStore {
 
       const updatedEdge: MemoryGraphEdgeOutput = {
         ...validated,
+        validFrom,
         version: nextVersion,
         updatedAt,
       };
@@ -1182,6 +1198,8 @@ export class SqliteMemoryStore implements IMemoryStore {
       }
 
       const initialVersion = edge.version ?? 1;
+      const validFrom = validated.validFrom ?? validated.createdAt;
+      const updatedAt = validated.updatedAt ?? validated.createdAt;
 
       const stmt = this.db.prepare(`
         INSERT INTO graph_edges (
@@ -1204,16 +1222,18 @@ export class SqliteMemoryStore implements IMemoryStore {
         JSON.stringify(validated.provenance),
         initialVersion,
         validated.isCurrent ? 1 : 0,
-        validated.validFrom ?? null,
+        validFrom,
         validated.validTo ?? null,
         validated.supersededBy ?? null,
         validated.createdAt,
-        validated.updatedAt ?? null,
+        updatedAt,
       );
 
       const createdEdge: MemoryGraphEdgeOutput = {
         ...validated,
+        validFrom,
         version: initialVersion,
+        updatedAt,
       };
       return createdEdge;
     }
@@ -1661,6 +1681,21 @@ export class SqliteMemoryStore implements IMemoryStore {
   }
 
   private rowToGraphNode(row: any): MemoryGraphNodeOutput {
+    let provenance: MemoryProvenanceOutput | undefined = undefined;
+    if (row.provenance && row.provenance !== '{}') {
+      try {
+        const parsed = JSON.parse(row.provenance);
+        if (parsed && typeof parsed === 'object' && Object.keys(parsed).length > 0) {
+          provenance = {
+            ...parsed,
+            verified: Boolean(parsed.verified),
+          };
+        }
+      } catch {
+        provenance = undefined;
+      }
+    }
+
     return {
       id: row.id,
       tenantId: row.tenant_id,
@@ -1670,18 +1705,43 @@ export class SqliteMemoryStore implements IMemoryStore {
       confidence: row.confidence ?? 1.0,
       memoryRecordId: row.memory_record_id ?? undefined,
       properties: JSON.parse(row.properties || '{}'),
-      provenance: row.provenance ? JSON.parse(row.provenance) : undefined,
+      provenance,
       version: row.version ?? 1,
       isCurrent: row.is_current !== undefined ? Boolean(row.is_current) : true,
-      validFrom: row.valid_from ?? undefined,
+      validFrom: row.valid_from ?? row.created_at,
       validTo: row.valid_to ?? undefined,
       supersededBy: row.superseded_by ?? undefined,
       createdAt: row.created_at,
-      updatedAt: row.updated_at ?? undefined,
+      updatedAt: row.updated_at ?? row.created_at,
     };
   }
 
   private rowToGraphEdge(row: any): MemoryGraphEdgeOutput {
+    let provenance: MemoryProvenanceOutput;
+    try {
+      const parsed = row.provenance ? JSON.parse(row.provenance) : {};
+      if (parsed && parsed.sourceType && parsed.creatorPrincipalId && parsed.timestamp) {
+        provenance = {
+          ...parsed,
+          verified: Boolean(parsed.verified),
+        };
+      } else {
+        provenance = {
+          sourceType: MemorySourceType.SYSTEM_SYNTHESIS,
+          creatorPrincipalId: 'system:legacy',
+          timestamp: row.created_at,
+          verified: false,
+        };
+      }
+    } catch {
+      provenance = {
+        sourceType: MemorySourceType.SYSTEM_SYNTHESIS,
+        creatorPrincipalId: 'system:legacy',
+        timestamp: row.created_at,
+        verified: false,
+      };
+    }
+
     return {
       id: row.id,
       tenantId: row.tenant_id,
@@ -1692,14 +1752,14 @@ export class SqliteMemoryStore implements IMemoryStore {
       confidence: row.confidence ?? 1.0,
       weight: row.weight ?? 1.0,
       properties: JSON.parse(row.properties || '{}'),
-      provenance: JSON.parse(row.provenance || '{}'),
+      provenance,
       version: row.version ?? 1,
       isCurrent: row.is_current !== undefined ? Boolean(row.is_current) : true,
-      validFrom: row.valid_from ?? undefined,
+      validFrom: row.valid_from ?? row.created_at,
       validTo: row.valid_to ?? undefined,
       supersededBy: row.superseded_by ?? undefined,
       createdAt: row.created_at,
-      updatedAt: row.updated_at ?? undefined,
+      updatedAt: row.updated_at ?? row.created_at,
     };
   }
 

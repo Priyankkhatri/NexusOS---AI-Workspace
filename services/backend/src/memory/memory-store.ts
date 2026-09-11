@@ -484,10 +484,13 @@ export class InMemoryMemoryStore implements IMemoryStore {
       if (node.version !== undefined && node.version > currentVersion) {
         nextVersion = node.version;
       }
+      const validFrom = validated.validFrom ?? existing.validFrom ?? existing.createdAt;
+      const updatedAt = validated.updatedAt ?? new Date().toISOString();
       const updatedNode: MemoryGraphNodeOutput = {
         ...validated,
+        validFrom,
         version: nextVersion,
-        updatedAt: validated.updatedAt ?? new Date().toISOString(),
+        updatedAt,
       };
       this.graphNodes.set(key, JSON.parse(JSON.stringify(updatedNode)));
       return JSON.parse(JSON.stringify(updatedNode));
@@ -500,9 +503,13 @@ export class InMemoryMemoryStore implements IMemoryStore {
         throw new MemoryVersionConflictError(validated.id, 0, options.expectedVersion);
       }
       const initialVersion = node.version ?? 1;
+      const validFrom = validated.validFrom ?? validated.createdAt;
+      const updatedAt = validated.updatedAt ?? validated.createdAt;
       const createdNode: MemoryGraphNodeOutput = {
         ...validated,
+        validFrom,
         version: initialVersion,
+        updatedAt,
       };
       this.graphNodes.set(key, JSON.parse(JSON.stringify(createdNode)));
       return JSON.parse(JSON.stringify(createdNode));
@@ -542,10 +549,13 @@ export class InMemoryMemoryStore implements IMemoryStore {
       if (edge.version !== undefined && edge.version > currentVersion) {
         nextVersion = edge.version;
       }
+      const validFrom = validated.validFrom ?? existing.validFrom ?? existing.createdAt;
+      const updatedAt = validated.updatedAt ?? new Date().toISOString();
       const updatedEdge: MemoryGraphEdgeOutput = {
         ...validated,
+        validFrom,
         version: nextVersion,
-        updatedAt: validated.updatedAt ?? new Date().toISOString(),
+        updatedAt,
       };
       this.graphEdges.set(key, JSON.parse(JSON.stringify(updatedEdge)));
       return JSON.parse(JSON.stringify(updatedEdge));
@@ -558,9 +568,13 @@ export class InMemoryMemoryStore implements IMemoryStore {
         throw new MemoryVersionConflictError(validated.id, 0, options.expectedVersion);
       }
       const initialVersion = edge.version ?? 1;
+      const validFrom = validated.validFrom ?? validated.createdAt;
+      const updatedAt = validated.updatedAt ?? validated.createdAt;
       const createdEdge: MemoryGraphEdgeOutput = {
         ...validated,
+        validFrom,
         version: initialVersion,
+        updatedAt,
       };
       this.graphEdges.set(key, JSON.parse(JSON.stringify(createdEdge)));
       return JSON.parse(JSON.stringify(createdEdge));

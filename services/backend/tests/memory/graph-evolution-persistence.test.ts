@@ -549,7 +549,7 @@ describe('Graph Evolution Persistence & Security (Task 066 Phase 1)', () => {
       assert.equal(legacyNode.label, 'Legacy Architecture');
       assert.equal(legacyNode.version, 1);
       assert.equal(legacyNode.isCurrent, true);
-      assert.equal(legacyNode.validFrom, undefined);
+      assert.equal(legacyNode.validFrom, '2026-09-01T00:00:00.000Z');
       assert.equal(legacyNode.validTo, undefined);
       assert.equal(legacyNode.supersededBy, undefined);
       assert.deepEqual(legacyNode.properties, { legacy: true });
@@ -564,6 +564,8 @@ describe('Graph Evolution Persistence & Security (Task 066 Phase 1)', () => {
       assert.equal(legacyEdge.id, 'legacy-edge-1');
       assert.equal(legacyEdge.version, 1);
       assert.equal(legacyEdge.isCurrent, true);
+      assert.equal(legacyEdge.validFrom, '2026-09-01T00:00:00.000Z');
+      assert.equal(legacyEdge.updatedAt, '2026-09-01T00:00:00.000Z');
 
       // Verify migrated store can now update legacy row with monotonic version 2
       const updatedLegacy = await migratedStore.saveGraphNode({
@@ -603,6 +605,145 @@ describe('Graph Evolution Persistence & Security (Task 066 Phase 1)', () => {
       assert.ok(wrapped.includes('[INSTRUCTION_OVERRIDE_ATTEMPT_IGNORED]'));
       assert.ok(wrapped.includes('[STRIPPED_TAG]'));
       assert.ok(!wrapped.includes('<system_instructions>'));
+    });
+  });
+
+  // =========================================================================
+  // 066-P1-SEC-07: Versioning vs Historical Preservation Semantics
+  // =========================================================================
+  describe('066-P1-SEC-07: Versioning vs Historical Preservation Semantics', () => {
+    it('proves version N state preservation via immutable supersession and optimistic in-place versioning', async () => {
+      const t1 = '2026-09-11T00:00:00.000Z';
+      const t2 = '2026-09-11T01:00:00.000Z';
+
+      // 1. Initial Assertion (Fact A: "User prefers Dark Mode")
+      const factA = await store.saveGraphNode({
+        id: 'fact-pref-dark',
+        tenantId: tenantA,
+        workspaceId: workspaceA1,
+        nodeType: MemoryGraphNodeType.CONCEPT,
+        label: 'Dark Mode Preference',
+        confidence: 0.9,
+        properties: { theme: 'dark' },
+        validFrom: t1,
+        createdAt: t1,
+      });
+
+      assert.equal(factA.id, 'fact-pref-dark');
+      assert.equal(factA.version, 1);
+      assert.equal(factA.isCurrent, true);
+      assert.equal(factA.validFrom, t1);
+      assert.equal(factA.validTo, undefined);
+      assert.equal(factA.supersededBy, undefined);
+
+      // 2. In-place entity property update (e.g., confidence adjustment on Fact A)
+      // This versions the current row using optimistic concurrency control
+      const factAV2 = await store.saveGraphNode(
+        {
+          id: 'fact-pref-dark',
+          tenantId: tenantA,
+          workspaceId: workspaceA1,
+          nodeType: MemoryGraphNodeType.CONCEPT,
+          label: 'Dark Mode Preference (Confirmed)',
+          confidence: 0.98,
+          properties: { theme: 'dark', confirmedBy: 'user' },
+          createdAt: t1,
+        },
+        { expectedVersion: 1 },
+      );
+
+      assert.equal(factAV2.version, 2);
+      assert.equal(factAV2.confidence, 0.98);
+      assert.equal(factAV2.isCurrent, true);
+
+      // 3. Temporal Knowledge Graph Evolution (Fact B supersedes Fact A)
+      // Per Section 10 of discovery, Fact B ("User prefers Light Mode") is introduced as an immutable distinct graph element ID
+      const factB = await store.saveGraphNode({
+        id: 'fact-pref-light',
+        tenantId: tenantA,
+        workspaceId: workspaceA1,
+        nodeType: MemoryGraphNodeType.CONCEPT,
+        label: 'Light Mode Preference',
+        confidence: 0.95,
+        properties: { theme: 'light' },
+        validFrom: t2,
+        createdAt: t2,
+      });
+
+      assert.equal(factB.id, 'fact-pref-light');
+      assert.equal(factB.version, 1);
+      assert.equal(factB.isCurrent, true);
+
+      // Fact A is marked superseded: closed validity window and linked to Fact B
+      const factASuperseded = await store.saveGraphNode(
+        {
+          id: 'fact-pref-dark',
+          tenantId: tenantA,
+          workspaceId: workspaceA1,
+          nodeType: MemoryGraphNodeType.CONCEPT,
+          label: 'Dark Mode Preference (Confirmed)',
+          confidence: 0.98,
+          properties: { theme: 'dark', confirmedBy: 'user' },
+          isCurrent: false,
+          validFrom: t1,
+          validTo: t2,
+          supersededBy: 'fact-pref-light',
+          createdAt: t1,
+        },
+        { expectedVersion: 2 },
+      );
+
+      assert.equal(factASuperseded.isCurrent, false);
+      assert.equal(factASuperseded.validTo, t2);
+      assert.equal(factASuperseded.supersededBy, 'fact-pref-light');
+      assert.equal(factASuperseded.version, 3);
+
+      // A SUPERSEDES edge is established connecting Fact B to Fact A
+      const supersedesEdge = await store.saveGraphEdge({
+        id: 'edge-supersedes-dark-with-light',
+        tenantId: tenantA,
+        workspaceId: workspaceA1,
+        sourceNodeId: 'fact-pref-light',
+        targetNodeId: 'fact-pref-dark',
+        edgeType: MemoryGraphEdgeType.SUPERSEDES,
+        confidence: 1.0,
+        weight: 1.0,
+        provenance: defaultProvenance,
+        validFrom: t2,
+        createdAt: t2,
+      });
+
+      assert.equal(supersedesEdge.edgeType, MemoryGraphEdgeType.SUPERSEDES);
+      assert.equal(supersedesEdge.sourceNodeId, 'fact-pref-light');
+      assert.equal(supersedesEdge.targetNodeId, 'fact-pref-dark');
+      assert.equal(supersedesEdge.isCurrent, true);
+
+      // 4. Verification of Historical Preservation:
+      // Fact A is NOT overwritten or destroyed! Both Fact A and Fact B coexist in graph persistence
+      const retrievedFactA = await store.getGraphNode('fact-pref-dark', tenantA, workspaceA1);
+      const retrievedFactB = await store.getGraphNode('fact-pref-light', tenantA, workspaceA1);
+
+      assert.ok(retrievedFactA, 'Fact A must be preserved in persistence');
+      assert.ok(retrievedFactB, 'Fact B must be preserved in persistence');
+
+      // Fact A retains its historical validity window and supersession metadata
+      assert.equal(retrievedFactA.isCurrent, false);
+      assert.equal(retrievedFactA.validFrom, t1);
+      assert.equal(retrievedFactA.validTo, t2);
+      assert.equal(retrievedFactA.supersededBy, 'fact-pref-light');
+      assert.deepEqual(retrievedFactA.properties, { theme: 'dark', confirmedBy: 'user' });
+
+      // Fact B is active and current
+      assert.equal(retrievedFactB.isCurrent, true);
+      assert.equal(retrievedFactB.validFrom, t2);
+      assert.equal(retrievedFactB.validTo, undefined);
+      assert.equal(retrievedFactB.supersededBy, undefined);
+
+      // Verify all temporal fields round-trip with full fidelity
+      assert.equal(retrievedFactA.createdAt, t1);
+      assert.ok(retrievedFactA.updatedAt);
+      assert.equal(retrievedFactB.createdAt, t2);
+      assert.ok(retrievedFactB.updatedAt);
     });
   });
 });
