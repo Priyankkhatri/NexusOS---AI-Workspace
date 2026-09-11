@@ -8,3 +8,4 @@ export * from './episodic-learner.js';
 export * from './graph-projection-engine.js';
 export * from './vector-index.js';
 export * from './sqlite-memory-store.js';
+export * from './graph-extractor.js';

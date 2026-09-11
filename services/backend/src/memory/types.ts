@@ -14,6 +14,8 @@ import {
   MemoryGraphEdgeOutput,
   MemoryGraphQueryRequest,
   MemoryGraphQueryResponse,
+  GraphExtractionResult,
+  GraphExtractorOptions,
   VectorEmbedding,
   VectorSearchRequest,
   VectorSearchResponse,
@@ -234,4 +236,17 @@ export class VectorIndexError extends Error {
     super(message);
     this.name = 'VectorIndexError';
   }
+}
+
+export class MemoryExtractionPayloadExceededError extends Error {
+  public readonly code = 'MEMORY_EXTRACTION_PAYLOAD_EXCEEDED';
+  constructor(message: string) {
+    super(message);
+    this.name = 'MemoryExtractionPayloadExceededError';
+  }
+}
+
+export interface IGraphExtractor {
+  extract(record: MemoryRecord, options?: GraphExtractorOptions): Promise<GraphExtractionResult>;
+  extractSync(record: MemoryRecord, options?: GraphExtractorOptions): GraphExtractionResult;
 }

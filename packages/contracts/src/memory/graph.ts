@@ -202,3 +202,60 @@ export const MemoryGraphQueryResponseSchema = z.object({
 });
 
 export type MemoryGraphQueryResponse = z.infer<typeof MemoryGraphQueryResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// 4. Graph Extraction Candidate Contracts (Task 066 Phase 2)
+// ---------------------------------------------------------------------------
+
+export const GraphExtractionCandidateNodeSchema = z.object({
+  candidateId: z.string().min(1),
+  tenantId: z.string().min(1),
+  workspaceId: z.string().min(1),
+  nodeType: MemoryGraphNodeTypeSchema,
+  label: z.string().min(1).max(256),
+  memoryRecordId: z.string().min(1),
+  properties: z.record(z.unknown()).default({}),
+  confidence: z.number().min(0).max(1),
+  provenance: MemoryProvenanceSchema,
+});
+
+export type GraphExtractionCandidateNode = z.infer<typeof GraphExtractionCandidateNodeSchema>;
+
+export const GraphExtractionCandidateEdgeSchema = z.object({
+  candidateId: z.string().min(1),
+  tenantId: z.string().min(1),
+  workspaceId: z.string().min(1),
+  sourceNodeId: z.string().min(1),
+  targetNodeId: z.string().min(1),
+  edgeType: MemoryGraphEdgeTypeSchema,
+  weight: z.number().min(0).default(1.0),
+  confidence: z.number().min(0).max(1),
+  properties: z.record(z.unknown()).default({}),
+  provenance: MemoryProvenanceSchema,
+});
+
+export type GraphExtractionCandidateEdge = z.infer<typeof GraphExtractionCandidateEdgeSchema>;
+
+export const GraphExtractionResultSchema = z.object({
+  memoryRecordId: z.string().min(1),
+  tenantId: z.string().min(1),
+  workspaceId: z.string().min(1),
+  nodes: z.array(GraphExtractionCandidateNodeSchema),
+  edges: z.array(GraphExtractionCandidateEdgeSchema),
+  truncated: z.boolean().default(false),
+  extractedAt: z.string().datetime(),
+  executionDurationMs: z.number().nonnegative(),
+});
+
+export type GraphExtractionResult = z.infer<typeof GraphExtractionResultSchema>;
+
+export const GraphExtractorOptionsSchema = z.object({
+  maxInputBytes: z.number().int().positive().default(32768).optional(),
+  maxNodes: z.number().int().positive().default(20).optional(),
+  maxEdges: z.number().int().positive().default(30).optional(),
+  strictSizeLimit: z.boolean().default(false).optional(),
+  minConfidence: z.number().min(0).max(1).default(0.5).optional(),
+  extractedAt: z.string().datetime().optional(),
+});
+
+export type GraphExtractorOptions = z.infer<typeof GraphExtractorOptionsSchema>;
