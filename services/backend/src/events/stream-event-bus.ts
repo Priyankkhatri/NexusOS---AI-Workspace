@@ -11,6 +11,7 @@ import {
   MAX_REPLAY_BUFFER_SIZE,
   MAX_REPLAY_BUFFER_AGE_MS,
   MAX_STREAMS_PER_TENANT,
+  UUIDSchema,
 } from '@nexusos/contracts';
 import { RedactionFilter } from '../security/redaction-filter.js';
 
@@ -218,6 +219,20 @@ export class TenantStreamEventBus {
   }
 
   /**
+   * Returns the number of currently active stream connections for a tenant
+   */
+  public getActiveStreamCount(tenantId: string): number {
+    return this.subscribers.get(tenantId)?.size ?? 0;
+  }
+
+  /**
+   * Checks whether a tenant can accept a new concurrent stream connection
+   */
+  public canSubscribe(tenantId: string): boolean {
+    return this.getActiveStreamCount(tenantId) < this.maxStreamsPerTenant;
+  }
+
+  /**
    * Gets or creates replay buffer for a tenant
    */
   private getOrCreateReplayBuffer(tenantId: string): StreamReplayBuffer {
@@ -278,7 +293,10 @@ export class TenantStreamEventBus {
       sequence_number: currentSeq,
       tenant_id: input.tenant_id,
       workspace_id: input.workspace_id,
-      correlation_id: input.correlation_id ?? crypto.randomUUID(),
+      correlation_id:
+        input.correlation_id && UUIDSchema.safeParse(input.correlation_id).success
+          ? input.correlation_id
+          : crypto.randomUUID(),
       producer_id: input.producer_id ?? 'backend.stream-bus',
       payload: sanitizedPayload,
       event_id: input.event_id,
@@ -413,42 +431,97 @@ export class TenantStreamEventBus {
 
     const subId = crypto.randomUUID();
     let isSubscribed = true;
+    let isReplaying = true;
+    const liveQueueDuringReplay: TelemetryStreamEvent[] = [];
+    let lastDeliveredSeq: number | undefined = undefined;
+    let maxEvaluatedReplaySeq: number | undefined = undefined;
 
     const subscriber: InternalSubscriber = {
       id: subId,
       tenantId: options.tenantId,
       workspaceId: options.workspaceId,
-      listener: options.listener,
+      listener: (event: TelemetryStreamEvent) => {
+        if (!isSubscribed) return;
+        if (isReplaying) {
+          liveQueueDuringReplay.push(event);
+          return;
+        }
+        if (maxEvaluatedReplaySeq !== undefined && event.sequence_number <= maxEvaluatedReplaySeq) {
+          return; // Ignore events within evaluated replay horizon
+        }
+        if (lastDeliveredSeq !== undefined && event.sequence_number <= lastDeliveredSeq) {
+          return; // Deduplicate
+        }
+        lastDeliveredSeq = event.sequence_number;
+        options.listener(event);
+      },
       onReset: options.onReset,
     };
 
-    // 1. Evaluate replay / reset if cursor provided (Discovery Section 12.3)
-    const replayResult: ReplayEvaluationResult =
-      options.cursor !== undefined
-        ? this.evaluateReplay(options.tenantId, options.cursor)
-        : { type: 'NONE', events: [] };
-
-    if (replayResult.type === 'RESET') {
-      // Notify reset callback
-      if (options.onReset) {
-        options.onReset(replayResult.resetPayload);
-      }
-    } else if (replayResult.type === 'REPLAY') {
-      // Deliver replayed events in strict sequence order before live events
-      for (const event of replayResult.events) {
-        if (this.matchesWorkspace(subscriber, event)) {
-          options.listener(event);
-        }
-      }
-    }
-
-    // 2. Register subscriber
+    // 1. Register subscriber FIRST so no live event is missed during replay delivery
     if (!this.subscribers.has(options.tenantId)) {
       this.subscribers.set(options.tenantId, new Set());
     }
     this.subscribers.get(options.tenantId)!.add(subscriber);
 
-    // 3. Return lifecycle handle (067-SEC-06)
+    // 2. Evaluate replay / reset if cursor provided (Discovery Section 12.3)
+    const replayResult: ReplayEvaluationResult =
+      options.cursor !== undefined
+        ? this.evaluateReplay(options.tenantId, options.cursor)
+        : { type: 'NONE', events: [] };
+
+    try {
+      if (replayResult.type === 'RESET') {
+        // Notify reset callback
+        if (options.onReset) {
+          options.onReset(replayResult.resetPayload);
+        }
+      } else if (replayResult.type === 'REPLAY') {
+        if (replayResult.events.length > 0) {
+          maxEvaluatedReplaySeq =
+            replayResult.events[replayResult.events.length - 1].sequence_number;
+        } else if (options.cursor !== undefined) {
+          const parsedCursor = parseStreamCursor(options.cursor);
+          if (parsedCursor) {
+            maxEvaluatedReplaySeq = parsedCursor.sequenceNumber;
+          }
+        }
+
+        // Deliver replayed events in strict sequence order before live events
+        for (const event of replayResult.events) {
+          if (!isSubscribed) break;
+          if (this.matchesWorkspace(subscriber, event)) {
+            lastDeliveredSeq = event.sequence_number;
+            options.listener(event);
+          }
+        }
+      }
+
+      // 3. Complete replay and drain any live events queued during replay transition
+      isReplaying = false;
+      for (const queuedEvent of liveQueueDuringReplay) {
+        if (!isSubscribed) break;
+        if (
+          maxEvaluatedReplaySeq !== undefined &&
+          queuedEvent.sequence_number <= maxEvaluatedReplaySeq
+        ) {
+          continue; // Already evaluated by replay horizon
+        }
+        if (lastDeliveredSeq !== undefined && queuedEvent.sequence_number <= lastDeliveredSeq) {
+          continue; // Deduplicate
+        }
+        if (this.matchesWorkspace(subscriber, queuedEvent)) {
+          lastDeliveredSeq = queuedEvent.sequence_number;
+          options.listener(queuedEvent);
+        }
+      }
+    } catch (err) {
+      isSubscribed = false;
+      this.subscribers.get(options.tenantId)?.delete(subscriber);
+      throw err;
+    }
+
+    // 4. Return lifecycle handle (067-SEC-06)
     return {
       id: subId,
       tenantId: options.tenantId,

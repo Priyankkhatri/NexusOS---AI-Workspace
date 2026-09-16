@@ -24,6 +24,8 @@ import { handleMemoryRoutes } from '../memory/memory-routes.js';
 import { AmbiguousGoalException } from '../planner/index.js';
 import { AgentDirectoryService } from '../agents/agent-directory.js';
 import { DelegationCoordinator } from '../agents/delegation-coordinator.js';
+import { TenantStreamEventBus } from '../events/stream-event-bus.js';
+import { SSEStreamConnection, SSEConnectionOptions } from '../events/sse-handler.js';
 
 export interface AuthenticatedIncomingMessage extends IncomingMessage {
   authenticatedContext?: AuthenticatedContextLike;
@@ -39,6 +41,8 @@ export interface BackendAppOptions {
   agentDirectory?: AgentDirectoryService;
   delegationCoordinator?: DelegationCoordinator;
   authenticator?: RequestAuthenticator;
+  streamEventBus?: TenantStreamEventBus;
+  sseOptions?: SSEConnectionOptions;
 }
 
 export class BackendApp {
@@ -50,7 +54,9 @@ export class BackendApp {
   public readonly memoryController?: MemoryController;
   public readonly agentDirectory?: AgentDirectoryService;
   public readonly delegationCoordinator?: DelegationCoordinator;
+  public readonly streamEventBus: TenantStreamEventBus;
   private readonly authenticator?: RequestAuthenticator;
+  private readonly sseOptions?: SSEConnectionOptions;
 
   constructor(
     public readonly config: BackendConfig,
@@ -70,6 +76,29 @@ export class BackendApp {
     this.agentDirectory = options?.agentDirectory;
     this.delegationCoordinator = options?.delegationCoordinator;
     this.authenticator = options?.authenticator;
+    this.streamEventBus = options?.streamEventBus ?? new TenantStreamEventBus();
+    this.sseOptions = options?.sseOptions;
+
+    // Propagate streamEventBus to controllers/services if not already provided
+    if (this.taskController && !this.taskController.getStreamEventBus?.()) {
+      this.taskController.setStreamEventBus?.(this.streamEventBus);
+    }
+    if (this.agentDirectory && !this.agentDirectory.getStreamEventBus?.()) {
+      this.agentDirectory.setStreamEventBus?.(this.streamEventBus);
+    }
+    if (this.delegationCoordinator && !this.delegationCoordinator.getStreamEventBus?.()) {
+      this.delegationCoordinator.setStreamEventBus?.(this.streamEventBus);
+    }
+    if (this.memoryController) {
+      try {
+        const memService = this.memoryController.getService();
+        if (memService?.getEvolutionEngine?.()) {
+          memService.getEvolutionEngine().setStreamEventBus(this.streamEventBus);
+        }
+      } catch {
+        // Ignored if service lacks evolution engine
+      }
+    }
   }
 
   private async readJsonBody(req: IncomingMessage): Promise<unknown> {
@@ -107,7 +136,30 @@ export class BackendApp {
   ): Promise<AuthenticatedContextLike | null> {
     if (this.authenticator) {
       const isAuthed = await this.authenticator(req, res);
-      if (!isAuthed) return null;
+      if (!isAuthed) {
+        if (!res.writableEnded) {
+          const err = createNexusOSError(
+            'UNAUTHENTICATED',
+            ErrorCategory.AUTHENTICATION,
+            'Authentication credentials are required.',
+            { requestId: context.requestId, correlationId: context.correlationId },
+          );
+          res.statusCode = 401;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(
+            serializeContract(APIErrorResponseSchema, {
+              success: false,
+              error: err,
+              meta: {
+                requestId: context.requestId,
+                correlationId: context.correlationId,
+                timestamp: context.timestamp,
+              },
+            }),
+          );
+        }
+        return null;
+      }
     } else {
       const err = createNexusOSError(
         'UNAUTHENTICATED',
@@ -766,6 +818,105 @@ export class BackendApp {
         if (handled) return;
       }
 
+      // 9b. Telemetry SSE Stream Endpoint — GET /v1/telemetry/stream (Task 067 Phase 2)
+      if (url.pathname === '/v1/telemetry/stream') {
+        if (req.method !== 'GET') {
+          res.statusCode = 405;
+          res.setHeader('Allow', 'GET');
+          res.setHeader('Content-Type', 'application/json');
+          res.end(
+            serializeContract(APIErrorResponseSchema, {
+              success: false,
+              error: createNexusOSError(
+                'METHOD_NOT_ALLOWED',
+                ErrorCategory.VALIDATION,
+                '067-SEC-07: Telemetry stream is a read-only projection endpoint; mutations and commands are strictly forbidden.',
+                { requestId: context.requestId, correlationId: context.correlationId },
+              ),
+              meta: {
+                requestId: context.requestId,
+                correlationId: context.correlationId,
+                timestamp: context.timestamp,
+              },
+            }),
+          );
+          return;
+        }
+
+        const dashAuth = await this.authenticateForDashboard(req, res, context);
+        if (!dashAuth) return;
+
+        // 067-SEC-01 & 067-SEC-02: Tenant ID derived strictly from authenticated context.
+        // Caller-supplied ?tenantId= query parameter is strictly ignored.
+        const tenantId = dashAuth.tenantId;
+
+        // 067-SEC-07: Capacity check before establishing SSE connection (max 10 streams/tenant)
+        if (!this.streamEventBus.canSubscribe(tenantId)) {
+          const limitErr = createNexusOSError(
+            'RATE_LIMIT_EXCEEDED',
+            ErrorCategory.RATE_LIMITED,
+            `067-SEC-07: Maximum concurrent stream connections exceeded for tenant '${tenantId}'.`,
+            { requestId: context.requestId, correlationId: context.correlationId },
+          );
+          res.statusCode = 429;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(
+            serializeContract(APIErrorResponseSchema, {
+              success: false,
+              error: limitErr,
+              meta: {
+                requestId: context.requestId,
+                correlationId: context.correlationId,
+                timestamp: context.timestamp,
+              },
+            }),
+          );
+          return;
+        }
+
+        // Workspace scoping: authenticated workspaceId takes precedence, then header, then query param
+        const workspaceId =
+          dashAuth.workspaceId ??
+          (req.headers['x-workspace-id'] as string | undefined) ??
+          url.searchParams.get('workspaceId') ??
+          undefined;
+
+        // Cursor: Last-Event-ID header or lastEventId query parameter
+        const cursor =
+          (req.headers['last-event-id'] as string | undefined) ??
+          url.searchParams.get('lastEventId') ??
+          undefined;
+
+        // Standards-compliant SSE headers
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache, no-transform',
+          Connection: 'keep-alive',
+          'X-Accel-Buffering': 'no',
+        });
+        res.flushHeaders?.();
+
+        const sseConnection = new SSEStreamConnection(req, res, this.sseOptions);
+
+        try {
+          // Subscribe to bus (delivers replay / reset synchronously before live events)
+          const handle = this.streamEventBus.subscribe({
+            tenantId,
+            workspaceId,
+            cursor,
+            listener: (event) => sseConnection.sendEvent(event),
+            onReset: (resetPayload) => sseConnection.sendReset(resetPayload),
+          });
+
+          sseConnection.bindSubscription(handle);
+        } catch (subErr) {
+          sseConnection.close();
+          throw subErr;
+        }
+
+        return;
+      }
+
       // 10. Unhandled endpoint (404)
       res.statusCode = 404;
       res.setHeader('Content-Type', 'application/json');
@@ -810,6 +961,9 @@ export class BackendApp {
     this.logger.info('Draining backend service connections for shutdown...');
 
     if (this.server) {
+      if (typeof (this.server as any).closeAllConnections === 'function') {
+        (this.server as any).closeAllConnections();
+      }
       await new Promise<void>((resolve) => {
         this.server?.close(() => resolve());
       });

@@ -17,6 +17,7 @@ import {
 import { AgentDirectoryService } from './agent-directory.js';
 import { verifyScopeAttenuation } from './attenuation.js';
 import { LeaseIssuer } from '../leases/lease-issuer.js';
+import { TenantStreamEventBus } from '../events/stream-event-bus.js';
 
 export interface DelegationSession {
   delegationId: string;
@@ -44,6 +45,7 @@ export interface DelegationCoordinatorOptions {
   leaseIssuer: LeaseIssuer;
   maxDepth?: number;
   maxFanOut?: number;
+  streamEventBus?: TenantStreamEventBus;
 }
 
 /**
@@ -55,6 +57,7 @@ export class DelegationCoordinator {
   private readonly leaseIssuer: LeaseIssuer;
   private readonly maxDepth: number;
   private readonly maxFanOut: number;
+  private streamEventBus?: TenantStreamEventBus;
 
   // Active delegation sessions indexed by delegationId
   private readonly sessions = new Map<string, DelegationSession>();
@@ -72,6 +75,15 @@ export class DelegationCoordinator {
     this.leaseIssuer = options.leaseIssuer;
     this.maxDepth = options.maxDepth ?? DELEGATION_SAFETY_LIMITS.MAX_DEPTH;
     this.maxFanOut = options.maxFanOut ?? DELEGATION_SAFETY_LIMITS.MAX_FAN_OUT;
+    this.streamEventBus = options.streamEventBus;
+  }
+
+  public setStreamEventBus(bus: TenantStreamEventBus): void {
+    this.streamEventBus = bus;
+  }
+
+  public getStreamEventBus(): TenantStreamEventBus | undefined {
+    return this.streamEventBus;
   }
 
   /**
@@ -251,6 +263,28 @@ export class DelegationCoordinator {
     this.childToSession.set(childTaskId, session.delegationId);
     this.idempotencyCache.set(idempotencyKey, session.delegationId);
 
+    if (this.streamEventBus) {
+      this.streamEventBus
+        .publish({
+          schema_id: 'nexusos.events.delegation.created',
+          tenant_id: session.tenantId,
+          workspace_id: session.workspaceId,
+          correlation_id: session.childTaskId,
+          producer_id: 'delegation-coordinator',
+          payload: {
+            delegationId: session.delegationId,
+            parentTaskId: session.parentTaskId,
+            childTaskId: session.childTaskId,
+            delegatorAgentId: session.delegatorAgentId,
+            assignedAgentId: session.assignedAgentId,
+            depth: session.depth,
+            requestedScopes: session.requestedScopes,
+            workspaceId: session.workspaceId,
+          },
+        })
+        .catch(() => {});
+    }
+
     return SubAgentDelegationResponseSchema.parse({
       delegationId: session.delegationId,
       parentTaskId: session.parentTaskId,
@@ -319,6 +353,49 @@ export class DelegationCoordinator {
 
     session.childReceipt = childReceipt;
     session.status = childReceipt.status === 'SUCCESS' ? 'COMPLETED' : 'FAILED';
+
+    if (this.streamEventBus) {
+      if (session.status === 'COMPLETED') {
+        this.streamEventBus
+          .publish({
+            schema_id: 'nexusos.events.delegation.completed',
+            tenant_id: session.tenantId,
+            workspace_id: session.workspaceId,
+            correlation_id: session.childTaskId,
+            producer_id: 'delegation-coordinator',
+            payload: {
+              delegationId: session.delegationId,
+              parentTaskId: session.parentTaskId,
+              childTaskId: session.childTaskId,
+              status: 'COMPLETED',
+              receiptHash: childReceipt.evidenceChecksum || 'checksum-settled',
+              workspaceId: session.workspaceId,
+            },
+          })
+          .catch(() => {});
+      } else {
+        this.streamEventBus
+          .publish({
+            schema_id: 'nexusos.events.delegation.failed',
+            tenant_id: session.tenantId,
+            workspace_id: session.workspaceId,
+            correlation_id: session.childTaskId,
+            producer_id: 'delegation-coordinator',
+            payload: {
+              delegationId: session.delegationId,
+              parentTaskId: session.parentTaskId,
+              childTaskId: session.childTaskId,
+              status: 'FAILED',
+              rejectionReason:
+                childReceipt.errorMessage || 'Child task execution reported failure.',
+              errorCode:
+                childReceipt.exitCode !== undefined ? String(childReceipt.exitCode) : undefined,
+              workspaceId: session.workspaceId,
+            },
+          })
+          .catch(() => {});
+      }
+    }
 
     return { valid: true };
   }
@@ -435,6 +512,25 @@ export class DelegationCoordinator {
           // Revoke the child task as well so any sub-children are cancelled
           this.revokedTasks.add(session.childTaskId);
           queue.push(session.childTaskId);
+
+          if (this.streamEventBus) {
+            this.streamEventBus
+              .publish({
+                schema_id: 'nexusos.events.delegation.cancelled',
+                tenant_id: session.tenantId,
+                workspace_id: session.workspaceId,
+                correlation_id: session.childTaskId,
+                producer_id: 'delegation-coordinator',
+                payload: {
+                  delegationId: session.delegationId,
+                  parentTaskId: session.parentTaskId,
+                  status: 'CANCELLED',
+                  reason: 'Parent task or delegation cascade cancelled',
+                  workspaceId: session.workspaceId,
+                },
+              })
+              .catch(() => {});
+          }
         }
       }
     }
@@ -465,6 +561,26 @@ export class DelegationCoordinator {
     session.status = 'FAILED';
     session.rejectionReason = error;
 
+    if (this.streamEventBus) {
+      this.streamEventBus
+        .publish({
+          schema_id: 'nexusos.events.delegation.failed',
+          tenant_id: session.tenantId,
+          workspace_id: session.workspaceId,
+          correlation_id: session.childTaskId,
+          producer_id: 'delegation-coordinator',
+          payload: {
+            delegationId: session.delegationId,
+            parentTaskId: session.parentTaskId,
+            childTaskId: session.childTaskId,
+            status: 'FAILED',
+            rejectionReason: error,
+            workspaceId: session.workspaceId,
+          },
+        })
+        .catch(() => {});
+    }
+
     if (session.compensationPayload) {
       return {
         compensated: true,
@@ -473,6 +589,40 @@ export class DelegationCoordinator {
     }
 
     return { compensated: false };
+  }
+
+  /**
+   * Records progress on an active delegation session and emits delegation.progress (067 Phase 2)
+   */
+  public async recordProgress(
+    childTaskId: string,
+    progressPercent: number,
+    message?: string,
+  ): Promise<boolean> {
+    const delegationId = this.childToSession.get(childTaskId);
+    if (!delegationId) return false;
+    const session = this.sessions.get(delegationId);
+    if (!session) return false;
+
+    if (this.streamEventBus) {
+      await this.streamEventBus.publish({
+        schema_id: 'nexusos.events.delegation.progress',
+        tenant_id: session.tenantId,
+        workspace_id: session.workspaceId,
+        correlation_id: session.childTaskId,
+        producer_id: 'delegation-coordinator',
+        payload: {
+          delegationId: session.delegationId,
+          parentTaskId: session.parentTaskId,
+          childTaskId: session.childTaskId,
+          status: session.status,
+          progressPercent,
+          message,
+          workspaceId: session.workspaceId,
+        },
+      });
+    }
+    return true;
   }
 
   public getSession(delegationId: string): DelegationSession | undefined {

@@ -7,6 +7,7 @@ import {
   AgentRole,
   AgentRecord,
 } from '@nexusos/contracts';
+import { TenantStreamEventBus } from '../events/stream-event-bus.js';
 
 export type { AgentRecord };
 
@@ -20,6 +21,7 @@ export interface AgentDiscoveryQuery {
 export interface AgentDirectoryOptions {
   heartbeatTtlMs?: number; // Time after which an agent without heartbeat is marked UNHEALTHY (default 45s)
   maxAgentsPerTenant?: number; // Boundary cap to prevent memory exhaustion (default 50)
+  streamEventBus?: TenantStreamEventBus;
 }
 
 /**
@@ -30,10 +32,20 @@ export class AgentDirectoryService {
   private readonly agents = new Map<string, AgentRecord>();
   private readonly heartbeatTtlMs: number;
   private readonly maxAgentsPerTenant: number;
+  private streamEventBus?: TenantStreamEventBus;
 
   constructor(options: AgentDirectoryOptions = {}) {
     this.heartbeatTtlMs = options.heartbeatTtlMs ?? 45000;
     this.maxAgentsPerTenant = options.maxAgentsPerTenant ?? 50;
+    this.streamEventBus = options.streamEventBus;
+  }
+
+  public setStreamEventBus(bus: TenantStreamEventBus): void {
+    this.streamEventBus = bus;
+  }
+
+  public getStreamEventBus(): TenantStreamEventBus | undefined {
+    return this.streamEventBus;
   }
 
   /**
@@ -72,6 +84,7 @@ export class AgentDirectoryService {
     };
 
     this.agents.set(key, record);
+    this.publishAgentStatusChanged(record);
     return { ...record };
   }
 
@@ -92,7 +105,36 @@ export class AgentDirectoryService {
     record.currentLoad = validated.currentLoad;
     record.activeTaskIds = validated.activeTaskIds;
 
+    this.publishAgentStatusChanged(record);
+
     return true;
+  }
+
+  /**
+   * Publishes canonical agent.status_changed event to stream bus (067 Phase 2)
+   */
+  private publishAgentStatusChanged(record: AgentRecord): void {
+    if (!this.streamEventBus) return;
+    this.streamEventBus
+      .publish({
+        schema_id: 'nexusos.events.agent.status_changed',
+        tenant_id: record.tenantId,
+        correlation_id: record.agentId,
+        producer_id: 'agent-directory',
+        payload: {
+          agentId: record.agentId,
+          tenantId: record.tenantId,
+          workspaceScope: record.workspaceScope,
+          role: record.role,
+          status: record.status,
+          currentLoad: record.currentLoad,
+          activeTaskCount: record.activeTaskIds.length,
+          lastHeartbeat: record.lastHeartbeat,
+        },
+      })
+      .catch(() => {
+        // Observational event publication error ignored
+      });
   }
 
   /**

@@ -28,12 +28,14 @@ import {
 import { GraphExtractor, normalizeToCanonicalKey } from './graph-extractor.js';
 import { RedactionFilter } from '../security/redaction-filter.js';
 import { Logger } from '../observability/logger.js';
+import { TenantStreamEventBus } from '../events/stream-event-bus.js';
 
 export interface GraphEvolutionEngineOptions {
   store: IMemoryStore;
   extractor?: IGraphExtractor;
   logger?: Logger;
   nowProvider?: () => string;
+  streamEventBus?: TenantStreamEventBus;
 }
 
 /**
@@ -87,12 +89,22 @@ export class GraphEvolutionEngine implements IGraphEvolutionEngine {
   private readonly extractor: IGraphExtractor;
   private readonly logger: Logger;
   private readonly now: () => string;
+  private streamEventBus?: TenantStreamEventBus;
 
   constructor(options: GraphEvolutionEngineOptions) {
     this.store = options.store;
     this.extractor = options.extractor ?? new GraphExtractor();
     this.logger = options.logger ?? new Logger('info');
     this.now = options.nowProvider ?? (() => new Date().toISOString());
+    this.streamEventBus = options.streamEventBus;
+  }
+
+  public setStreamEventBus(bus: TenantStreamEventBus): void {
+    this.streamEventBus = bus;
+  }
+
+  public getStreamEventBus(): TenantStreamEventBus | undefined {
+    return this.streamEventBus;
   }
 
   public getExtractor(): IGraphExtractor {
@@ -633,6 +645,28 @@ export class GraphEvolutionEngine implements IGraphEvolutionEngine {
     receipt.rejectedNodes = rejectedNodes;
     receipt.rejectedEdges = rejectedEdges;
     receipt.executionDurationMs = Math.round(performance.now() - startTime);
+
+    if (this.streamEventBus) {
+      this.streamEventBus
+        .publish({
+          schema_id: 'nexusos.events.graph.evolved',
+          tenant_id: record.tenantId,
+          workspace_id: record.workspaceId,
+          correlation_id: record.id,
+          producer_id: 'graph-evolution-engine',
+          payload: {
+            deliveryId: receipt.evolutionId,
+            recordId: record.id,
+            tenantId: record.tenantId,
+            workspaceId: record.workspaceId,
+            nodeCount: receipt.acceptedNodes.length,
+            edgeCount: receipt.acceptedEdges.length,
+            operationType: operations.length > 0 ? operations[0].operationType : 'EVOLVE',
+            candidateSetHash,
+          },
+        })
+        .catch(() => {});
+    }
 
     this.logger.info(`Graph evolved for memory record: ${record.id}`, {
       details: {

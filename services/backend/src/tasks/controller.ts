@@ -30,6 +30,7 @@ import { TaskStateMachine } from './state-machine.js';
 import { EventPublisherBoundary } from '../events/publisher-boundary.js';
 import { ACPDispatchBridge } from '../server/acp-dispatch-bridge.js';
 import { IPlannerService, PlannerService } from '../planner/index.js';
+import { TenantStreamEventBus } from '../events/stream-event-bus.js';
 
 /**
  * Authoritative Approval Authority Boundary
@@ -91,6 +92,7 @@ export interface AuthenticatedContextLike {
     scopes?: string[];
   };
   tenantId: string;
+  workspaceId?: string;
   issuedAt?: string;
   expiresAt?: string;
   rawTokenHash?: string;
@@ -197,6 +199,7 @@ export interface TaskControllerOptions {
   approvalHost?: ApprovalAuthorityBoundary;
   pluginRegistry?: PluginRegistryAuthorityBoundary;
   plannerService?: IPlannerService;
+  streamEventBus?: TenantStreamEventBus;
 }
 
 export class TaskController {
@@ -210,6 +213,7 @@ export class TaskController {
   private approvalHost?: ApprovalAuthorityBoundary;
   private pluginRegistry?: PluginRegistryAuthorityBoundary;
   private plannerService: IPlannerService;
+  private streamEventBus?: TenantStreamEventBus;
 
   constructor(options: TaskControllerOptions) {
     this.leaseIssuer = options.leaseIssuer;
@@ -221,12 +225,21 @@ export class TaskController {
     this.approvalHost = options.approvalHost;
     this.pluginRegistry = options.pluginRegistry;
     this.plannerService = options.plannerService || new PlannerService();
+    this.streamEventBus = options.streamEventBus;
 
     if (this.acpBridge) {
       this.acpBridge.setReceiptSettler({
         settleReceipt: (receipt: unknown) => this.settleReceipt(receipt),
       });
     }
+  }
+
+  public setStreamEventBus(streamEventBus: TenantStreamEventBus): void {
+    this.streamEventBus = streamEventBus;
+  }
+
+  public getStreamEventBus(): TenantStreamEventBus | undefined {
+    return this.streamEventBus;
   }
 
   public setPlannerService(plannerService: IPlannerService): void {
@@ -257,6 +270,96 @@ export class TaskController {
 
   public getApprovalHost(): ApprovalAuthorityBoundary | undefined {
     return this.approvalHost;
+  }
+
+  /**
+   * Publishes canonical task.status_changed event to stream bus (067 Phase 2)
+   */
+  public async publishTaskStatusChanged(
+    task: TaskRecord & { workspaceId?: string },
+    previousState?: string,
+    error?: { code: string; message: string },
+  ): Promise<void> {
+    if (!this.streamEventBus) return;
+    try {
+      await this.streamEventBus.publish({
+        schema_id: 'nexusos.events.task.status_changed',
+        tenant_id: task.tenantId,
+        workspace_id: task.workspaceId,
+        correlation_id: task.taskId,
+        producer_id: 'task-controller',
+        payload: {
+          taskId: task.taskId,
+          tenantId: task.tenantId,
+          workspaceId: task.workspaceId,
+          title: task.title ?? task.capabilityId,
+          state: task.state,
+          previousState,
+          targetAgentId: task.targetAgentId ?? 'unknown',
+          error,
+        },
+      });
+    } catch {
+      // Observational bus error must not compromise execution authority
+    }
+  }
+
+  /**
+   * Presents an approval prompt via authoritative host and publishes approval.requested event (067 Phase 2)
+   */
+  public async presentApprovalPrompt(request: ApprovalPromptRequest): Promise<ApprovalPromptItem> {
+    if (!this.approvalHost) {
+      throw new Error('ApprovalAuthority is not configured.');
+    }
+    const item = await this.approvalHost.presentPrompt(request);
+    if (this.streamEventBus) {
+      try {
+        await this.streamEventBus.publish({
+          schema_id: 'nexusos.events.approval.requested',
+          tenant_id: item.tenantId,
+          correlation_id: request.requestId,
+          producer_id: 'approval-authority',
+          payload: {
+            promptId: item.promptId,
+            requestId: request.requestId,
+            taskId: request.taskId,
+            stepId: request.stepId,
+            tenantId: item.tenantId,
+            title: item.title,
+            description: item.description,
+            riskTier: item.riskTier,
+            actionIdentifier: item.actionIdentifier,
+            expiresAt: item.expiresAt,
+          },
+        });
+      } catch {
+        // Observational publication error ignored
+      }
+    }
+    return item;
+  }
+
+  /**
+   * Samples authoritative telemetry posture and publishes telemetry.sample event (067 Phase 2)
+   * Real authoritative source only; zero fabricated CPU/GPU/VRAM metrics.
+   */
+  public async sampleTelemetry(tenantId: string): Promise<void> {
+    if (!this.streamEventBus) return;
+    const summary = this.getDashboardSummary(tenantId);
+    await this.streamEventBus.publish({
+      schema_id: 'nexusos.events.telemetry.sample',
+      tenant_id: tenantId,
+      producer_id: 'task-controller',
+      payload: {
+        tenantId,
+        activeTaskCount: summary.activeTaskCount,
+        pendingApprovalCount: summary.pendingApprovalCount,
+        completedTaskCount: summary.completedTaskCount,
+        failedTaskCount: summary.failedTaskCount,
+        connectedDeviceCount: summary.connectedDeviceCount,
+        healthStatus: summary.healthStatus as 'HEALTHY' | 'READY' | 'DEGRADED' | 'UNREADY',
+      },
+    });
   }
 
   public setPluginRegistry(pluginRegistry: PluginRegistryAuthorityBoundary): void {
@@ -571,6 +674,29 @@ export class TaskController {
       );
     }
 
+    // Emit canonical stream event (067 Phase 2)
+    if (this.streamEventBus) {
+      try {
+        await this.streamEventBus.publish({
+          schema_id: 'nexusos.events.approval.decided',
+          tenant_id: context.tenantId,
+          correlation_id: result.promptId,
+          producer_id: 'approval-authority',
+          payload: {
+            promptId: result.promptId,
+            taskId: targetTaskId,
+            decision: result.decision as any,
+            state: result.state as any,
+            receiptHash: result.receiptHash ?? 'receipt-settled',
+            decidedBy: context.principal.userId,
+            userNotes: scopedReq.userNotes,
+          },
+        });
+      } catch {
+        // Observational publication error ignored
+      }
+    }
+
     return result;
   }
 
@@ -636,9 +762,15 @@ export class TaskController {
     const taskId = crypto.randomUUID();
     const now = new Date().toISOString();
 
-    let task: TaskRecord = {
+    const workspaceId =
+      (req as any).workspaceId ??
+      context.workspaceId ??
+      (typeof req.metadata?.workspaceId === 'string' ? req.metadata.workspaceId : undefined);
+
+    let task: TaskRecord & { workspaceId?: string } = {
       taskId,
       tenantId: context.tenantId,
+      workspaceId,
       submittedBy: principalId,
       title: req.title,
       targetAgentId: req.targetAgentId,
@@ -651,6 +783,9 @@ export class TaskController {
       updatedAt: now,
     };
     this.tasks.set(taskId, task);
+
+    // Initial SUBMITTED state event
+    await this.publishTaskStatusChanged(task);
 
     // 047-SEC-02: Authorize via Policy Evaluator before issuing lease
     const isUser = context.principal.type === 'USER';
@@ -710,6 +845,8 @@ export class TaskController {
         );
       }
 
+      await this.publishTaskStatusChanged(task, TaskLifecycleState.SUBMITTED, task.error);
+
       return { task, policyAllowed: false, denialReason: decision.reason };
     }
 
@@ -760,6 +897,8 @@ export class TaskController {
       );
     }
 
+    await this.publishTaskStatusChanged(task, TaskLifecycleState.POLICY_EVALUATED);
+
     // ACP Dispatch
     if (this.acpBridge) {
       task = TaskStateMachine.transition(task, TaskLifecycleState.DISPATCHED);
@@ -779,6 +918,8 @@ export class TaskController {
           ),
         );
       }
+
+      await this.publishTaskStatusChanged(task, TaskLifecycleState.LEASED);
 
       await this.acpBridge.dispatchTask(task);
     }
@@ -825,10 +966,15 @@ export class TaskController {
     const requiredScopes = Array.from(
       new Set([...canonicalScopes, req.requestedScope].filter(Boolean) as string[]),
     );
+    const workspaceId =
+      (req as any).workspaceId ??
+      context.workspaceId ??
+      (typeof req.metadata?.workspaceId === 'string' ? req.metadata.workspaceId : undefined);
 
-    let task: TaskRecord = {
+    let task: TaskRecord & { workspaceId?: string } = {
       taskId,
       tenantId: context.tenantId,
+      workspaceId,
       submittedBy: principalId,
       title: req.title,
       targetAgentId: req.targetAgentId,
@@ -845,6 +991,9 @@ export class TaskController {
       updatedAt: now,
     };
     this.tasks.set(taskId, task);
+
+    // Initial SUBMITTED state event
+    await this.publishTaskStatusChanged(task);
 
     if (this.eventPublisher) {
       await this.eventPublisher.publish(
@@ -902,6 +1051,7 @@ export class TaskController {
         policyHash: topDecision.policyHash,
       };
       this.tasks.set(taskId, task);
+      await this.publishTaskStatusChanged(task, TaskLifecycleState.SUBMITTED, task.error);
       return { task, policyAllowed: false, denialReason: topDecision.reason };
     }
 
@@ -985,6 +1135,8 @@ export class TaskController {
         );
       }
 
+      await this.publishTaskStatusChanged(task, TaskLifecycleState.SUBMITTED, task.error);
+
       return { task, policyAllowed: false, denialReason };
     }
 
@@ -1056,6 +1208,8 @@ export class TaskController {
       );
     }
 
+    await this.publishTaskStatusChanged(task, TaskLifecycleState.POLICY_EVALUATED);
+
     // ACP Workflow Dispatch
     if (this.acpBridge) {
       task = TaskStateMachine.transition(task, TaskLifecycleState.DISPATCHED);
@@ -1089,6 +1243,8 @@ export class TaskController {
         );
       }
 
+      await this.publishTaskStatusChanged(task, TaskLifecycleState.LEASED);
+
       await this.acpBridge.dispatchWorkflow(task, dag);
     }
 
@@ -1100,9 +1256,18 @@ export class TaskController {
     reason: string | undefined,
     context: AuthenticatedContextLike,
   ): Promise<TaskRecord> {
+    if (!context || !context.principal || !context.tenantId) {
+      throw new Error('UNAUTHENTICATED: Valid user context is required to cancel a task.');
+    }
+
     const task = this.getTask(taskId, context);
     if (!task) {
       throw new Error(`Task '${taskId}' not found.`);
+    }
+
+    // 047-SEC-09: Cross-tenant isolation verification
+    if (task.tenantId !== context.tenantId) {
+      throw new Error(`Access denied: task '${taskId}' belongs to a different tenant.`);
     }
 
     if (task.state === TaskLifecycleState.COMPLETED) {
@@ -1137,6 +1302,11 @@ export class TaskController {
         ),
       );
     }
+
+    await this.publishTaskStatusChanged(updatedTask, task.state, {
+      code: 'TASK_CANCELLED',
+      message: reason ?? 'User cancellation requested.',
+    });
 
     return updatedTask;
   }
@@ -1246,6 +1416,8 @@ export class TaskController {
         );
       }
 
+      await this.publishTaskStatusChanged(currentTask, task.state, currentTask.error);
+
       return currentTask;
     }
 
@@ -1289,6 +1461,7 @@ export class TaskController {
         message: verification.errorMessage || 'Receipt verification failed.',
       };
       this.tasks.set(task.taskId, failedTask);
+      await this.publishTaskStatusChanged(failedTask, task.state, failedTask.error);
       throw new Error(`Receipt verification failed: ${verification.errorMessage}`);
     }
 
@@ -1335,6 +1508,8 @@ export class TaskController {
         ),
       );
     }
+
+    await this.publishTaskStatusChanged(currentTask, task.state, currentTask.error);
 
     return currentTask;
   }
