@@ -30,6 +30,7 @@ import {
   type MemoryGraphNodeType,
   type MemoryGraphEdgeType,
 } from './api/client.js';
+import { TelemetryStreamClient, type ConnectionState } from './telemetry-stream-client.js';
 
 // ============================================================
 // App State
@@ -176,6 +177,82 @@ const apiClient = new DashboardAPIClient({
   baseUrl: (typeof window !== 'undefined' && window.location.origin) || 'http://localhost:3000',
   tenantId: 'default-tenant',
   getAuthToken,
+});
+
+// ============================================================
+// Real-Time Telemetry Stream Client (Task 067 Phase 3A)
+// ============================================================
+
+function updateConnectionIndicator(connState: ConnectionState): void {
+  const indicator = document.getElementById('connection-indicator');
+  if (!indicator) return;
+
+  // WCAG: polite announcement prevents screen reader disruption
+  indicator.setAttribute('aria-live', 'polite');
+
+  indicator.classList.remove(
+    'connection-indicator--online',
+    'connection-indicator--offline',
+    'connection-indicator--connecting',
+    'connection-indicator--warning',
+    'connection-indicator--degraded',
+  );
+
+  switch (connState) {
+    case 'CONNECTED_STREAMING':
+      indicator.textContent = 'Live';
+      indicator.classList.add('connection-indicator--online');
+      break;
+    case 'CONNECTING':
+      indicator.textContent = 'Connecting...';
+      indicator.classList.add('connection-indicator--connecting');
+      break;
+    case 'RECONNECTING':
+      indicator.textContent = 'Reconnecting...';
+      indicator.classList.add('connection-indicator--warning');
+      break;
+    case 'DEGRADED_POLLING':
+      indicator.textContent = 'Polling (Degraded)';
+      indicator.classList.add('connection-indicator--degraded');
+      break;
+    case 'OFFLINE':
+    default:
+      indicator.textContent = 'Offline';
+      indicator.classList.add('connection-indicator--offline');
+      break;
+  }
+}
+
+function handleConnectionStateChange(connState: ConnectionState, _detail?: string): void {
+  if (typeof document !== 'undefined') {
+    updateConnectionIndicator(connState);
+  }
+
+  // Polling Coordination (Phase 3A: P3A-SEC-10)
+  if (connState === 'CONNECTED_STREAMING') {
+    // Healthy streaming active; suspend REST polling
+    stopPolling();
+  } else if (connState === 'DEGRADED_POLLING') {
+    // Stream failed/exhausted; resume 15s REST polling fallback
+    startPolling();
+  } else if (connState === 'OFFLINE') {
+    // Client offline or 401 unauthenticated; stop polling
+    stopPolling();
+  }
+}
+
+const streamClient = new TelemetryStreamClient({
+  baseUrl: (typeof window !== 'undefined' && window.location.origin) || 'http://localhost:3000',
+  getAuthToken,
+  onStateChange: (connState, detail) => {
+    handleConnectionStateChange(connState, detail);
+  },
+  onReset: (resetPayload) => {
+    console.warn('[Dashboard SSE] Stream reset received:', resetPayload.reason);
+  },
+  onEvent: (_event) => {
+    // Phase 3A: transport only, observational; UI event mapping in later phases
+  },
 });
 
 // ============================================================
@@ -2600,7 +2677,9 @@ if (typeof document !== 'undefined') {
     if (document.hidden) {
       stopPolling();
     } else {
-      startPolling();
+      if (streamClient.state === 'DEGRADED_POLLING') {
+        startPolling();
+      }
     }
   });
 }
@@ -2624,8 +2703,9 @@ async function init(): Promise<void> {
   await loadSummary();
   await loadRecentActivity();
 
-  // Start auto-refresh polling
-  startPolling();
+  // Start real-time telemetry stream (starts in CONNECTING -> CONNECTED_STREAMING)
+  // Polling will only start if streaming degrades to DEGRADED_POLLING
+  streamClient.start();
 
   console.log('[NexusOS Dashboard] Initialized');
 }
@@ -2668,4 +2748,9 @@ export {
   getDelegationStatusBadge,
   formatState,
   sanitizeHTML as _sanitizeHTML,
+  streamClient,
+  updateConnectionIndicator,
+  handleConnectionStateChange,
+  startPolling,
+  stopPolling,
 };

@@ -374,6 +374,12 @@ body {
   color: var(--color-success);
 }
 
+.connection-indicator--connecting,
+.connection-indicator--warning,
+.connection-indicator--degraded {
+  color: var(--color-warning);
+}
+
 .connection-indicator--offline {
   color: var(--color-error);
 }
