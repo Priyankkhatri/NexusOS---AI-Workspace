@@ -31,6 +31,21 @@ import {
   type MemoryGraphEdgeType,
 } from './api/client.js';
 import { TelemetryStreamClient, type ConnectionState } from './telemetry-stream-client.js';
+import {
+  type TelemetryStreamEvent,
+  type AgentStatusChangedPayload,
+  type DelegationCreatedPayload,
+  type DelegationProgressPayload,
+  type DelegationCompletedPayload,
+  type DelegationFailedPayload,
+  type DelegationCancelledPayload,
+  type TaskStatusChangedPayload,
+  type ApprovalRequestedPayload,
+  type ApprovalDecidedPayload,
+  type GraphEvolvedPayload,
+  type TelemetrySamplePayload,
+  type StreamResetPayload,
+} from '@nexusos/contracts';
 
 // ============================================================
 // App State
@@ -241,6 +256,774 @@ function handleConnectionStateChange(connState: ConnectionState, _detail?: strin
   }
 }
 
+// ============================================================
+// Real-Time Event Projection Types & Pipeline (Task 067 Phase 3B)
+// ============================================================
+
+export type TypedAgentStatusChangedEvent = Omit<TelemetryStreamEvent, 'payload' | 'schema_id'> & {
+  schema_id: 'nexusos.events.agent.status_changed' | 'agent.status_changed';
+  payload: AgentStatusChangedPayload;
+};
+
+export type TypedDelegationCreatedEvent = Omit<TelemetryStreamEvent, 'payload' | 'schema_id'> & {
+  schema_id: 'nexusos.events.delegation.created' | 'delegation.created';
+  payload: DelegationCreatedPayload;
+};
+
+export type TypedDelegationProgressEvent = Omit<TelemetryStreamEvent, 'payload' | 'schema_id'> & {
+  schema_id: 'nexusos.events.delegation.progress' | 'delegation.progress';
+  payload: DelegationProgressPayload;
+};
+
+export type TypedDelegationCompletedEvent = Omit<TelemetryStreamEvent, 'payload' | 'schema_id'> & {
+  schema_id: 'nexusos.events.delegation.completed' | 'delegation.completed';
+  payload: DelegationCompletedPayload;
+};
+
+export type TypedDelegationFailedEvent = Omit<TelemetryStreamEvent, 'payload' | 'schema_id'> & {
+  schema_id: 'nexusos.events.delegation.failed' | 'delegation.failed';
+  payload: DelegationFailedPayload;
+};
+
+export type TypedDelegationCancelledEvent = Omit<TelemetryStreamEvent, 'payload' | 'schema_id'> & {
+  schema_id: 'nexusos.events.delegation.cancelled' | 'delegation.cancelled';
+  payload: DelegationCancelledPayload;
+};
+
+export type TypedTaskStatusChangedEvent = Omit<TelemetryStreamEvent, 'payload' | 'schema_id'> & {
+  schema_id: 'nexusos.events.task.status_changed' | 'task.status_changed';
+  payload: TaskStatusChangedPayload;
+};
+
+export type TypedApprovalRequestedEvent = Omit<TelemetryStreamEvent, 'payload' | 'schema_id'> & {
+  schema_id: 'nexusos.events.approval.requested' | 'approval.requested';
+  payload: ApprovalRequestedPayload;
+};
+
+export type TypedApprovalDecidedEvent = Omit<TelemetryStreamEvent, 'payload' | 'schema_id'> & {
+  schema_id: 'nexusos.events.approval.decided' | 'approval.decided';
+  payload: ApprovalDecidedPayload;
+};
+
+export type TypedGraphEvolvedEvent = Omit<TelemetryStreamEvent, 'payload' | 'schema_id'> & {
+  schema_id: 'nexusos.events.graph.evolved' | 'graph.evolved';
+  payload: GraphEvolvedPayload;
+};
+
+export type TypedTelemetrySampleEvent = Omit<TelemetryStreamEvent, 'payload' | 'schema_id'> & {
+  schema_id: 'nexusos.events.telemetry.sample' | 'telemetry.sample';
+  payload: TelemetrySamplePayload;
+};
+
+export type TypedTelemetryEvent =
+  | TypedAgentStatusChangedEvent
+  | TypedDelegationCreatedEvent
+  | TypedDelegationProgressEvent
+  | TypedDelegationCompletedEvent
+  | TypedDelegationFailedEvent
+  | TypedDelegationCancelledEvent
+  | TypedTaskStatusChangedEvent
+  | TypedApprovalRequestedEvent
+  | TypedApprovalDecidedEvent
+  | TypedGraphEvolvedEvent
+  | TypedTelemetrySampleEvent;
+
+const MAX_SEEN_EVENT_IDS = 1000;
+const _seenEventIds = new Set<string>();
+const _seenEventIdsQueue: string[] = [];
+
+function markAndCheckSeenEvent(eventId: string): boolean {
+  if (!eventId) return false;
+  if (_seenEventIds.has(eventId)) {
+    return true;
+  }
+  _seenEventIds.add(eventId);
+  _seenEventIdsQueue.push(eventId);
+  if (_seenEventIdsQueue.length > MAX_SEEN_EVENT_IDS) {
+    const oldest = _seenEventIdsQueue.shift();
+    if (oldest) _seenEventIds.delete(oldest);
+  }
+  return false;
+}
+
+const _pendingStateEvents = new Map<string, TypedTelemetryEvent>();
+let _pendingHistoryEvents: TypedTelemetryEvent[] = [];
+let _flushScheduled = false;
+
+let _reconcileGeneration = 0;
+let _isReconciling = false;
+let _reconcileBuffer: TypedTelemetryEvent[] = [];
+
+function getStateEventKey(event: TypedTelemetryEvent): string | null {
+  switch (event.schema_id) {
+    case 'nexusos.events.agent.status_changed':
+    case 'agent.status_changed':
+      return `agent:${event.payload.agentId}`;
+    case 'nexusos.events.delegation.progress':
+    case 'delegation.progress':
+      return `delegation:${event.payload.delegationId}`;
+    case 'nexusos.events.task.status_changed':
+    case 'task.status_changed':
+      return `task:${event.payload.taskId}`;
+    case 'nexusos.events.approval.decided':
+    case 'approval.decided':
+      return `approval:${event.payload.promptId}`;
+    case 'nexusos.events.telemetry.sample':
+    case 'telemetry.sample':
+      return 'telemetry:global';
+    default:
+      return null;
+  }
+}
+
+function isHistoryEvent(event: TypedTelemetryEvent): boolean {
+  switch (event.schema_id) {
+    case 'nexusos.events.delegation.created':
+    case 'delegation.created':
+    case 'nexusos.events.delegation.completed':
+    case 'delegation.completed':
+    case 'nexusos.events.delegation.failed':
+    case 'delegation.failed':
+    case 'nexusos.events.delegation.cancelled':
+    case 'delegation.cancelled':
+    case 'nexusos.events.approval.requested':
+    case 'approval.requested':
+    case 'nexusos.events.graph.evolved':
+    case 'graph.evolved':
+      return true;
+    default:
+      return false;
+  }
+}
+
+function eventToActivityItem(event: TypedTelemetryEvent): ActivityItemResponse {
+  return {
+    event_id: event.event_id,
+    schema_id: event.schema_id,
+    version: event.version,
+    correlation_id: event.correlation_id,
+    occurred_at: event.occurred_at,
+    producer_id: event.producer_id,
+    payload: event.payload as unknown as Record<string, unknown>,
+  };
+}
+
+function enqueueTelemetryEvent(event: TypedTelemetryEvent): void {
+  // Replay / Duplicate safety
+  if (event.event_id && markAndCheckSeenEvent(event.event_id)) {
+    return;
+  }
+
+  // Buffer events arriving while REST reconciliation is in flight
+  if (_isReconciling) {
+    _reconcileBuffer.push(event);
+    if (_reconcileBuffer.length > 100) {
+      _reconcileBuffer = _reconcileBuffer.slice(-100);
+    }
+    return;
+  }
+
+  const stateKey = getStateEventKey(event);
+  if (stateKey !== null) {
+    _pendingStateEvents.set(stateKey, event);
+  } else if (isHistoryEvent(event)) {
+    _pendingHistoryEvents.push(event);
+    if (_pendingHistoryEvents.length > 50) {
+      _pendingHistoryEvents = _pendingHistoryEvents.slice(-50);
+    }
+  }
+
+  scheduleFlush();
+}
+
+function scheduleFlush(): void {
+  if (_flushScheduled) return;
+  _flushScheduled = true;
+  if (typeof requestAnimationFrame === 'function') {
+    requestAnimationFrame(() => {
+      _flushScheduled = false;
+      flushPendingEvents();
+    });
+  } else {
+    queueMicrotask(() => {
+      _flushScheduled = false;
+      flushPendingEvents();
+    });
+  }
+}
+
+function flushPendingEvents(): void {
+  const historyToProcess = _pendingHistoryEvents;
+  _pendingHistoryEvents = [];
+
+  const stateToProcess = Array.from(_pendingStateEvents.values());
+  _pendingStateEvents.clear();
+
+  for (const event of historyToProcess) {
+    projectHistoryEvent(event);
+  }
+
+  for (const event of stateToProcess) {
+    projectStateEvent(event);
+  }
+}
+
+async function handleStreamResetReconciliation(resetPayload: StreamResetPayload): Promise<void> {
+  console.warn('[Dashboard SSE] Stream reset received:', resetPayload.reason);
+
+  _pendingStateEvents.clear();
+  _pendingHistoryEvents = [];
+
+  const generation = ++_reconcileGeneration;
+  _isReconciling = true;
+  _reconcileBuffer = [];
+
+  try {
+    await loadSummary();
+    if (generation !== _reconcileGeneration) return;
+
+    await loadViewData(state.currentView);
+    if (generation !== _reconcileGeneration) return;
+  } catch (err) {
+    console.error('[Dashboard] Error during reset reconciliation:', err);
+  } finally {
+    if (generation === _reconcileGeneration) {
+      _isReconciling = false;
+      const buffered = _reconcileBuffer;
+      _reconcileBuffer = [];
+      for (const event of buffered) {
+        // Remove from seen set so the dedup guard does not swallow events
+        // that arrived during reconciliation — they were never projected.
+        if (event.event_id) {
+          _seenEventIds.delete(event.event_id);
+          const qIdx = _seenEventIdsQueue.indexOf(event.event_id);
+          if (qIdx !== -1) _seenEventIdsQueue.splice(qIdx, 1);
+        }
+        enqueueTelemetryEvent(event);
+      }
+    }
+  }
+}
+
+function projectHistoryEvent(event: TypedTelemetryEvent): void {
+  applyActivityItem(eventToActivityItem(event));
+
+  switch (event.schema_id) {
+    case 'nexusos.events.delegation.created':
+    case 'delegation.created':
+      projectDelegationCreated(event.payload, event.occurred_at);
+      break;
+    case 'nexusos.events.delegation.completed':
+    case 'delegation.completed':
+      projectDelegationCompleted(event.payload);
+      break;
+    case 'nexusos.events.delegation.failed':
+    case 'delegation.failed':
+      projectDelegationFailed(event.payload);
+      break;
+    case 'nexusos.events.delegation.cancelled':
+    case 'delegation.cancelled':
+      projectDelegationCancelled(event.payload);
+      break;
+    case 'nexusos.events.approval.requested':
+    case 'approval.requested':
+      projectApprovalRequested(event.payload, event.occurred_at);
+      break;
+    case 'nexusos.events.graph.evolved':
+    case 'graph.evolved':
+      // Section 11: graph.evolved MUST ONLY project to activity.
+      // Do NOT mutate: SVG, D3 layout, graph nodes, graph edges, zoom/pan state.
+      break;
+  }
+}
+
+function projectStateEvent(event: TypedTelemetryEvent): void {
+  switch (event.schema_id) {
+    case 'nexusos.events.agent.status_changed':
+    case 'agent.status_changed':
+      projectAgentStatusChanged(event.payload, event.occurred_at);
+      break;
+    case 'nexusos.events.delegation.progress':
+    case 'delegation.progress':
+      projectDelegationProgress(event.payload);
+      break;
+    case 'nexusos.events.task.status_changed':
+    case 'task.status_changed':
+      projectTaskStatusChanged(event.payload, event.occurred_at);
+      break;
+    case 'nexusos.events.approval.decided':
+    case 'approval.decided':
+      projectApprovalDecided(event.payload);
+      break;
+    case 'nexusos.events.telemetry.sample':
+    case 'telemetry.sample':
+      projectTelemetrySample(event.payload);
+      break;
+  }
+}
+
+function projectAgentStatusChanged(payload: AgentStatusChangedPayload, occurredAt: string): void {
+  const existingAgent = state.agents.find((a) => a.agentId === payload.agentId);
+  if (existingAgent) {
+    existingAgent.status = payload.status;
+    existingAgent.role = payload.role;
+    existingAgent.currentLoad = payload.currentLoad;
+    existingAgent.activeTaskIds = new Array(payload.activeTaskCount).fill('task');
+    existingAgent.lastHeartbeat = payload.lastHeartbeat || occurredAt;
+  } else if (state.agents.length < 100) {
+    const newAgent: AgentRecord = {
+      agentId: payload.agentId,
+      tenantId: payload.tenantId,
+      workspaceScope:
+        payload.workspaceScope && payload.workspaceScope.length > 0
+          ? payload.workspaceScope
+          : ['default'],
+      role: payload.role,
+      status: payload.status,
+      currentLoad: payload.currentLoad,
+      activeTaskIds: new Array(payload.activeTaskCount).fill('task'),
+      lastHeartbeat: payload.lastHeartbeat || occurredAt,
+      registeredAt: occurredAt,
+      version: '1.0.0',
+      metadata: {},
+      capabilities: [],
+    };
+    state.agents.push(newAgent);
+  }
+
+  if (typeof document === 'undefined') return;
+
+  const card = document.querySelector<HTMLElement>(
+    `.agent-card[data-agent-id="${payload.agentId}"]`,
+  );
+  if (card) {
+    const badges = card.querySelector<HTMLElement>('.agent-card__badges');
+    if (badges) {
+      setSafeHTML(badges, `${getRoleBadge(payload.role)} ${getAgentStatusPill(payload.status)}`);
+    }
+
+    const metaItems = card.querySelectorAll<HTMLElement>('.agent-card__meta-item');
+    metaItems.forEach((item) => {
+      const label = item.querySelector('.agent-card__meta-label');
+      const value = item.querySelector('.agent-card__meta-value');
+      if (label && value && label.textContent?.trim() === 'Task Load') {
+        const loadPct = Math.round(payload.currentLoad * 100);
+        value.textContent = `${loadPct}% (${payload.activeTaskCount} active)`;
+      } else if (label && value && label.textContent?.trim() === 'Heartbeat') {
+        value.textContent = formatRelativeTime(payload.lastHeartbeat || occurredAt);
+      }
+    });
+  } else {
+    const container = $('agent-roster-container');
+    if (container) {
+      const cards = container.querySelectorAll('.agent-card');
+      if (cards.length < 100) {
+        const empty = $('agent-roster-empty');
+        if (empty) empty.hidden = true;
+
+        const agentRecord: AgentRecord = existingAgent ?? {
+          agentId: payload.agentId,
+          tenantId: payload.tenantId,
+          workspaceScope:
+            payload.workspaceScope && payload.workspaceScope.length > 0
+              ? payload.workspaceScope
+              : ['default'],
+          role: payload.role,
+          status: payload.status,
+          currentLoad: payload.currentLoad,
+          activeTaskIds: new Array(payload.activeTaskCount).fill('task'),
+          lastHeartbeat: payload.lastHeartbeat || occurredAt,
+          registeredAt: occurredAt,
+          version: '1.0.0',
+          metadata: {},
+          capabilities: [],
+        };
+        const cardHtml = generateAgentCardHTML(agentRecord);
+        container.insertAdjacentHTML('beforeend', cardHtml);
+      }
+    }
+  }
+}
+
+function projectDelegationCreated(payload: DelegationCreatedPayload, _occurredAt: string): void {
+  const newDelegation: DelegationSummary = {
+    delegationId: payload.delegationId,
+    parentTaskId: payload.parentTaskId,
+    parentLeaseId: 'lease-' + payload.parentTaskId,
+    childTaskId: payload.childTaskId,
+    childLeaseId: 'lease-' + payload.childTaskId,
+    delegatorAgentId: payload.delegatorAgentId,
+    assignedAgentId: payload.assignedAgentId,
+    tenantId: apiClient.tenantId,
+    workspaceId: payload.workspaceId || '00000000-0000-4000-8000-000000000000',
+    depth: payload.depth || 1,
+    status: 'ACCEPTED',
+    requestedScopes: payload.requestedScopes || ['agent:delegate'],
+    expiresAt: Date.now() + 300_000,
+    correlationId: 'corr-' + payload.delegationId,
+    hasChildReceipt: false,
+    hasCompensation: false,
+  };
+
+  if (!state.delegations.some((d) => d.delegationId === payload.delegationId)) {
+    state.delegations = [newDelegation, ...state.delegations].slice(0, 100);
+  }
+
+  if (typeof document === 'undefined') return;
+
+  const container = $('delegation-tree-container');
+  if (container) {
+    const empty = $('delegation-tree-empty');
+    if (empty) empty.hidden = true;
+
+    const existingNode = container.querySelector(
+      `.delegation-tree-node[data-delegation-id="${payload.delegationId}"]`,
+    );
+    if (!existingNode) {
+      const nodeHtml = generateDelegationNodeHTML(newDelegation);
+      container.insertAdjacentHTML('afterbegin', nodeHtml);
+
+      const nodes = container.querySelectorAll('.delegation-tree-node');
+      if (nodes.length > 100) {
+        for (let i = 100; i < nodes.length; i++) {
+          nodes[i]?.remove();
+        }
+      }
+    }
+  }
+}
+
+function projectDelegationProgress(payload: DelegationProgressPayload): void {
+  const del = state.delegations.find((d) => d.delegationId === payload.delegationId);
+  if (del) {
+    del.status = payload.status;
+  }
+
+  if (typeof document === 'undefined') return;
+
+  const node = document.querySelector<HTMLElement>(
+    `.delegation-tree-node[data-delegation-id="${payload.delegationId}"]`,
+  );
+  if (node) {
+    const badge = node.querySelector<HTMLElement>('.status-badge');
+    if (badge) {
+      badge.outerHTML = getDelegationStatusBadge(payload.status);
+    }
+  }
+}
+
+function projectDelegationCompleted(payload: DelegationCompletedPayload): void {
+  const del = state.delegations.find((d) => d.delegationId === payload.delegationId);
+  if (del) {
+    del.status = 'COMPLETED';
+    del.hasChildReceipt = true;
+  }
+
+  if (typeof document === 'undefined') return;
+
+  const node = document.querySelector<HTMLElement>(
+    `.delegation-tree-node[data-delegation-id="${payload.delegationId}"]`,
+  );
+  if (node) {
+    const badge = node.querySelector<HTMLElement>('.status-badge');
+    if (badge) {
+      badge.outerHTML = getDelegationStatusBadge('COMPLETED');
+    }
+    const meta = node.querySelector<HTMLElement>('.delegation-tree-node__meta');
+    if (meta && !meta.querySelector('.badge--receipt')) {
+      meta.insertAdjacentHTML(
+        'beforeend',
+        '<span class="badge--receipt" title="Cryptographically verified child receipt">✓ Receipt Settled</span>',
+      );
+    }
+  }
+}
+
+function projectDelegationFailed(payload: DelegationFailedPayload): void {
+  const del = state.delegations.find((d) => d.delegationId === payload.delegationId);
+  if (del) {
+    del.status = 'FAILED';
+  }
+
+  if (typeof document === 'undefined') return;
+
+  const node = document.querySelector<HTMLElement>(
+    `.delegation-tree-node[data-delegation-id="${payload.delegationId}"]`,
+  );
+  if (node) {
+    const badge = node.querySelector<HTMLElement>('.status-badge');
+    if (badge) {
+      badge.outerHTML = getDelegationStatusBadge('FAILED');
+    }
+  }
+}
+
+function projectDelegationCancelled(payload: DelegationCancelledPayload): void {
+  const del = state.delegations.find((d) => d.delegationId === payload.delegationId);
+  if (del) {
+    del.status = 'CANCELLED';
+  }
+
+  if (typeof document === 'undefined') return;
+
+  const node = document.querySelector<HTMLElement>(
+    `.delegation-tree-node[data-delegation-id="${payload.delegationId}"]`,
+  );
+  if (node) {
+    const badge = node.querySelector<HTMLElement>('.status-badge');
+    if (badge) {
+      badge.outerHTML = getDelegationStatusBadge('CANCELLED');
+    }
+    node.classList.add('delegation-tree-node--cancelled');
+  }
+}
+
+function projectTaskStatusChanged(payload: TaskStatusChangedPayload, occurredAt: string): void {
+  const existingTask = state.tasks.find((t) => t.taskId === payload.taskId);
+  if (existingTask) {
+    existingTask.state = payload.state;
+    if (payload.error) {
+      existingTask.error = payload.error;
+    }
+    existingTask.updatedAt = occurredAt;
+  }
+
+  if (typeof document === 'undefined') return;
+
+  const row = document.querySelector<HTMLElement>(`.task-row[data-task-id="${payload.taskId}"]`);
+  if (row) {
+    const badge = row.querySelector<HTMLElement>('.status-badge');
+    if (badge) {
+      const stateClass = payload.state.toLowerCase().replace(/_/g, '_');
+      badge.className = `status-badge status-badge--${stateClass}`;
+      badge.textContent = formatState(payload.state);
+    }
+  }
+  // Section 6: task.status_changed MUST NOT modify aggregate summary counters.
+}
+
+function projectApprovalRequested(payload: ApprovalRequestedPayload, occurredAt: string): void {
+  const newApproval: ApprovalViewModel = {
+    promptId: payload.promptId,
+    taskId: payload.taskId,
+    title: payload.title,
+    description: payload.description,
+    riskTier: payload.riskTier,
+    actionIdentifier: payload.actionIdentifier,
+    capabilityId: payload.actionIdentifier,
+    runtimeCategory: 'security',
+    submittedBy: 'agent',
+    createdAt: occurredAt,
+    expiresAt: payload.expiresAt,
+    state: 'PENDING',
+  };
+
+  if (!state.approvals.some((a) => a.promptId === payload.promptId)) {
+    state.approvals = [newApproval, ...state.approvals].slice(0, 50);
+  }
+
+  if (typeof document === 'undefined') return;
+
+  const container = $('approval-list-container');
+  if (container) {
+    const empty = $('approval-list-empty');
+    if (empty) empty.hidden = true;
+
+    const existingCard = container.querySelector(
+      `.approval-card[data-prompt-id="${payload.promptId}"]`,
+    );
+    if (!existingCard) {
+      const cardHtml = generateApprovalCardHTML(newApproval);
+      container.insertAdjacentHTML('afterbegin', cardHtml);
+      const inserted = container.querySelector<HTMLElement>(
+        `.approval-card[data-prompt-id="${payload.promptId}"]`,
+      );
+      if (inserted) {
+        bindApprovalActionButtons(inserted);
+        bindTaskDetailTriggers(inserted);
+      }
+
+      const cards = container.querySelectorAll('.approval-card');
+      if (cards.length > 50) {
+        for (let i = 50; i < cards.length; i++) {
+          cards[i]?.remove();
+        }
+      }
+    }
+  }
+
+  // Increment approval badge
+  const badge = $('approval-badge');
+  let currentCount = 0;
+  if (badge && !badge.hidden && badge.textContent) {
+    const parsed = parseInt(badge.textContent, 10);
+    if (!isNaN(parsed)) currentCount = parsed;
+  } else {
+    currentCount = state.approvals.filter((a) => a.state === 'PENDING').length - 1;
+    if (currentCount < 0) currentCount = 0;
+  }
+  const nextCount = currentCount + 1;
+  updateApprovalBadge(nextCount);
+
+  if (state.summary) {
+    state.summary.pendingApprovalCount = Math.max(state.summary.pendingApprovalCount, nextCount);
+  }
+  setTextContent('pending-approval-count', String(nextCount));
+}
+
+function projectApprovalDecided(payload: ApprovalDecidedPayload): void {
+  const app = state.approvals.find((a) => a.promptId === payload.promptId);
+  const decisionState = payload.decision === 'ALLOW' ? 'APPROVED' : 'DENIED';
+  if (app) {
+    app.state = decisionState;
+    if (payload.receiptHash) {
+      app.receiptHash = payload.receiptHash;
+    }
+  }
+
+  if (typeof document === 'undefined') return;
+
+  const card = document.querySelector<HTMLElement>(
+    `.approval-card[data-prompt-id="${payload.promptId}"]`,
+  );
+  if (card) {
+    card.querySelectorAll<HTMLButtonElement>('.approval-action-btn').forEach((btn) => {
+      btn.disabled = true;
+    });
+
+    const isApproved = payload.decision === 'ALLOW' || payload.state === 'APPROVED';
+    const badgeHtml = isApproved
+      ? '<span class="status-badge status-badge--completed">✓ Approved</span>'
+      : '<span class="status-badge status-badge--failed">✗ Denied</span>';
+    // Prefer replacing an existing status-badge anywhere in the card header;
+    // fall back to appending into the header's last div container.
+    const existingHeaderBadge = card.querySelector<HTMLElement>(
+      '.approval-card__header .status-badge',
+    );
+    if (existingHeaderBadge) {
+      existingHeaderBadge.outerHTML = badgeHtml;
+    } else {
+      // No pre-existing badge — find or create a header badges container
+      const header = card.querySelector<HTMLElement>('.approval-card__header');
+      if (header) {
+        header.insertAdjacentHTML('beforeend', badgeHtml);
+      }
+    }
+
+    const detail = card.querySelector<HTMLElement>('.approval-card__detail');
+    if (detail) {
+      if (payload.decidedBy && !detail.querySelector('.approval-decided-by')) {
+        detail.insertAdjacentHTML(
+          'beforeend',
+          `<p class="approval-decided-by"><strong>Decided by:</strong><span class="decided-by-value"> ${sanitizeHTML(payload.decidedBy)}</span></p>`,
+        );
+      }
+      if (payload.receiptHash && !detail.querySelector('.evidence-hash')) {
+        detail.insertAdjacentHTML(
+          'beforeend',
+          `<p><strong>Receipt Hash:</strong> <code class="evidence-hash">${sanitizeHTML(payload.receiptHash.substring(0, 16))}…</code></p>`,
+        );
+      }
+    }
+  }
+
+  // Decrement approval badge without allowing it to become negative
+  const badge = $('approval-badge');
+  let currentBadgeCount = 0;
+  if (badge && !badge.hidden && badge.textContent) {
+    const parsed = parseInt(badge.textContent, 10);
+    if (!isNaN(parsed)) currentBadgeCount = parsed;
+  }
+  const newBadgeCount = Math.max(0, currentBadgeCount - 1);
+  updateApprovalBadge(newBadgeCount);
+
+  if (state.summary) {
+    state.summary.pendingApprovalCount = Math.max(0, state.summary.pendingApprovalCount - 1);
+  }
+  setTextContent('pending-approval-count', String(newBadgeCount));
+}
+
+function projectTelemetrySample(payload: TelemetrySamplePayload): void {
+  const {
+    activeTaskCount,
+    pendingApprovalCount,
+    completedTaskCount,
+    failedTaskCount,
+    healthStatus,
+    vramAlert,
+  } = payload;
+
+  if (state.summary) {
+    state.summary.activeTaskCount = activeTaskCount;
+    state.summary.pendingApprovalCount = pendingApprovalCount;
+    state.summary.completedTaskCount = completedTaskCount;
+    state.summary.failedTaskCount = failedTaskCount;
+    state.summary.healthStatus = healthStatus;
+    if (vramAlert !== undefined) {
+      state.summary.vramAlert = vramAlert;
+    }
+  }
+
+  if (typeof document === 'undefined') return;
+
+  setTextContent('active-task-count', String(activeTaskCount));
+  setTextContent('pending-approval-count', String(pendingApprovalCount));
+  setTextContent('completed-task-count', String(completedTaskCount));
+  setTextContent('failed-task-count', String(failedTaskCount));
+
+  updateHealthBadge(healthStatus);
+  updateApprovalBadge(pendingApprovalCount);
+
+  const vramAlertEl = $('vram-alert') || $('vram-alert-banner');
+  if (vramAlertEl) {
+    vramAlertEl.hidden = !vramAlert;
+  }
+}
+
+function applyActivityItem(activityItem: ActivityItemResponse): void {
+  const existingIdx = state.activity.findIndex((a) => a.event_id === activityItem.event_id);
+  if (existingIdx !== -1) {
+    return;
+  }
+
+  state.activity = [activityItem, ...state.activity].slice(0, 50);
+
+  if (typeof document === 'undefined') return;
+
+  const overviewContainer = $('overview-activity-list');
+  if (overviewContainer) {
+    const overviewEmpty = $('overview-activity-empty');
+    if (overviewEmpty) overviewEmpty.hidden = true;
+    renderActivityList(
+      'overview-activity-list',
+      'overview-activity-empty',
+      state.activity.slice(0, 10),
+    );
+  }
+
+  const streamContainer = $('activity-stream-container');
+  if (streamContainer) {
+    const streamEmpty = $('activity-stream-empty');
+    if (streamEmpty) streamEmpty.hidden = true;
+    renderActivityList(
+      'activity-stream-container',
+      'activity-stream-empty',
+      state.activity.slice(0, 50),
+    );
+  }
+}
+
+function _resetProjectionState(): void {
+  _pendingStateEvents.clear();
+  _pendingHistoryEvents = [];
+  _seenEventIds.clear();
+  _seenEventIdsQueue.length = 0;
+  _flushScheduled = false;
+  _reconcileGeneration = 0;
+  _isReconciling = false;
+  _reconcileBuffer = [];
+}
+
 const streamClient = new TelemetryStreamClient({
   baseUrl: (typeof window !== 'undefined' && window.location.origin) || 'http://localhost:3000',
   getAuthToken,
@@ -248,10 +1031,10 @@ const streamClient = new TelemetryStreamClient({
     handleConnectionStateChange(connState, detail);
   },
   onReset: (resetPayload) => {
-    console.warn('[Dashboard SSE] Stream reset received:', resetPayload.reason);
+    void handleStreamResetReconciliation(resetPayload);
   },
-  onEvent: (_event) => {
-    // Phase 3A: transport only, observational; UI event mapping in later phases
+  onEvent: (event) => {
+    enqueueTelemetryEvent(event as TypedTelemetryEvent);
   },
 });
 
@@ -825,94 +1608,93 @@ function renderApprovals(): void {
 
   if (empty) empty.hidden = true;
 
-  const now = Date.now();
-  const cards = state.approvals
-    .map((item) => {
-      const title = sanitizeHTML(item.title);
-      const promptId = sanitizeHTML(item.promptId);
-      const taskId = sanitizeHTML(item.taskId || item.promptId);
-      const capability = sanitizeHTML(item.capabilityId || item.actionIdentifier);
-      const agent = sanitizeHTML(item.targetAgentId || 'local-agent');
-      const runtime = sanitizeHTML(item.runtimeCategory || 'runtime');
-      const submittedBy = sanitizeHTML(item.submittedBy || 'operator');
-      const relativeTime = formatRelativeTime(
-        typeof item.createdAt === 'number'
-          ? new Date(item.createdAt).toISOString()
-          : item.createdAt,
-      );
-
-      const isExpired =
-        (item.expiresAt !== undefined && now > item.expiresAt) || item.state === 'EXPIRED';
-
-      let effectiveState = item.state;
-      if (isExpired && effectiveState === 'PENDING') {
-        effectiveState = 'EXPIRED';
-      }
-
-      // Determine risk tier
-      const riskLevel = (item.riskTier || 'HIGH').toLowerCase();
-
-      // State badge formatting
-      let stateBadge = '';
-      if (effectiveState === 'APPROVED') {
-        stateBadge = '<span class="status-badge status-badge--completed">✓ Approved</span>';
-      } else if (effectiveState === 'DENIED') {
-        stateBadge = '<span class="status-badge status-badge--failed">✗ Denied</span>';
-      } else if (effectiveState === 'EXPIRED') {
-        stateBadge = '<span class="status-badge status-badge--cancelled">⏱ Expired / Stale</span>';
-      } else if (effectiveState === 'RECONCILING') {
-        stateBadge =
-          '<span class="status-badge status-badge--dispatched">↻ Reconciling with backend...</span>';
-      } else {
-        const remainingSec = item.expiresAt
-          ? Math.max(0, Math.round((item.expiresAt - now) / 1000))
-          : null;
-        stateBadge = `<span class="status-badge status-badge--awaiting_approval">Awaiting Decision ${remainingSec !== null ? `(${remainingSec}s)` : ''}</span>`;
-      }
-
-      // Actions buttons: disabled when not in PENDING or when reconciling/expired
-      const isActionable = effectiveState === 'PENDING' && !isExpired;
-
-      return `
-        <div class="approval-card" role="listitem" data-prompt-id="${promptId}" data-task-id="${taskId}">
-          <div class="approval-card__header">
-            <h3 class="approval-card__title">${title}</h3>
-            <div style="display: flex; gap: var(--space-2); align-items: center;">
-              <span class="risk-badge risk-badge--${riskLevel}">${riskLevel} risk</span>
-              ${stateBadge}
-            </div>
-          </div>
-          <div class="approval-card__detail">
-            <p><strong>Capability:</strong> ${capability} → <strong>Agent:</strong> ${agent}</p>
-            <p><strong>Runtime:</strong> ${runtime} · <strong>Submitted by:</strong> ${submittedBy}</p>
-            <p><strong>Created:</strong> ${sanitizeHTML(relativeTime)}</p>
-            ${item.receiptHash ? `<p><strong>Receipt Hash:</strong> <code class="evidence-hash">${sanitizeHTML(item.receiptHash.substring(0, 16))}…</code></p>` : ''}
-          </div>
-          ${
-            item.policyDecision
-              ? `<p style="font-size: var(--text-xs); color: var(--text-tertiary);">Policy: ${sanitizeHTML(item.policyDecision.policyVersion)} · Hash: <code>${sanitizeHTML(item.policyDecision.policyHash.substring(0, 16))}…</code></p>`
-              : ''
-          }
-          <div class="approval-card__actions">
-            <button class="btn btn--primary btn--sm approval-action-btn" data-action="ALLOW" data-prompt-id="${promptId}" ${isActionable ? '' : 'disabled'}>
-              ${item.state === 'RECONCILING' ? 'Authorizing...' : 'Approve'}
-            </button>
-            <button class="btn btn--danger btn--sm approval-action-btn" data-action="DENY" data-prompt-id="${promptId}" ${isActionable ? '' : 'disabled'}>
-              Reject
-            </button>
-            <button class="btn btn--ghost btn--sm task-detail-trigger" data-task-id="${taskId}" type="button">
-              View Details
-            </button>
-          </div>
-        </div>
-      `;
-    })
-    .join('');
-
+  const cards = state.approvals.map((item) => generateApprovalCardHTML(item)).join('');
   setSafeHTML(container, cards);
+  bindApprovalActionButtons(container);
+  bindTaskDetailTriggers(container);
+}
 
-  // Bind authoritative approval decision buttons (053-SEC-03: No optimistic transition!)
-  container.querySelectorAll<HTMLButtonElement>('.approval-action-btn').forEach((btn) => {
+function generateApprovalCardHTML(item: ApprovalViewModel): string {
+  const now = Date.now();
+  const title = sanitizeHTML(item.title);
+  const promptId = sanitizeHTML(item.promptId);
+  const taskId = sanitizeHTML(item.taskId || item.promptId);
+  const capability = sanitizeHTML(item.capabilityId || item.actionIdentifier);
+  const agent = sanitizeHTML(item.targetAgentId || 'local-agent');
+  const runtime = sanitizeHTML(item.runtimeCategory || 'runtime');
+  const submittedBy = sanitizeHTML(item.submittedBy || 'operator');
+  const relativeTime = formatRelativeTime(
+    typeof item.createdAt === 'number' ? new Date(item.createdAt).toISOString() : item.createdAt,
+  );
+
+  const isExpired =
+    (item.expiresAt !== undefined && now > item.expiresAt) || item.state === 'EXPIRED';
+
+  let effectiveState = item.state;
+  if (isExpired && effectiveState === 'PENDING') {
+    effectiveState = 'EXPIRED';
+  }
+
+  const riskLevel = (item.riskTier || 'HIGH').toLowerCase();
+
+  let stateBadge = '';
+  if (effectiveState === 'APPROVED') {
+    stateBadge = '<span class="status-badge status-badge--completed">✓ Approved</span>';
+  } else if (effectiveState === 'DENIED') {
+    stateBadge = '<span class="status-badge status-badge--failed">✗ Denied</span>';
+  } else if (effectiveState === 'EXPIRED') {
+    stateBadge = '<span class="status-badge status-badge--cancelled">⏱ Expired / Stale</span>';
+  } else if (effectiveState === 'RECONCILING') {
+    stateBadge =
+      '<span class="status-badge status-badge--dispatched">↻ Reconciling with backend...</span>';
+  } else {
+    const remainingSec = item.expiresAt
+      ? Math.max(0, Math.round((item.expiresAt - now) / 1000))
+      : null;
+    stateBadge = `<span class="status-badge status-badge--awaiting_approval">Awaiting Decision ${remainingSec !== null ? `(${remainingSec}s)` : ''}</span>`;
+  }
+
+  const isActionable = effectiveState === 'PENDING' && !isExpired;
+
+  return `
+    <div class="approval-card" role="listitem" data-prompt-id="${promptId}" data-task-id="${taskId}">
+      <div class="approval-card__header">
+        <h3 class="approval-card__title">${title}</h3>
+        <div style="display: flex; gap: var(--space-2); align-items: center;">
+          <span class="risk-badge risk-badge--${riskLevel}">${riskLevel} risk</span>
+          ${stateBadge}
+        </div>
+      </div>
+      <div class="approval-card__detail">
+        <p><strong>Capability:</strong> ${capability} → <strong>Agent:</strong> ${agent}</p>
+        <p><strong>Runtime:</strong> ${runtime} · <strong>Submitted by:</strong> ${submittedBy}</p>
+        <p><strong>Created:</strong> ${sanitizeHTML(relativeTime)}</p>
+        ${item.receiptHash ? `<p><strong>Receipt Hash:</strong> <code class="evidence-hash">${sanitizeHTML(item.receiptHash.substring(0, 16))}…</code></p>` : ''}
+      </div>
+      ${
+        item.policyDecision
+          ? `<p style="font-size: var(--text-xs); color: var(--text-tertiary);">Policy: ${sanitizeHTML(item.policyDecision.policyVersion)} · Hash: <code>${sanitizeHTML(item.policyDecision.policyHash.substring(0, 16))}…</code></p>`
+          : ''
+      }
+      <div class="approval-card__actions">
+        <button class="btn btn--primary btn--sm approval-action-btn" data-action="ALLOW" data-prompt-id="${promptId}" ${isActionable ? '' : 'disabled'}>
+          ${item.state === 'RECONCILING' ? 'Authorizing...' : 'Approve'}
+        </button>
+        <button class="btn btn--danger btn--sm approval-action-btn" data-action="DENY" data-prompt-id="${promptId}" ${isActionable ? '' : 'disabled'}>
+          Reject
+        </button>
+        <button class="btn btn--ghost btn--sm task-detail-trigger" data-task-id="${taskId}" type="button">
+          View Details
+        </button>
+      </div>
+    </div>
+  `;
+}
+
+function bindApprovalActionButtons(containerOrCard: HTMLElement): void {
+  containerOrCard.querySelectorAll<HTMLButtonElement>('.approval-action-btn').forEach((btn) => {
+    if (btn.dataset['bound'] === 'true') return;
+    btn.dataset['bound'] = 'true';
     btn.addEventListener('click', async (e) => {
       e.stopPropagation();
       const promptId = btn.dataset['promptId'];
@@ -922,13 +1704,12 @@ function renderApprovals(): void {
       const item = state.approvals.find((a) => a.promptId === promptId);
       if (!item) return;
 
-      // 053-SEC-03: Server-side authorization only — transition to RECONCILING, do NOT mark approved locally!
       item.state = 'RECONCILING';
       renderApprovals();
 
       try {
         const nonce = item.nonce || 'web-nonce-default';
-        const leaseHeader = (item.leaseHeader as any) || {
+        const leaseHeader = (item.leaseHeader as Record<string, unknown> | undefined) || {
           lease_id: item.promptId,
           task_id: item.taskId || item.promptId,
           tenant_id: apiClient.tenantId,
@@ -948,12 +1729,10 @@ function renderApprovals(): void {
           tenantId: apiClient.tenantId,
         });
 
-        // 053-SEC-03: Authoritative state update only after backend responds
         item.state = result.state;
         item.receiptHash = result.receiptHash;
         renderApprovals();
 
-        // Refresh overview counts
         void loadSummary();
       } catch (err: unknown) {
         console.error('[Dashboard] Failed to submit approval decision:', err);
@@ -972,12 +1751,15 @@ function renderApprovals(): void {
       }
     });
   });
+}
 
-  // Bind detail button clicks
-  container.querySelectorAll<HTMLElement>('.task-detail-trigger').forEach((btn) => {
+function bindTaskDetailTriggers(containerOrCard: HTMLElement): void {
+  containerOrCard.querySelectorAll<HTMLElement>('.task-detail-trigger').forEach((btn) => {
+    if (btn.dataset['bound'] === 'true') return;
+    btn.dataset['bound'] = 'true';
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
-      const taskId = (btn as HTMLElement).dataset['taskId'];
+      const taskId = btn.dataset['taskId'];
       if (taskId) void openTaskDetail(taskId);
     });
   });
@@ -1272,17 +2054,17 @@ function getRoleBadge(role: string): string {
 function getAgentStatusPill(status: string): string {
   switch (status) {
     case 'AVAILABLE':
-      return '<span class="agent-status-pill agent-status-pill--available"><span class="status-dot"></span>Available / Healthy</span>';
+      return '<span class="agent-status-pill agent-status-pill--available"><span class="status-dot"></span><span class="status-label">Available / Healthy</span></span>';
     case 'BUSY':
-      return '<span class="agent-status-pill agent-status-pill--busy"><span class="status-dot"></span>Busy / Working</span>';
+      return '<span class="agent-status-pill agent-status-pill--busy"><span class="status-dot"></span><span class="status-label">Busy / Working</span></span>';
     case 'UNHEALTHY':
-      return '<span class="agent-status-pill agent-status-pill--unhealthy"><span class="status-dot"></span>Unhealthy / Offline</span>';
+      return '<span class="agent-status-pill agent-status-pill--unhealthy"><span class="status-dot"></span><span class="status-label">Unhealthy / Offline</span></span>';
     case 'RETIRED':
-      return '<span class="agent-status-pill agent-status-pill--retired"><span class="status-dot"></span>Retired</span>';
+      return '<span class="agent-status-pill agent-status-pill--retired"><span class="status-dot"></span><span class="status-label">Retired</span></span>';
     case 'REGISTERED':
-      return '<span class="agent-status-pill"><span class="status-dot"></span>Registered</span>';
+      return '<span class="agent-status-pill"><span class="status-dot"></span><span class="status-label">Registered</span></span>';
     default:
-      return `<span class="agent-status-pill"><span class="status-dot"></span>${sanitizeHTML(status)}</span>`;
+      return `<span class="agent-status-pill"><span class="status-dot"></span><span class="status-label">${sanitizeHTML(status)}</span></span>`;
   }
 }
 
@@ -2753,4 +3535,25 @@ export {
   handleConnectionStateChange,
   startPolling,
   stopPolling,
+  enqueueTelemetryEvent,
+  flushPendingEvents,
+  handleStreamResetReconciliation,
+  projectAgentStatusChanged,
+  projectDelegationCreated,
+  projectDelegationProgress,
+  projectDelegationCompleted,
+  projectDelegationFailed,
+  projectDelegationCancelled,
+  projectTaskStatusChanged,
+  projectApprovalRequested,
+  projectApprovalDecided,
+  projectTelemetrySample,
+  applyActivityItem,
+  eventToActivityItem,
+  generateApprovalCardHTML,
+  _seenEventIds,
+  _pendingStateEvents,
+  _pendingHistoryEvents,
+  _reconcileBuffer,
+  _resetProjectionState,
 };
