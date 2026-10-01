@@ -399,23 +399,12 @@ const mockDoc = new MockDocument();
 };
 
 // Now import dashboard projection exports after DOM setup
+import { MemoryGraphNodeType } from '@nexusos/contracts';
 import {
   state,
   enqueueTelemetryEvent,
   flushPendingEvents,
   handleStreamResetReconciliation,
-  projectAgentStatusChanged,
-  projectDelegationCreated,
-  projectDelegationProgress,
-  projectDelegationCompleted,
-  projectDelegationFailed,
-  projectDelegationCancelled,
-  projectTaskStatusChanged,
-  projectApprovalRequested,
-  projectApprovalDecided,
-  projectTelemetrySample,
-  applyActivityItem,
-  eventToActivityItem,
   _resetProjectionState,
   type TypedTelemetryEvent,
   type TypedAgentStatusChangedEvent,
@@ -459,7 +448,9 @@ function setupDashboardDOM(): void {
   `;
 }
 
-function makeEventEnvelope<T extends TypedTelemetryEvent>(base: T): T {
+function makeEventEnvelope<T extends TypedTelemetryEvent>(
+  base: Partial<T> & Pick<T, 'schema_id' | 'payload'>,
+): T {
   return {
     version: '1.0.0',
     event_id: crypto.randomUUID(),
@@ -471,7 +462,7 @@ function makeEventEnvelope<T extends TypedTelemetryEvent>(base: T): T {
     occurred_at: new Date().toISOString(),
     producer_id: 'test-producer',
     ...base,
-  };
+  } as T;
 }
 
 describe('Task 067 Phase 3B: Web Dashboard Real-Time Event Projection', () => {
@@ -1003,7 +994,7 @@ describe('Task 067 Phase 3B: Web Dashboard Real-Time Event Projection', () => {
     assert.equal(state.approvals[0]?.receiptHash, 'receipt-hash-1234567890abcdef');
 
     // Controls must be disabled
-    const buttons = container.querySelectorAll<MockElement>('.approval-action-btn');
+    const buttons = container.querySelectorAll('.approval-action-btn') as MockElement[];
     assert.equal(buttons.length, 2);
     for (const btn of buttons) {
       assert.equal(btn.disabled, true);
@@ -1111,10 +1102,14 @@ describe('Task 067 Phase 3B: Web Dashboard Real-Time Event Projection', () => {
     state.graphNodes = [
       {
         id: 'node-1',
+        tenantId: 'default-tenant',
+        workspaceId: '00000000-0000-4000-8000-000000000000',
         label: 'Node 1',
-        type: 'TOPIC',
+        nodeType: MemoryGraphNodeType.CONCEPT,
         confidence: 0.9,
-        createdDate: new Date().toISOString(),
+        version: 1,
+        isCurrent: true,
+        createdAt: new Date().toISOString(),
         properties: {},
       },
     ];
@@ -1310,9 +1305,6 @@ describe('Task 067 Phase 3B: Web Dashboard Real-Time Event Projection', () => {
 
   // 20. reset/reconciliation generation guard prevents stale REST result overwrite
   it('20. reset reconciliation generation guard prevents stale REST result overwrite', async () => {
-    const callCount = 0;
-    const originalLoadSummary = state.summary;
-
     // Trigger first reset
     const p1 = handleStreamResetReconciliation({
       reason: 'SERVER_EPOCH_CHANGED',
