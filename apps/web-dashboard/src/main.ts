@@ -124,6 +124,9 @@ interface AppState {
   graphRequestId: number;
   isLoading: boolean;
   pollingInterval: ReturnType<typeof setInterval> | null;
+  // Freshness Tracking (Task 067 Phase 3C)
+  lastRestSnapshotAt: string | null;
+  lastLiveEventAt: string | null;
 }
 
 const state: AppState = {
@@ -164,6 +167,8 @@ const state: AppState = {
   graphRequestId: 0,
   isLoading: false,
   pollingInterval: null,
+  lastRestSnapshotAt: null,
+  lastLiveEventAt: null,
 };
 
 // ============================================================
@@ -254,6 +259,50 @@ function handleConnectionStateChange(connState: ConnectionState, _detail?: strin
     // Client offline or 401 unauthenticated; stop polling
     stopPolling();
   }
+}
+
+// ============================================================
+// Operator Freshness Tracking (Task 067 Phase 3C)
+// ============================================================
+
+function formatFreshnessTime(isoString: string | null): string {
+  if (!isoString) return '—';
+  try {
+    const d = new Date(isoString);
+    if (isNaN(d.getTime())) return '—';
+    return d.toLocaleTimeString([], {
+      hour12: false,
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    });
+  } catch {
+    return '—';
+  }
+}
+
+function updateFreshnessIndicators(): void {
+  if (typeof document === 'undefined') return;
+
+  const snapshotEl = document.getElementById('snapshot-freshness');
+  if (snapshotEl) {
+    snapshotEl.textContent = `Snapshot: ${formatFreshnessTime(state.lastRestSnapshotAt)}`;
+  }
+
+  const eventEl = document.getElementById('live-event-freshness');
+  if (eventEl) {
+    eventEl.textContent = `Event: ${formatFreshnessTime(state.lastLiveEventAt)}`;
+  }
+}
+
+function recordRestSnapshotSuccess(timestamp?: string): void {
+  state.lastRestSnapshotAt = timestamp || new Date().toISOString();
+  updateFreshnessIndicators();
+}
+
+function recordLiveEventSuccess(occurredAt?: string): void {
+  state.lastLiveEventAt = occurredAt || new Date().toISOString();
+  updateFreshnessIndicators();
 }
 
 // ============================================================
@@ -413,6 +462,9 @@ function enqueueTelemetryEvent(event: TypedTelemetryEvent): void {
   if (event.event_id && markAndCheckSeenEvent(event.event_id)) {
     return;
   }
+
+  // Advance live event freshness for accepted application events
+  recordLiveEventSuccess(event.occurred_at);
 
   // Buffer events arriving while REST reconciliation is in flight
   if (_isReconciling) {
@@ -980,6 +1032,62 @@ function projectTelemetrySample(payload: TelemetrySamplePayload): void {
   }
 }
 
+function generateActivityItemHTML(event: ActivityItemResponse): string {
+  const eventId = sanitizeHTML(event.event_id.substring(0, 8));
+  const correlationId = event.correlation_id
+    ? sanitizeHTML(event.correlation_id.substring(0, 8))
+    : '';
+  const relativeTime = formatRelativeTime(event.occurred_at);
+  const producer = sanitizeHTML(event.producer_id);
+  const iconClass = getActivityIconClass(event.schema_id);
+  const label = sanitizeHTML(formatSchemaLabel(event.schema_id));
+  const payloadSummary = summarizePayload(event.payload);
+
+  return `
+    <div class="activity-item" data-event-id="${sanitizeHTML(event.event_id)}">
+      <div class="activity-item__icon ${iconClass}" aria-hidden="true">
+        ${getActivityIcon(event.schema_id)}
+      </div>
+      <div class="activity-item__body">
+        <span class="activity-item__label">${label}</span>
+        ${payloadSummary ? `<span class="activity-item__time">${sanitizeHTML(payloadSummary)}</span>` : ''}
+        <span class="activity-item__time">${sanitizeHTML(relativeTime)} · ${producer}</span>
+        ${correlationId ? `<span class="activity-item__correlation">↳ ${eventId} ← ${correlationId}</span>` : `<span class="activity-item__correlation">↳ ${eventId}</span>`}
+      </div>
+    </div>
+  `;
+}
+
+function prependActivityToContainer(
+  containerId: string,
+  emptyId: string,
+  item: ActivityItemResponse,
+  maxItems: number,
+): void {
+  const container = $(containerId);
+  if (!container) return;
+
+  const empty = $(emptyId);
+  if (empty) empty.hidden = true;
+
+  // Clear initial empty state placeholder if present
+  const emptyChild = container.querySelector('.empty-state');
+  if (emptyChild) {
+    emptyChild.remove();
+  }
+
+  const itemHTML = generateActivityItemHTML(item);
+  container.insertAdjacentHTML('afterbegin', itemHTML);
+
+  // Enforce bounding limit by removing oldest overflow rows from end
+  const rows = container.querySelectorAll('.activity-item');
+  if (rows.length > maxItems) {
+    for (let i = maxItems; i < rows.length; i++) {
+      rows[i]?.remove();
+    }
+  }
+}
+
 function applyActivityItem(activityItem: ActivityItemResponse): void {
   const existingIdx = state.activity.findIndex((a) => a.event_id === activityItem.event_id);
   if (existingIdx !== -1) {
@@ -990,27 +1098,13 @@ function applyActivityItem(activityItem: ActivityItemResponse): void {
 
   if (typeof document === 'undefined') return;
 
-  const overviewContainer = $('overview-activity-list');
-  if (overviewContainer) {
-    const overviewEmpty = $('overview-activity-empty');
-    if (overviewEmpty) overviewEmpty.hidden = true;
-    renderActivityList(
-      'overview-activity-list',
-      'overview-activity-empty',
-      state.activity.slice(0, 10),
-    );
-  }
-
-  const streamContainer = $('activity-stream-container');
-  if (streamContainer) {
-    const streamEmpty = $('activity-stream-empty');
-    if (streamEmpty) streamEmpty.hidden = true;
-    renderActivityList(
-      'activity-stream-container',
-      'activity-stream-empty',
-      state.activity.slice(0, 50),
-    );
-  }
+  prependActivityToContainer('overview-activity-list', 'overview-activity-empty', activityItem, 10);
+  prependActivityToContainer(
+    'activity-stream-container',
+    'activity-stream-empty',
+    activityItem,
+    50,
+  );
 }
 
 function _resetProjectionState(): void {
@@ -1022,6 +1116,9 @@ function _resetProjectionState(): void {
   _reconcileGeneration = 0;
   _isReconciling = false;
   _reconcileBuffer = [];
+  state.lastRestSnapshotAt = null;
+  state.lastLiveEventAt = null;
+  updateFreshnessIndicators();
 }
 
 const streamClient = new TelemetryStreamClient({
@@ -1171,6 +1268,7 @@ async function loadSummary(): Promise<void> {
     renderSummaryCards(summary);
     updateHealthBadge(summary.healthStatus);
     updateApprovalBadge(summary.pendingApprovalCount);
+    recordRestSnapshotSuccess(summary.updatedAt || new Date().toISOString());
   } catch (err) {
     if (err instanceof DashboardAPIError && err.statusCode === 401) {
       renderAuthRequired();
@@ -1842,40 +1940,7 @@ function renderActivityList(
 
   if (empty) empty.hidden = true;
 
-  const rows = items
-    .map((event) => {
-      const eventId = sanitizeHTML(event.event_id.substring(0, 8));
-      const correlationId = event.correlation_id
-        ? sanitizeHTML(event.correlation_id.substring(0, 8))
-        : '';
-      const relativeTime = formatRelativeTime(event.occurred_at);
-      const producer = sanitizeHTML(event.producer_id);
-
-      // Derive icon class from schema_id
-      const iconClass = getActivityIconClass(event.schema_id);
-
-      // Create a human-readable label from schema_id
-      const label = sanitizeHTML(formatSchemaLabel(event.schema_id));
-
-      // Extract key payload data
-      const payloadSummary = summarizePayload(event.payload);
-
-      return `
-        <div class="activity-item">
-          <div class="activity-item__icon ${iconClass}" aria-hidden="true">
-            ${getActivityIcon(event.schema_id)}
-          </div>
-          <div class="activity-item__body">
-            <span class="activity-item__label">${label}</span>
-            ${payloadSummary ? `<span class="activity-item__time">${sanitizeHTML(payloadSummary)}</span>` : ''}
-            <span class="activity-item__time">${sanitizeHTML(relativeTime)} · ${producer}</span>
-            ${correlationId ? `<span class="activity-item__correlation">↳ ${eventId} ← ${correlationId}</span>` : `<span class="activity-item__correlation">↳ ${eventId}</span>`}
-          </div>
-        </div>
-      `;
-    })
-    .join('');
-
+  const rows = items.map(generateActivityItemHTML).join('');
   setSafeHTML(container, rows);
 }
 
@@ -3551,6 +3616,12 @@ export {
   applyActivityItem,
   eventToActivityItem,
   generateApprovalCardHTML,
+  generateActivityItemHTML,
+  prependActivityToContainer,
+  formatFreshnessTime,
+  updateFreshnessIndicators,
+  recordRestSnapshotSuccess,
+  recordLiveEventSuccess,
   _seenEventIds,
   _pendingStateEvents,
   _pendingHistoryEvents,
