@@ -348,9 +348,209 @@ The following items are strictly out of scope for Task 068:
 
 ## 20. Final Discovery Status
 
+
 - **Discovery Report Created:** `docs/task_068_discovery_report.md`
 - **Code Modifications:** ZERO source or test files modified.
 - **Dependencies:** ZERO packages added or modified.
 - **Working Tree:** CLEAN (`git status --short` verified).
 - **Baseline Commit:** `e191019be314253abde47decb515a96974d31afb` (`HEAD == origin/main`).
 - **Next Step:** Commit this discovery report (`docs: add task 068 discovery report`) and await prompt instructions for Phase 4 implementation.
+
+---
+
+## Discovery Hardening — Retry Semantics
+
+**Hardening Pass Date:** 2026-10-02  
+**Hardening Commit Parent:** `a1ea0a7ee4deab47017cd5db30ae4f747d67eda4`  
+**Methodology:** Exhaustive source search across `services/backend/src/`, `packages/contracts/src/`, `apps/web-dashboard/src/`, `tests/`, and all discovery docs.
+
+---
+
+### Existing Retry/Recovery Evidence
+
+**What "retry" means in NexusOS at the planner/workflow level:**
+
+1. **Planner-Level Node Retry (`ReplanCoordinator`)** — **[FACT]**
+   - Source: `services/backend/src/planner/replan-coordinator.ts`, lines 168–210.
+   - When a DAG workflow **node** fails, `ReplanCoordinator.adaptFailedNode()` synthesizes a **successor node** with a new `nodeId` (suffix `-retry`) and an increased `timeoutMs`. This is **not** a transition of the same task back into execution — it produces a new successor workflow graph proposal (`AdaptiveReplanResponse`) with a new `successorWorkflowId` and incremented `version`.
+   - This planner-level retry operates at the **workflow node** granularity, not the **task** granularity. The parent `TaskRecord` keeps the same `taskId` throughout.
+
+2. **Bounded Replan Iteration Hard Cap** — **[FACT]**
+   - Source: `services/backend/src/planner/replan-coordinator.ts`, line 21.
+   - `PLANNER_SAFETY_LIMITS.MAX_REPLAN_ITERATIONS` is enforced. Exceeding the limit throws a terminal error (`EXCEEDS_MAX_REPLAN_ITERATIONS`). No infinite retry loops are possible at the planner level.
+
+3. **Memory Evolution Processor Retry** — **[FACT]**
+   - Source: `services/backend/src/memory/memory-evolution-processor.ts`, lines 235–248.
+   - The memory subsystem has its own bounded retry with exponential backoff for transient outbox delivery failures. This is entirely internal to the memory layer and **not** user-visible at the task lifecycle level. Not relevant to operator-initiated retry.
+
+4. **SSE Client Retry (Dashboard Transport)** — **[FACT]**
+   - Source: `tests/hardening/dashboard-sse-client-phase3a.test.ts`, lines 689, 751.
+   - The SSE client has a "retry counter" that resets after successful reconnect. This is transport-layer reconnect retry, not task execution retry.
+
+5. **No `retryCount`, `attemptCount`, `retryPolicy`, `parentTaskId`, or `rootTaskId` fields in `TaskRecord`** — **[FACT]**
+   - Source: `packages/contracts/src/tasks/index.ts` (canonical `TaskRecordSchema`, lines 275–307).
+   - `TaskRecord` schema contains: `taskId`, `tenantId`, `submittedBy`, `title`, `targetAgentId`, `capabilityId`, `runtimeCategory`, `parameters`, `requestedScope`, `state`, `lease`, `receipt`, `evidenceChecksum`, `isWorkflow`, `dag`, `policyDecision`, `error`, `createdAt`, `updatedAt`.
+   - There is **zero** evidence of `parentTaskId`, `rootTaskId`, `lineage`, `retryCount`, `attemptCount`, or `retryPolicy` fields in the canonical task contract.
+
+6. **`POST /v1/tasks/replan` endpoint exists for planner-level replanning** — **[FACT]**
+   - Source: `services/backend/src/server/app.ts`, lines 381–389.
+   - Route handler: `taskController.replanGoal(body, authContext)`.
+   - This is a **planner proposal** endpoint (returns an `AdaptiveReplanResponse` with `status: 'PROPOSED'`). It does NOT automatically create a new task or restart execution. The response contains a `successorDAG` proposal that would need to be submitted via `POST /v1/tasks` to create a new execution.
+
+---
+
+### Task Lineage Evidence
+
+**Is there a canonical concept of task lineage, parent task, or root task?**
+
+- **[FACT]** `TaskRecord` schema has **no** `parentTaskId`, `rootTaskId`, `sourceTaskId`, or lineage fields whatsoever (confirmed from `packages/contracts/src/tasks/index.ts` lines 275–307).
+- **[FACT]** `TaskController.createTask()` and `TaskController.createTaskGraph()` both generate a fresh `crypto.randomUUID()` as `taskId` with zero reference to any predecessor task.
+- **[FACT]** The `AdaptiveReplanResponse` returned by `replanGoal` does carry `priorWorkflowId` in `metadata.priorWorkflowId` — but this is a **proposal document**, not a persisted `TaskRecord`. The `successorDAG` in the response would need to be submitted as a new `POST /v1/tasks` call to actually create a linked task.
+- **[INFERENCE]** If an operator retries a failed task today by calling `POST /v1/tasks` with the same parameters, the resulting new task has **no programmatic link** to the original task in the persistence layer. Lineage is not tracked.
+- **[OPEN QUESTION]** Whether future sprints require task lineage tracking (e.g., a `parentTaskId` field on `TaskRecord`) is not answerable from current source.
+
+---
+
+### Idempotency / Concurrency Evidence
+
+**Does the task mutation layer have idempotency keys, version checks, or optimistic concurrency?**
+
+- **[FACT]** `TaskController` uses an in-memory `Map<string, TaskRecord>` for task persistence (controller.ts line 206). There is **no** optimistic concurrency mechanism, version field, or `eTag` in the task persistence layer.
+- **[FACT]** `TaskStateMachine.transition()` is a pure function that throws `TaskStateMachineError` if a transition is invalid. This provides **state-machine-level guard** against invalid transitions — not optimistic concurrency.
+- **[FACT]** `cancelTask()` handles already-cancelled tasks idempotently: if `task.state === CANCELLED` it returns the existing task without error (controller.ts line 1280).
+- **[FACT]** `cancelTask()` throws for `COMPLETED` and `FAILED` terminal states (controller.ts lines 1273–1278), preventing mutation of terminal tasks.
+- **[FACT]** `submitApprovalDecision()` delegates to `approvalHost.submitDecision()`. The approval host enforces idempotency via nonce, lease, and expiry checks. `PROMPT_ALREADY_RESOLVED` (409 Conflict) is returned on duplicate submission.
+- **[INFERENCE]** Double-click cancel is safely guarded. Double-click retry would **not** be guarded unless the dashboard disables the button after the first submission, because `createTask()` generates a new UUID on every call — two requests would create two distinct tasks.
+
+**Concurrency scenario analysis:**
+
+| Scenario | Behavior | Classification |
+| :--- | :--- | :--- |
+| Double-click cancel | Second call returns `CANCELLED` task idempotently | **[FACT]** |
+| Cancel completed task | Throws `Cannot cancel: COMPLETED` | **[FACT]** |
+| Cancel failed task | Throws `Cannot cancel: FAILED` | **[FACT]** |
+| Two tabs cancel same task | First transitions to `CANCELLED`; second returns `CANCELLED` idempotently | **[FACT]** |
+| Retry a FAILED task via any backend mechanism | No mechanism exists; `FAILED` is terminal with zero outgoing transitions | **[FACT]** |
+| Retry a COMPLETED task | Not possible via any backend mechanism | **[FACT]** |
+| REST timeout on cancel | Server may have already committed `CANCELLED` — idempotent on retry | **[FACT/INFERENCE]** |
+| Double-click approve | `approvalHost` returns `PROMPT_ALREADY_RESOLVED` (409) | **[FACT]** |
+
+---
+
+### Audit / Event Evidence
+
+**Does an existing audit/event system record task lifecycle events?**
+
+- **[FACT]** `TaskController` publishes `nexusos.events.task.created` on task creation (controller.ts lines 870–897).
+- **[FACT]** `publishTaskStatusChanged()` publishes `nexusos.events.task.status_changed` to `TenantStreamEventBus` on every state transition (controller.ts lines 278–305). Payload includes `taskId`, `tenantId`, `state`, `previousState`, `targetAgentId`, `error`.
+- **[FACT]** `cancelTask()` publishes `nexusos.events.task.canceled` with `taskId`, `reason`, `tenantId` (controller.ts lines 1290–1303).
+- **[FACT]** `submitApprovalDecision()` publishes `nexusos.events.approval.decision` AND `nexusos.events.approval.decided` (controller.ts lines 658–697). Payload includes `decidedBy` (operator identity).
+- **[FACT]** `PolicyAuditLoggerBoundary.logDecision()` records every policy evaluation with `operatorId`, `tenantId`, `resourceId`, `actionName`, `policyVersion`, `timestamp`, `reason` (controller.ts interface lines 155–157).
+- **[FACT]** There is **no** `nexusos.events.task.retried` event type defined anywhere in the codebase or contracts.
+- **[INFERENCE]** If operator-initiated retry is implemented as `POST /v1/tasks` (new task creation), the new task automatically emits `nexusos.events.task.created` and `task.status_changed` events via existing infrastructure. No new event type is needed for a resubmission pattern. The connection to the original failed task is only implicit (shared parameters, not a persisted lineage field).
+
+---
+
+### Approval Interaction
+
+**Concrete behavior of approvals in retry scenarios:**
+
+- **[FACT]** `AWAITING_APPROVAL` state has outgoing transitions only to `EXECUTING` (ALLOW), `FAILED` (DENY), or `CANCELLED`. No `AWAITING_APPROVAL -> SUBMITTED` transition exists (state-machine.ts lines 46–50).
+- **[FACT]** A `DENY` decision transitions task from `AWAITING_APPROVAL` to `FAILED` with `error.code = 'APPROVAL_DENIED'`. `FAILED` is terminal with zero outgoing transitions.
+- **[FACT]** `ApprovalAuthorityBoundary.cancelPrompt()` is defined as optional in the interface (controller.ts line 44) but is NOT wired to `cancelTask()`. Cancelling a task in `AWAITING_APPROVAL` via `POST /v1/tasks/:id/cancel` does NOT automatically cancel the pending approval prompt.
+- **[INFERENCE]** If an operator retries a denied task, a **new task** must be submitted via `POST /v1/tasks`. The new task goes through policy evaluation and generates a new approval prompt independently. The original approval and task remain in terminal state with no programmatic link.
+
+| Scenario | Behavior | Classification |
+| :--- | :--- | :--- |
+| Task failed while awaiting approval | Approval can still be submitted (host validates state independently) | **[FACT/INFERENCE]** |
+| Task failed after approval was granted | Task is `FAILED` terminal. No retry path exists within same `TaskRecord` | **[FACT]** |
+| Task cancelled while approval pending | Task → `CANCELLED`. Approval prompt remains in host but cannot affect task state | **[FACT]** |
+| Retry after rejection (DENY decision) | New task via `POST /v1/tasks`. New approval generated independently | **[FACT/INFERENCE]** |
+| Expired approval prompt | `submitDecision` throws `PROMPT_EXPIRED` (410) | **[FACT]** |
+
+---
+
+### Authorization Evidence
+
+**Re-verification of server-side authorization for all task mutations:**
+
+- **`GET /v1/tasks/:id`:** Authenticator required → `authContext` extracted → `TaskController.getTask()` checks `task.tenantId !== context.tenantId` → non-disclosing **404** on cross-tenant probe (app.ts lines 392–426). **[FACT]**: Task ID alone is insufficient.
+- **`POST /v1/tasks/:id/cancel`:** Authenticator required → tenant check in `cancelTask()` → non-disclosing **404** on cross-tenant probe (app.ts lines 429–458). **[FACT]**: Mutation authorization occurs before state transition.
+- **`POST /v1/approvals/:id/decision`:** `authenticateForDashboard()` required → `submitApprovalDecision()` checks `decisionReq.tenantId !== context.tenantId` → **403 TENANT_MISMATCH** (not 404) on cross-tenant probe (controller.ts lines 605–610). **[FACT]**: Approval mutations use 403 (not 404) for tenant mismatch — distinguishable from task mutations.
+- **Authorization order:** Authentication → `authContext` extraction → tenant check in controller → state machine validation → persistence update. **[FACT]**: Authorization always precedes state transition.
+
+---
+
+### Retry Decision
+
+#### Answering the Canonical Questions from Source
+
+**A. Is retry: (1) transition of same task back into execution, (2) new task derived from old, (3) new execution attempt, or (4) other?**  
+**[FACT]**: None of (1), (3), (4) exist in the implementation. (2) — new task creation — is the only possible mechanism today, and it is not formalized as "retry." There is no `parentTaskId` linkage.
+
+**B. Which states are retryable?**  
+**[FACT]**: `FAILED` and `CANCELLED` are the logical candidates. No retryability classification exists at the task level.
+
+**C. Which states are terminal?**  
+**[FACT]**: `COMPLETED`, `FAILED`, `CANCELLED` — from `TaskStateMachine.isTerminal()` (state-machine.ts lines 94–100).
+
+**D. Can a successful task be retried?**  
+**[FACT]**: Not through any existing backend mechanism. New task creation is always possible but is an operator decision.
+
+**E. Can a cancelled task be retried?**  
+**[FACT/INFERENCE]**: Not via state machine. A new task can be submitted.
+
+**F. Can an actively-running task be retried?**  
+**[FACT]**: No existing backend mechanism. State machine does not allow this.
+
+**G. What happens to approvals on retry?**  
+**[FACT]**: Original approval is unchanged (terminal state). New task generates new approval independently if policy requires.
+
+**H–K. Delegated work, artifacts, progress, non-idempotent safety?**  
+**[FACT]**: All belong to the original `TaskRecord`. A new task starts fresh. `ReplanCoordinator` explicitly blocks retry of ambiguous/non-idempotent operations (replan-coordinator.ts lines 45–48). No equivalent safeguard exists for operator-initiated new task creation.
+
+**L. Is there already a policy deciding whether a failure is retryable?**  
+**[FACT]**: `ReplanCoordinator.isUnknownOutcome()` classifies certain failure reasons at the planner/workflow-node level. There is **no** equivalent classification at the `TaskRecord`/operator level.
+
+---
+
+### Final Retry Decision
+
+> **Selected: Decision D — Retry semantics are not sufficiently defined. Task 068 must NOT implement operator-initiated task retry.**
+
+**Evidence supporting Decision D:**
+
+1. **[FACT]** No retry state transition exists in `TaskStateMachine`. Terminal states (`FAILED`, `CANCELLED`, `COMPLETED`) have zero outgoing transitions.
+2. **[FACT]** No `retryTask()` method exists on `TaskController`. No `POST /v1/tasks/:id/retry` route exists.
+3. **[FACT]** `TaskRecord` has no `parentTaskId`, `retryCount`, or lineage fields. A "retry" today creates an orphaned new task with no programmatic link to the original.
+4. **[FACT]** No retryability classification exists at the task level (only at the planner workflow-node level).
+5. **[FACT]** No `task.retried` event type exists in any event schema contract.
+6. **[OPEN QUESTION]** Business requirements for retryable vs. terminal failure are not defined in any source file, EDD, or PRD inspected.
+7. **[OPEN QUESTION]** Whether retry should track task lineage (`parentTaskId` on `TaskRecord`) is architecturally undefined and requires a contracts-breaking change.
+8. **[OPEN QUESTION]** Authorization/role restrictions for retry are not specified.
+
+> Decision D was selected (not C) because the absence of a `/retry` HTTP endpoint alone is insufficient to justify new backend capability. The deeper issue is that the **semantic contract** of retry — lineage tracking, retryability policy, idempotency model — is architecturally undefined at the task level.
+
+---
+
+### Revised Operator Controls Scope for Task 068
+
+Based on the hardening evidence, Task 068 should expose exactly these operator controls:
+
+| Control | Backend Capability | State Precondition | Authorization | REST Response | SSE Consequence | Confirmation Required |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **Cancel Task** | ✅ `POST /v1/tasks/:id/cancel` | Any non-terminal state | Tenant match, auth | `200 OK` (updated `TaskRecord`, `state: CANCELLED`) | `task.status_changed` | Yes — destructive |
+| **Approve** | ✅ `POST /v1/approvals/:id/decision` ALLOW | `AWAITING_APPROVAL`, approval `PENDING` | Tenant match, auth | `200 OK` (`ApprovalDecisionResult`) | `approval.decided` + `task.status_changed` | Yes — consequential |
+| **Reject** | ✅ `POST /v1/approvals/:id/decision` DENY | `AWAITING_APPROVAL`, approval `PENDING` | Tenant match, auth | `200 OK` (`ApprovalDecisionResult`) | `approval.decided` + `task.status_changed` (→ FAILED) | Yes — task becomes terminal |
+| **View Task Detail** | ✅ `GET /v1/tasks/:id` | Any state | Tenant match, auth | `200 OK` (`TaskRecord`) | None | No |
+| **Retry** | ❌ Undefined — semantics not established | N/A | N/A | N/A | N/A | **NOT IN SCOPE FOR TASK 068** |
+
+---
+
+### Remaining Open Questions
+
+1. **[OPEN QUESTION]** Should operator-initiated retry be defined in a future task (e.g., Task 069+) with explicit lineage tracking (`parentTaskId` field on `TaskRecord`)?
+2. **[OPEN QUESTION]** Should retry require backend-enforced retryability classification (only tasks that failed with specific `error.code` values are retryable)?
+3. **[OPEN QUESTION]** Is there a role restriction on who can approve/reject approval decisions?
+4. **[OPEN QUESTION]** Should cancellation of a task in `AWAITING_APPROVAL` also cancel the pending approval prompt via `ApprovalAuthorityBoundary.cancelPrompt()`? Currently `cancelPrompt()` is an optional interface method that is not wired to `cancelTask()`.
+
