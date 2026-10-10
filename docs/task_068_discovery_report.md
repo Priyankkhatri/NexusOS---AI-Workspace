@@ -1,4 +1,5 @@
 # TASK 068 DISCOVERY REPORT
+
 ## Web Dashboard Operator Controls, Task Inspection & Approval Workflow UX
 
 **Author:** NexusOS Engineering  
@@ -10,11 +11,12 @@
 
 ## 1. Executive Summary
 
-This discovery report establishes the technical foundation, authoritative boundaries, existing REST/SSE API contracts, security invariants, and smallest implementation surface for **Task 068 (Sprint 3 / S3-04)**: *Web Dashboard Operator Controls, Task Inspection & Approval Workflow UX*.
+This discovery report establishes the technical foundation, authoritative boundaries, existing REST/SSE API contracts, security invariants, and smallest implementation surface for **Task 068 (Sprint 3 / S3-04)**: _Web Dashboard Operator Controls, Task Inspection & Approval Workflow UX_.
 
 Task 067 successfully delivered real-time dashboard SSE telemetry, stream reconnection resilience, operator freshness indicators, and accessible activity feeds without a frontend framework (Vanilla TypeScript + DOM). Task 068 builds directly on top of Task 067 to introduce operator task inspection, safe task control actions (cancellation, retry), and human-in-the-loop (HITL) approval workflow interactions.
 
 ### Key Discovery Findings:
+
 1. **Execution Authority Boundary:** `TaskController` (`services/backend/src/tasks/controller.ts`) coupled with `TaskStateMachine` (`services/backend/src/tasks/state-machine.ts`) is the **sole execution mutation authority**. The dashboard is strictly an observational and command-dispatching projection layer.
 2. **Existing Task APIs:** Backend REST endpoints already exist for task creation (`POST /v1/tasks`), listing (`GET /v1/tasks`), detail fetching (`GET /v1/tasks/:id`), task cancellation (`POST /v1/tasks/:id/cancel`), approval listing (`GET /v1/approvals`), and approval decision submission (`POST /v1/approvals/:id/decision`).
 3. **API Gaps:** A dedicated task retry endpoint (`POST /v1/tasks/:id/retry`) does **not** currently exist in `services/backend/src/server/app.ts`. Task retry must be semantically defined either as a new REST route spawning a child/clone task or as client-side resubmission via `POST /v1/tasks`.
@@ -44,6 +46,7 @@ The following repository documents and specifications serve as authoritative def
 The real task lifecycle is defined by `TaskStateMachine` in `services/backend/src/tasks/state-machine.ts`.
 
 ### Task States Enum:
+
 - `SUBMITTED`: Task received by backend, awaiting policy check.
 - `POLICY_EVALUATED`: Policy evaluation passed, ready for leasing or approval.
 - `AWAITING_APPROVAL`: Task blocked requiring human operator approval.
@@ -56,6 +59,7 @@ The real task lifecycle is defined by `TaskStateMachine` in `services/backend/sr
 - `CANCELLED`: Terminal cancellation state.
 
 ### Valid State Transitions (`TaskStateMachine.canTransition`):
+
 - `SUBMITTED` -> `POLICY_EVALUATED`, `FAILED`, `CANCELLED`
 - `POLICY_EVALUATED` -> `LEASED`, `AWAITING_APPROVAL`, `FAILED`, `CANCELLED`
 - `AWAITING_APPROVAL` -> `LEASED` (upon approval decision `APPROVED`), `FAILED`, `CANCELLED` (upon approval decision `REJECTED` or explicit cancel)
@@ -68,6 +72,7 @@ The real task lifecycle is defined by `TaskStateMachine` in `services/backend/sr
 - `CANCELLED` -> `[]` (Terminal, zero transitions allowed)
 
 ### Cancellation Semantics:
+
 - Any non-terminal task (`SUBMITTED`, `POLICY_EVALUATED`, `AWAITING_APPROVAL`, `LEASED`, `DISPATCHED`, `EXECUTING`, `RECEIPT_VERIFIED`) can transition to `CANCELLED`.
 - `TaskController.cancelTask(taskId, reason, authContext)` transitions task state to `CANCELLED`, sets `cancelledAt` timestamp, records cancellation reason, and publishes a `task.status_changed` SSE telemetry event.
 - If task execution is active (`EXECUTING`), cancellation updates the logical task state in persistence and triggers cancellation signals to worker/agent dispatchers.
@@ -78,13 +83,13 @@ The real task lifecycle is defined by `TaskStateMachine` in `services/backend/sr
 
 A clear separation of concerns governs task state management across components:
 
-| Component | Allowed to Mutate Task State? | Authority & Role |
-| :--- | :--- | :--- |
-| **TaskController** | **YES (SOLE AUTHORITY)** | Enforces state machine transitions, tenant authorization, persistence updates, and event publishing. |
-| **TaskStateMachine** | **NO (VALIDATOR)** | Pure validation function `canTransition(from, to)` asserting transition rules. |
-| **Planner** | **NO** | Proposes execution plans and tasks; submits new task payloads to TaskController. |
-| **Executor / Agent** | **LIMITED** | Reports execution step status updates (`EXECUTING`, `COMPLETED`, `FAILED`) to TaskController via authorized internal APIs. |
-| **Dashboard** | **NO (PRESENTATION / CLIENT)** | Reads telemetry, renders UI, and dispatches authenticated operator requests (`POST /v1/tasks/:id/cancel`, `POST /v1/approvals/:id/decision`) to REST endpoints. |
+| Component            | Allowed to Mutate Task State?  | Authority & Role                                                                                                                                                |
+| :------------------- | :----------------------------- | :-------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **TaskController**   | **YES (SOLE AUTHORITY)**       | Enforces state machine transitions, tenant authorization, persistence updates, and event publishing.                                                            |
+| **TaskStateMachine** | **NO (VALIDATOR)**             | Pure validation function `canTransition(from, to)` asserting transition rules.                                                                                  |
+| **Planner**          | **NO**                         | Proposes execution plans and tasks; submits new task payloads to TaskController.                                                                                |
+| **Executor / Agent** | **LIMITED**                    | Reports execution step status updates (`EXECUTING`, `COMPLETED`, `FAILED`) to TaskController via authorized internal APIs.                                      |
+| **Dashboard**        | **NO (PRESENTATION / CLIENT)** | Reads telemetry, renders UI, and dispatches authenticated operator requests (`POST /v1/tasks/:id/cancel`, `POST /v1/approvals/:id/decision`) to REST endpoints. |
 
 > **[FACT]**: The Web Dashboard has zero execution state mutation authority. Every operator action is an HTTP request evaluated by `TaskController`.
 
@@ -95,6 +100,7 @@ A clear separation of concerns governs task state management across components:
 Inspection of `services/backend/src/server/app.ts` and `apps/web-dashboard/src/api/client.ts` reveals the following endpoint surface:
 
 ### Existing REST Endpoints:
+
 1. `GET /v1/tasks`: List tasks for tenant/workspace. Supports filters (`status`, `agentId`, `limit`).
 2. `POST /v1/tasks`: Submit a new task execution request.
 3. `GET /v1/tasks/:id`: Retrieve single task detail by ID.
@@ -103,9 +109,10 @@ Inspection of `services/backend/src/server/app.ts` and `apps/web-dashboard/src/a
 6. `POST /v1/approvals/:id/decision`: Submit approval decision (`APPROVED` or `REJECTED`). Accepts `{ decision, reason }`.
 
 ### API Gaps for Task 068:
+
 - `POST /v1/tasks/:id/retry`: **NOT PRESENT** in backend REST routes.
-  - *Option A:* Introduce `POST /v1/tasks/:id/retry` in `services/backend/src/server/app.ts` delegating to `taskController.retryTask(taskId, authContext)`.
-  - *Option B:* Have the dashboard client handle retry by fetching task details via `GET /v1/tasks/:id` and posting a new task payload via `POST /v1/tasks`.
+  - _Option A:_ Introduce `POST /v1/tasks/:id/retry` in `services/backend/src/server/app.ts` delegating to `taskController.retryTask(taskId, authContext)`.
+  - _Option B:_ Have the dashboard client handle retry by fetching task details via `GET /v1/tasks/:id` and posting a new task payload via `POST /v1/tasks`.
 
 > **[INFERENCE]**: Adding a dedicated backend route `POST /v1/tasks/:id/retry` provides better auditability, backend-enforced idempotency, and clean server-side event generation (`task.created` / `task.status_changed`).
 
@@ -135,6 +142,7 @@ Human-In-The-Loop (HITL) approvals follow a strict server-authorized workflow:
 Task 067 established SSE telemetry stream handling in `apps/web-dashboard/src/telemetry-stream-client.ts` and `apps/web-dashboard/src/main.ts`.
 
 ### Telemetry Events Relevant to Task 068:
+
 - `task.status_changed`: `{ taskId, tenantId, workspaceId, previousStatus, newStatus, timestamp, reason }`
 - `approval.requested`: `{ approvalId, taskId, tenantId, workspaceId, requiredRole, timeoutAt }`
 - `approval.decided`: `{ approvalId, taskId, tenantId, workspaceId, decision, deciderId, decidedAt }`
@@ -142,6 +150,7 @@ Task 067 established SSE telemetry stream handling in `apps/web-dashboard/src/te
 - `stream.reset`: Signals client to purge transient state and trigger REST reconciliation.
 
 ### REST vs SSE Reconciliation Rules:
+
 1. **Immediate Optimistic/Authoritative REST Update:** When operator clicks an action (e.g. Cancel or Approve), the dashboard calls the REST API. On REST success (200 OK), the UI updates immediately with the response data.
 2. **SSE Deduplication:** Incoming SSE events pass through `_seenEventIds` deduplication in `telemetry-stream-client.ts`.
 3. **State Convergence:** If an SSE event for a completed REST mutation arrives later, the UI state handles it idempotently without tearing down user view or jumping back in state.
@@ -153,6 +162,7 @@ Task 067 established SSE telemetry stream handling in `apps/web-dashboard/src/te
 The web dashboard (`apps/web-dashboard/`) is written in **Vanilla TypeScript** using direct DOM manipulation without any heavy frontend frameworks (React, Vue, Svelte, etc.).
 
 ### Current Architecture Summary:
+
 - **Build / Bundle:** Vite + TypeScript (`apps/web-dashboard/vite.config.ts`).
 - **Entry File:** `apps/web-dashboard/src/main.ts` (~1200 lines).
 - **HTML Structure:** `apps/web-dashboard/index.html` with grid layout, agent/task tables, activity feed, SSE status pill, and task detail modal skeleton.
@@ -161,6 +171,7 @@ The web dashboard (`apps/web-dashboard/`) is written in **Vanilla TypeScript** u
 - **Modal Mechanics:** Native `<dialog>` or overlay div controlled via `openTaskDetailModal(taskId)` and `closeModal()`.
 
 ### Smallest UI Extension for Task 068:
+
 - Keep Vanilla TypeScript architecture.
 - Extend `main.ts` with modal detail rendering, task log view, cancellation button triggers, retry button triggers, and interactive approval decision controls.
 - Maintain existing DOM bounds and memory limits (e.g., maximum task list rows, bounded event log arrays).
@@ -172,6 +183,7 @@ The web dashboard (`apps/web-dashboard/`) is written in **Vanilla TypeScript** u
 Security is enforced through server-side authorization and tenant isolation:
 
 ### Concrete Security Invariants for Task 068:
+
 - **068-SEC-01 (Tenant Read Boundary):** Authenticated operator can only read tasks/approvals belonging to their authorized `tenantId`. Cross-tenant requests return 404 (non-disclosing).
 - **068-SEC-02 (Tenant Mutation Boundary):** Authenticated operator cannot mutate (cancel/retry/approve) tasks outside their `tenantId`. Backend rejects unauthorized attempts.
 - **068-SEC-03 (Workspace Boundary):** Workspace-scoped operations (`workspaceId`) are strictly isolated within the authorized tenant context.
@@ -183,14 +195,14 @@ Security is enforced through server-side authorization and tenant isolation:
 
 ## 10. Race / Concurrency Analysis
 
-| Scenario | Risk | Recommended Handling Strategy |
-| :--- | :--- | :--- |
-| **Double Cancel Click** | Duplicate HTTP requests sent | Disable button immediately upon click (`aria-disabled="true"`, `loading` state); backend ignores duplicate cancel calls idempotently. |
-| **REST Cancel vs SSE `status_changed`** | SSE arrives after REST response | REST updates local state synchronously. When SSE event arrives, event ID is deduplicated or ignored if state matches. |
-| **SSE arrives BEFORE REST response** | SSE updates state mid-flight | UI updates state from SSE; when REST request completes, response matches current state. |
-| **Task completes while Modal open** | Operator viewing stale non-terminal state | Task detail modal updates dynamically upon receiving `task.status_changed` SSE event. |
-| **Approval decided in another tab** | Stale approval buttons visible | `approval.decided` SSE event removes approval card and disables inline controls immediately. |
-| **Stream Reset during pending action** | SSE stream re-connects | Active REST request completes independently; stream reset triggers background REST poll reconciliation. |
+| Scenario                                | Risk                                      | Recommended Handling Strategy                                                                                                         |
+| :-------------------------------------- | :---------------------------------------- | :------------------------------------------------------------------------------------------------------------------------------------ |
+| **Double Cancel Click**                 | Duplicate HTTP requests sent              | Disable button immediately upon click (`aria-disabled="true"`, `loading` state); backend ignores duplicate cancel calls idempotently. |
+| **REST Cancel vs SSE `status_changed`** | SSE arrives after REST response           | REST updates local state synchronously. When SSE event arrives, event ID is deduplicated or ignored if state matches.                 |
+| **SSE arrives BEFORE REST response**    | SSE updates state mid-flight              | UI updates state from SSE; when REST request completes, response matches current state.                                               |
+| **Task completes while Modal open**     | Operator viewing stale non-terminal state | Task detail modal updates dynamically upon receiving `task.status_changed` SSE event.                                                 |
+| **Approval decided in another tab**     | Stale approval buttons visible            | `approval.decided` SSE event removes approval card and disables inline controls immediately.                                          |
+| **Stream Reset during pending action**  | SSE stream re-connects                    | Active REST request completes independently; stream reset triggers background REST poll reconciliation.                               |
 
 ---
 
@@ -245,6 +257,7 @@ Inspection of `tests/` directory identifies existing test coverage relevant to t
 - `services/backend/tests/` (or equivalent backend unit/integration tests): Tests for `TaskController`, `TaskStateMachine`, and REST endpoints.
 
 ### Task 068 Recommended Test Matrix:
+
 1. `tests/hardening/dashboard-operator-controls.test.ts`:
    - Unit/DOM tests for task inspection modal opening/closing and focus management.
    - Tests for Cancel button click -> REST API call -> UI state update -> SSE event reconciliation.
@@ -258,11 +271,11 @@ Inspection of `tests/` directory identifies existing test coverage relevant to t
 ## 15. Gaps / Risks
 
 1. **Missing Backend Retry Endpoint:** As identified in Section 5, `POST /v1/tasks/:id/retry` does not exist in `services/backend/src/server/app.ts`.
-   - *Risk:* Implementing retry purely client-side by copying fields into `POST /v1/tasks` loses parent task lineage tracking.
-   - *Recommendation:* Introduce `POST /v1/tasks/:id/retry` in `services/backend/src/server/app.ts` as part of backend task control implementation.
+   - _Risk:_ Implementing retry purely client-side by copying fields into `POST /v1/tasks` loses parent task lineage tracking.
+   - _Recommendation:_ Introduce `POST /v1/tasks/:id/retry` in `services/backend/src/server/app.ts` as part of backend task control implementation.
 2. **Sensitive Log Exposure:** Task detail modal will display execution logs and error messages.
-   - *Risk:* Raw execution outputs might contain authorization headers, environment secrets, or private keys.
-   - *Recommendation:* Ensure log outputs are sanitized backend-side or filtered prior to transmission in `/v1/tasks/:id`.
+   - _Risk:_ Raw execution outputs might contain authorization headers, environment secrets, or private keys.
+   - _Recommendation:_ Ensure log outputs are sanitized backend-side or filtered prior to transmission in `/v1/tasks/:id`.
 
 ---
 
@@ -271,6 +284,7 @@ Inspection of `tests/` directory identifies existing test coverage relevant to t
 To maintain narrow scope and prevent regression of Task 067, the proposed implementation file set for Task 068 is explicitly categorized:
 
 ### MUST CHANGE:
+
 1. `apps/web-dashboard/src/main.ts`: Add task inspection modal detail rendering, operator action handlers (Cancel, Retry, Approve, Reject), confirmation dialogs, and accessibility focus traps.
 2. `apps/web-dashboard/src/api/client.ts`: Add `retryTask(taskId: string)` helper method to `DashboardAPIClient`.
 3. `apps/web-dashboard/index.html`: Add modal DOM templates and control button markup for task inspection and approval workflows.
@@ -279,9 +293,11 @@ To maintain narrow scope and prevent regression of Task 067, the proposed implem
 6. `tests/hardening/dashboard-operator-controls-phase4.test.ts`: New hardening test suite verifying operator controls, modals, and accessibility.
 
 ### MAY CHANGE:
+
 - `packages/contracts/src/events/schemas.ts`: Add `task.retried` event schema if retry produces a specific telemetry event.
 
 ### DO NOT CHANGE:
+
 - `apps/web-dashboard/src/telemetry-stream-client.ts` (Task 067 SSE transport client).
 - Core CSS styling framework (keep Vanilla CSS / existing style tokens).
 
@@ -299,21 +315,25 @@ graph TD
 ```
 
 ### Phase 4A: Task Inspection & Detail UX (Read-Only)
+
 - **Scope:** Build accessible task inspection modal in `main.ts` and `index.html`. Display complete task metadata, status history, agent assignment, and execution logs fetched via `GET /v1/tasks/:id`.
 - **Dependencies:** Existing `GET /v1/tasks/:id` endpoint.
 - **Files:** `apps/web-dashboard/src/main.ts`, `apps/web-dashboard/index.html`.
 
 ### Phase 4B: Operator Task Controls (Cancel & Retry)
+
 - **Scope:** Add Cancel and Retry buttons to Task row and Task detail modal. Connect Cancel button to `POST /v1/tasks/:id/cancel`. Implement `POST /v1/tasks/:id/retry` backend controller route and connect dashboard Retry button.
 - **Dependencies:** Phase 4A.
 - **Files:** `apps/web-dashboard/src/main.ts`, `apps/web-dashboard/src/api/client.ts`, `services/backend/src/server/app.ts`, `services/backend/src/tasks/controller.ts`.
 
 ### Phase 4C: Approval Workflow UX Integration
+
 - **Scope:** Add interactive Approve and Reject action buttons to pending approval cards and modal view. Connect to `POST /v1/approvals/:id/decision`. Handle instant card removal and status badge updates upon decision.
 - **Dependencies:** Existing `POST /v1/approvals/:id/decision` endpoint.
 - **Files:** `apps/web-dashboard/src/main.ts`, `apps/web-dashboard/index.html`.
 
 ### Phase 4D: Hardening, Security & Accessibility Validation
+
 - **Scope:** Add keyboard focus traps for modal, `aria-live` status announcements, button loading/disabled state guards, race condition guards, and complete unit/integration test suite.
 - **Dependencies:** Phases 4A-4C.
 - **Files:** `tests/hardening/dashboard-operator-controls-phase4.test.ts`.
@@ -322,15 +342,15 @@ graph TD
 
 ## 18. Acceptance Matrix
 
-| Category | Requirement / Criterion | Verification Method |
-| :--- | :--- | :--- |
-| **Inspection** | Clicking a task row opens detail modal displaying complete task metadata, timestamps, steps, and sanitized logs. | DOM unit tests & visual inspection |
-| **Inspection** | Pressing `Escape` or clicking Close button closes detail modal and restores keyboard focus to trigger row. | Keyboard navigation test |
-| **Task Cancel** | Clicking Cancel on non-terminal task prompts confirmation, calls `POST /v1/tasks/:id/cancel`, updates UI to `CANCELLED`, and deduplicates incoming SSE `status_changed`. | Integration test |
-| **Task Retry** | Clicking Retry on `FAILED` or `CANCELLED` task calls `POST /v1/tasks/:id/retry`, spawning a new task execution request. | Integration test |
-| **Approval** | Clicking Approve/Reject on pending approval sends `POST /v1/approvals/:id/decision`, updates approval card immediately, and transitions task state. | Integration test |
-| **Security** | Cross-tenant task inspection or cancel attempt returns non-disclosing 404 response. | Security test suite |
-| **Accessibility** | Modal has `role="dialog"`, focus trap active, visible focus rings on controls, and polite `aria-live` announcements. | Accessibility audit / DOM test |
+| Category          | Requirement / Criterion                                                                                                                                                  | Verification Method                |
+| :---------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :--------------------------------- |
+| **Inspection**    | Clicking a task row opens detail modal displaying complete task metadata, timestamps, steps, and sanitized logs.                                                         | DOM unit tests & visual inspection |
+| **Inspection**    | Pressing `Escape` or clicking Close button closes detail modal and restores keyboard focus to trigger row.                                                               | Keyboard navigation test           |
+| **Task Cancel**   | Clicking Cancel on non-terminal task prompts confirmation, calls `POST /v1/tasks/:id/cancel`, updates UI to `CANCELLED`, and deduplicates incoming SSE `status_changed`. | Integration test                   |
+| **Task Retry**    | Clicking Retry on `FAILED` or `CANCELLED` task calls `POST /v1/tasks/:id/retry`, spawning a new task execution request.                                                  | Integration test                   |
+| **Approval**      | Clicking Approve/Reject on pending approval sends `POST /v1/approvals/:id/decision`, updates approval card immediately, and transitions task state.                      | Integration test                   |
+| **Security**      | Cross-tenant task inspection or cancel attempt returns non-disclosing 404 response.                                                                                      | Security test suite                |
+| **Accessibility** | Modal has `role="dialog"`, focus trap active, visible focus rings on controls, and polite `aria-live` announcements.                                                     | Accessibility audit / DOM test     |
 
 ---
 
@@ -347,7 +367,6 @@ The following items are strictly out of scope for Task 068:
 ---
 
 ## 20. Final Discovery Status
-
 
 - **Discovery Report Created:** `docs/task_068_discovery_report.md`
 - **Code Modifications:** ZERO source or test files modified.
@@ -371,23 +390,28 @@ The following items are strictly out of scope for Task 068:
 **What "retry" means in NexusOS at the planner/workflow level:**
 
 1. **Planner-Level Node Retry (`ReplanCoordinator`)** — **[FACT]**
+
    - Source: `services/backend/src/planner/replan-coordinator.ts`, lines 168–210.
    - When a DAG workflow **node** fails, `ReplanCoordinator.adaptFailedNode()` synthesizes a **successor node** with a new `nodeId` (suffix `-retry`) and an increased `timeoutMs`. This is **not** a transition of the same task back into execution — it produces a new successor workflow graph proposal (`AdaptiveReplanResponse`) with a new `successorWorkflowId` and incremented `version`.
    - This planner-level retry operates at the **workflow node** granularity, not the **task** granularity. The parent `TaskRecord` keeps the same `taskId` throughout.
 
 2. **Bounded Replan Iteration Hard Cap** — **[FACT]**
+
    - Source: `services/backend/src/planner/replan-coordinator.ts`, line 21.
    - `PLANNER_SAFETY_LIMITS.MAX_REPLAN_ITERATIONS` is enforced. Exceeding the limit throws a terminal error (`EXCEEDS_MAX_REPLAN_ITERATIONS`). No infinite retry loops are possible at the planner level.
 
 3. **Memory Evolution Processor Retry** — **[FACT]**
+
    - Source: `services/backend/src/memory/memory-evolution-processor.ts`, lines 235–248.
    - The memory subsystem has its own bounded retry with exponential backoff for transient outbox delivery failures. This is entirely internal to the memory layer and **not** user-visible at the task lifecycle level. Not relevant to operator-initiated retry.
 
 4. **SSE Client Retry (Dashboard Transport)** — **[FACT]**
+
    - Source: `tests/hardening/dashboard-sse-client-phase3a.test.ts`, lines 689, 751.
    - The SSE client has a "retry counter" that resets after successful reconnect. This is transport-layer reconnect retry, not task execution retry.
 
 5. **No `retryCount`, `attemptCount`, `retryPolicy`, `parentTaskId`, or `rootTaskId` fields in `TaskRecord`** — **[FACT]**
+
    - Source: `packages/contracts/src/tasks/index.ts` (canonical `TaskRecordSchema`, lines 275–307).
    - `TaskRecord` schema contains: `taskId`, `tenantId`, `submittedBy`, `title`, `targetAgentId`, `capabilityId`, `runtimeCategory`, `parameters`, `requestedScope`, `state`, `lease`, `receipt`, `evidenceChecksum`, `isWorkflow`, `dag`, `policyDecision`, `error`, `createdAt`, `updatedAt`.
    - There is **zero** evidence of `parentTaskId`, `rootTaskId`, `lineage`, `retryCount`, `attemptCount`, or `retryPolicy` fields in the canonical task contract.
@@ -424,16 +448,16 @@ The following items are strictly out of scope for Task 068:
 
 **Concurrency scenario analysis:**
 
-| Scenario | Behavior | Classification |
-| :--- | :--- | :--- |
-| Double-click cancel | Second call returns `CANCELLED` task idempotently | **[FACT]** |
-| Cancel completed task | Throws `Cannot cancel: COMPLETED` | **[FACT]** |
-| Cancel failed task | Throws `Cannot cancel: FAILED` | **[FACT]** |
-| Two tabs cancel same task | First transitions to `CANCELLED`; second returns `CANCELLED` idempotently | **[FACT]** |
-| Retry a FAILED task via any backend mechanism | No mechanism exists; `FAILED` is terminal with zero outgoing transitions | **[FACT]** |
-| Retry a COMPLETED task | Not possible via any backend mechanism | **[FACT]** |
-| REST timeout on cancel | Server may have already committed `CANCELLED` — idempotent on retry | **[FACT/INFERENCE]** |
-| Double-click approve | `approvalHost` returns `PROMPT_ALREADY_RESOLVED` (409) | **[FACT]** |
+| Scenario                                      | Behavior                                                                  | Classification       |
+| :-------------------------------------------- | :------------------------------------------------------------------------ | :------------------- |
+| Double-click cancel                           | Second call returns `CANCELLED` task idempotently                         | **[FACT]**           |
+| Cancel completed task                         | Throws `Cannot cancel: COMPLETED`                                         | **[FACT]**           |
+| Cancel failed task                            | Throws `Cannot cancel: FAILED`                                            | **[FACT]**           |
+| Two tabs cancel same task                     | First transitions to `CANCELLED`; second returns `CANCELLED` idempotently | **[FACT]**           |
+| Retry a FAILED task via any backend mechanism | No mechanism exists; `FAILED` is terminal with zero outgoing transitions  | **[FACT]**           |
+| Retry a COMPLETED task                        | Not possible via any backend mechanism                                    | **[FACT]**           |
+| REST timeout on cancel                        | Server may have already committed `CANCELLED` — idempotent on retry       | **[FACT/INFERENCE]** |
+| Double-click approve                          | `approvalHost` returns `PROMPT_ALREADY_RESOLVED` (409)                    | **[FACT]**           |
 
 ---
 
@@ -460,13 +484,13 @@ The following items are strictly out of scope for Task 068:
 - **[FACT]** `ApprovalAuthorityBoundary.cancelPrompt()` is defined as optional in the interface (controller.ts line 44) but is NOT wired to `cancelTask()`. Cancelling a task in `AWAITING_APPROVAL` via `POST /v1/tasks/:id/cancel` does NOT automatically cancel the pending approval prompt.
 - **[INFERENCE]** If an operator retries a denied task, a **new task** must be submitted via `POST /v1/tasks`. The new task goes through policy evaluation and generates a new approval prompt independently. The original approval and task remain in terminal state with no programmatic link.
 
-| Scenario | Behavior | Classification |
-| :--- | :--- | :--- |
-| Task failed while awaiting approval | Approval can still be submitted (host validates state independently) | **[FACT/INFERENCE]** |
-| Task failed after approval was granted | Task is `FAILED` terminal. No retry path exists within same `TaskRecord` | **[FACT]** |
-| Task cancelled while approval pending | Task → `CANCELLED`. Approval prompt remains in host but cannot affect task state | **[FACT]** |
-| Retry after rejection (DENY decision) | New task via `POST /v1/tasks`. New approval generated independently | **[FACT/INFERENCE]** |
-| Expired approval prompt | `submitDecision` throws `PROMPT_EXPIRED` (410) | **[FACT]** |
+| Scenario                               | Behavior                                                                         | Classification       |
+| :------------------------------------- | :------------------------------------------------------------------------------- | :------------------- |
+| Task failed while awaiting approval    | Approval can still be submitted (host validates state independently)             | **[FACT/INFERENCE]** |
+| Task failed after approval was granted | Task is `FAILED` terminal. No retry path exists within same `TaskRecord`         | **[FACT]**           |
+| Task cancelled while approval pending  | Task → `CANCELLED`. Approval prompt remains in host but cannot affect task state | **[FACT]**           |
+| Retry after rejection (DENY decision)  | New task via `POST /v1/tasks`. New approval generated independently              | **[FACT/INFERENCE]** |
+| Expired approval prompt                | `submitDecision` throws `PROMPT_EXPIRED` (410)                                   | **[FACT]**           |
 
 ---
 
@@ -537,13 +561,13 @@ The following items are strictly out of scope for Task 068:
 
 Based on the hardening evidence, Task 068 should expose exactly these operator controls:
 
-| Control | Backend Capability | State Precondition | Authorization | REST Response | SSE Consequence | Confirmation Required |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Cancel Task** | ✅ `POST /v1/tasks/:id/cancel` | Any non-terminal state | Tenant match, auth | `200 OK` (updated `TaskRecord`, `state: CANCELLED`) | `task.status_changed` | Yes — destructive |
-| **Approve** | ✅ `POST /v1/approvals/:id/decision` ALLOW | `AWAITING_APPROVAL`, approval `PENDING` | Tenant match, auth | `200 OK` (`ApprovalDecisionResult`) | `approval.decided` + `task.status_changed` | Yes — consequential |
-| **Reject** | ✅ `POST /v1/approvals/:id/decision` DENY | `AWAITING_APPROVAL`, approval `PENDING` | Tenant match, auth | `200 OK` (`ApprovalDecisionResult`) | `approval.decided` + `task.status_changed` (→ FAILED) | Yes — task becomes terminal |
-| **View Task Detail** | ✅ `GET /v1/tasks/:id` | Any state | Tenant match, auth | `200 OK` (`TaskRecord`) | None | No |
-| **Retry** | ❌ Undefined — semantics not established | N/A | N/A | N/A | N/A | **NOT IN SCOPE FOR TASK 068** |
+| Control              | Backend Capability                         | State Precondition                      | Authorization      | REST Response                                       | SSE Consequence                                       | Confirmation Required         |
+| :------------------- | :----------------------------------------- | :-------------------------------------- | :----------------- | :-------------------------------------------------- | :---------------------------------------------------- | :---------------------------- |
+| **Cancel Task**      | ✅ `POST /v1/tasks/:id/cancel`             | Any non-terminal state                  | Tenant match, auth | `200 OK` (updated `TaskRecord`, `state: CANCELLED`) | `task.status_changed`                                 | Yes — destructive             |
+| **Approve**          | ✅ `POST /v1/approvals/:id/decision` ALLOW | `AWAITING_APPROVAL`, approval `PENDING` | Tenant match, auth | `200 OK` (`ApprovalDecisionResult`)                 | `approval.decided` + `task.status_changed`            | Yes — consequential           |
+| **Reject**           | ✅ `POST /v1/approvals/:id/decision` DENY  | `AWAITING_APPROVAL`, approval `PENDING` | Tenant match, auth | `200 OK` (`ApprovalDecisionResult`)                 | `approval.decided` + `task.status_changed` (→ FAILED) | Yes — task becomes terminal   |
+| **View Task Detail** | ✅ `GET /v1/tasks/:id`                     | Any state                               | Tenant match, auth | `200 OK` (`TaskRecord`)                             | None                                                  | No                            |
+| **Retry**            | ❌ Undefined — semantics not established   | N/A                                     | N/A                | N/A                                                 | N/A                                                   | **NOT IN SCOPE FOR TASK 068** |
 
 ---
 
@@ -553,4 +577,3 @@ Based on the hardening evidence, Task 068 should expose exactly these operator c
 2. **[OPEN QUESTION]** Should retry require backend-enforced retryability classification (only tasks that failed with specific `error.code` values are retryable)?
 3. **[OPEN QUESTION]** Is there a role restriction on who can approve/reject approval decisions?
 4. **[OPEN QUESTION]** Should cancellation of a task in `AWAITING_APPROVAL` also cancel the pending approval prompt via `ApprovalAuthorityBoundary.cancelPrompt()`? Currently `cancelPrompt()` is an optional interface method that is not wired to `cancelTask()`.
-

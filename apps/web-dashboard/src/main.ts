@@ -1509,7 +1509,7 @@ async function openTaskDetail(taskId: string): Promise<void> {
     `<div class="loading-state" style="padding: 2rem; text-align: center;">
       <div class="spinner" role="status" aria-label="Loading task details"></div>
       <p style="margin-top: 1rem; color: var(--color-text-secondary);">Loading task details...</p>
-    </div>`
+    </div>`,
   );
 
   if (!modal.open) {
@@ -1645,7 +1645,6 @@ async function openTaskDetail(taskId: string): Promise<void> {
         }, 1500);
       });
     });
-
   } catch (err: unknown) {
     if (state.openTaskId !== taskId) return; // Prevent race conditions
 
@@ -1664,7 +1663,7 @@ async function openTaskDetail(taskId: string): Promise<void> {
       content,
       `<div class="empty-state" style="padding: 2rem; text-align: center; color: var(--color-error);">
         <p>${sanitizeHTML(errorMsg)}</p>
-      </div>`
+      </div>`,
     );
   }
 }

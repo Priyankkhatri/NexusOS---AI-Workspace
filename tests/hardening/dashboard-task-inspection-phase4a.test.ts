@@ -58,7 +58,7 @@ export class MockElement {
     }
     this.eventListeners[eventName].push(handler);
   }
-  
+
   removeEventListener(): void {}
 
   // Dialog methods
@@ -393,7 +393,7 @@ import {
   openTaskDetail,
   initTaskDetailModal,
   _resetProjectionState,
-  projectTaskStatusChanged
+  projectTaskStatusChanged,
 } from '../../apps/web-dashboard/src/main.js';
 import { DashboardAPIError } from '../../apps/web-dashboard/src/api/client.js';
 
@@ -427,15 +427,24 @@ describe('Task 068 Phase 4A: Task Inspection UX', () => {
 
   it('renders loading state initially', async () => {
     let resolveGetTask: (v: any) => void;
-    apiClient.getTask = () => new Promise(r => { resolveGetTask = r; });
-    
+    apiClient.getTask = () =>
+      new Promise((r) => {
+        resolveGetTask = r;
+      });
+
     const p = openTaskDetail('task-123');
-    
+
     const content = mockDoc.getElementById('task-detail-content');
     assert.ok(content?.innerHTML.includes('Loading task details...'));
     assert.strictEqual(state.openTaskId, 'task-123');
-    
-    resolveGetTask!({ taskId: 'task-123', title: 'Foo', state: 'EXECUTING', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+
+    resolveGetTask!({
+      taskId: 'task-123',
+      title: 'Foo',
+      state: 'EXECUTING',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
     await p;
   });
 
@@ -450,18 +459,18 @@ describe('Task 068 Phase 4A: Task Inspection UX', () => {
       submittedBy: 'tenant-user',
       tenantId: 'tenant-1',
       createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
+      updatedAt: new Date().toISOString(),
     });
-    
+
     await openTaskDetail('task-456');
     const content = mockDoc.getElementById('task-detail-content');
-    
+
     // Check sanitation
     const title = mockDoc.getElementById('task-detail-title');
     // title.textContent sets the raw text, which is safe. It WILL include '<script>' but it won't execute because it's textContent.
     // Let me check what title.textContent returns. It will just be 'Task: <script>alert(1)</script>SafeTitle'.
     assert.strictEqual(title?.textContent, 'Task: <script>alert(1)</script>SafeTitle');
-    
+
     // Check canonical information rendered
     assert.ok(content?.innerHTML.includes('task-456'));
     assert.ok(content?.innerHTML.includes('Completed'));
@@ -470,9 +479,13 @@ describe('Task 068 Phase 4A: Task Inspection UX', () => {
 
   it('handles 404 cleanly', async () => {
     apiClient.getTask = async () => {
-      throw new DashboardAPIError(404, { code: 'NOT_FOUND', message: 'Not Found' }, '/v1/tasks/task-999');
+      throw new DashboardAPIError(
+        404,
+        { code: 'NOT_FOUND', message: 'Not Found' },
+        '/v1/tasks/task-999',
+      );
     };
-    
+
     await openTaskDetail('task-999');
     const content = mockDoc.getElementById('task-detail-content');
     assert.ok(content?.innerHTML.includes('Task not found'));
@@ -481,9 +494,13 @@ describe('Task 068 Phase 4A: Task Inspection UX', () => {
 
   it('handles 403 cleanly', async () => {
     apiClient.getTask = async () => {
-      throw new DashboardAPIError(403, { code: 'TENANT_MISMATCH', message: 'Forbidden' }, '/v1/tasks/task-403');
+      throw new DashboardAPIError(
+        403,
+        { code: 'TENANT_MISMATCH', message: 'Forbidden' },
+        '/v1/tasks/task-403',
+      );
     };
-    
+
     await openTaskDetail('task-403');
     const content = mockDoc.getElementById('task-detail-content');
     assert.ok(content?.innerHTML.includes('You do not have permission'));
@@ -493,7 +510,7 @@ describe('Task 068 Phase 4A: Task Inspection UX', () => {
     apiClient.getTask = async () => {
       throw new Error('Network Error');
     };
-    
+
     await openTaskDetail('task-err');
     const content = mockDoc.getElementById('task-detail-content');
     assert.ok(content?.innerHTML.includes('Failed to load task details'));
@@ -510,25 +527,28 @@ describe('Task 068 Phase 4A: Task Inspection UX', () => {
       capabilityId: 'cap-1',
       runtimeCategory: 'security',
       createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
+      updatedAt: new Date().toISOString(),
     });
-    
+
     await openTaskDetail('task-live');
     const content = mockDoc.getElementById('task-detail-content');
     assert.ok(content?.innerHTML.includes('status-badge--executing'));
     assert.ok(content?.innerHTML.includes('Executing'));
-    
+
     // Send live event
-    projectTaskStatusChanged({
-      taskId: 'task-live',
-      tenantId: 'tenant-1',
-      workspaceId: 'ws-1',
-      title: 'Live Task',
-      state: 'COMPLETED',
-      previousState: 'EXECUTING',
-      targetAgentId: 'agent-1'
-    }, new Date().toISOString());
-    
+    projectTaskStatusChanged(
+      {
+        taskId: 'task-live',
+        tenantId: 'tenant-1',
+        workspaceId: 'ws-1',
+        title: 'Live Task',
+        state: 'COMPLETED',
+        previousState: 'EXECUTING',
+        targetAgentId: 'agent-1',
+      },
+      new Date().toISOString(),
+    );
+
     assert.ok(content?.innerHTML.includes('status-badge--completed'));
     assert.ok(content?.innerHTML.includes('Completed'));
   });
@@ -544,22 +564,25 @@ describe('Task 068 Phase 4A: Task Inspection UX', () => {
       capabilityId: 'cap-1',
       runtimeCategory: 'security',
       createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
+      updatedAt: new Date().toISOString(),
     });
-    
+
     await openTaskDetail('task-live');
-    
+
     // Send live event for another task
-    projectTaskStatusChanged({
-      taskId: 'task-other',
-      tenantId: 'tenant-1',
-      workspaceId: 'ws-1',
-      title: 'Other Task',
-      state: 'FAILED',
-      previousState: 'EXECUTING',
-      targetAgentId: 'agent-1'
-    }, new Date().toISOString());
-    
+    projectTaskStatusChanged(
+      {
+        taskId: 'task-other',
+        tenantId: 'tenant-1',
+        workspaceId: 'ws-1',
+        title: 'Other Task',
+        state: 'FAILED',
+        previousState: 'EXECUTING',
+        targetAgentId: 'agent-1',
+      },
+      new Date().toISOString(),
+    );
+
     const content = mockDoc.getElementById('task-detail-content');
     assert.ok(content?.innerHTML.includes('status-badge--executing'));
     assert.ok(!content?.innerHTML.includes('status-badge--failed'));
@@ -576,17 +599,17 @@ describe('Task 068 Phase 4A: Task Inspection UX', () => {
       capabilityId: 'cap-1',
       runtimeCategory: 'security',
       createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
+      updatedAt: new Date().toISOString(),
     });
-    
+
     await openTaskDetail('task-1');
     assert.strictEqual(state.openTaskId, 'task-1');
-    
+
     const modal = mockDoc.getElementById('task-detail-modal');
     // Simulate dialog close event
     const closeEvent = { type: 'close' };
-    modal!.eventListeners['close']?.forEach(fn => fn(closeEvent));
-    
+    modal!.eventListeners['close']?.forEach((fn) => fn(closeEvent));
+
     assert.strictEqual(state.openTaskId, undefined);
   });
 });
