@@ -127,6 +127,7 @@ interface AppState {
   // Freshness Tracking (Task 067 Phase 3C)
   lastRestSnapshotAt: string | null;
   lastLiveEventAt: string | null;
+  openTaskId?: string;
 }
 
 const state: AppState = {
@@ -169,6 +170,7 @@ const state: AppState = {
   pollingInterval: null,
   lastRestSnapshotAt: null,
   lastLiveEventAt: null,
+  openTaskId: undefined,
 };
 
 // ============================================================
@@ -852,6 +854,16 @@ function projectTaskStatusChanged(payload: TaskStatusChangedPayload, occurredAt:
     }
   }
   // Section 6: task.status_changed MUST NOT modify aggregate summary counters.
+
+  // Update open task modal if applicable
+  if (state.openTaskId === payload.taskId) {
+    const stateClass = payload.state.toLowerCase().replace(/_/g, '_');
+    const badge = document.querySelector('#task-detail-content .status-badge');
+    if (badge) {
+      badge.className = `status-badge status-badge--${stateClass}`;
+      badge.textContent = formatState(payload.state);
+    }
+  }
 }
 
 function projectApprovalRequested(payload: ApprovalRequestedPayload, occurredAt: string): void {
@@ -1489,8 +1501,25 @@ async function openTaskDetail(taskId: string): Promise<void> {
 
   if (!modal || !content) return;
 
+  state.openTaskId = taskId;
+
+  if (title) title.textContent = `Task Detail`;
+  setSafeHTML(
+    content,
+    `<div class="loading-state" style="padding: 2rem; text-align: center;">
+      <div class="spinner" role="status" aria-label="Loading task details"></div>
+      <p style="margin-top: 1rem; color: var(--color-text-secondary);">Loading task details...</p>
+    </div>`
+  );
+
+  if (!modal.open) {
+    modal.showModal();
+  }
+
   try {
     const task = await apiClient.getTask(taskId);
+
+    if (state.openTaskId !== taskId) return; // Prevent race conditions
 
     if (title) title.textContent = `Task: ${task.title}`;
 
@@ -1617,9 +1646,26 @@ async function openTaskDetail(taskId: string): Promise<void> {
       });
     });
 
-    modal.showModal();
-  } catch (err) {
+  } catch (err: unknown) {
+    if (state.openTaskId !== taskId) return; // Prevent race conditions
+
     console.error('[Dashboard] Failed to load task detail:', err);
+
+    let errorMsg = 'Failed to load task details. Please try again.';
+    if (err instanceof DashboardAPIError) {
+      if (err.statusCode === 404) {
+        errorMsg = 'Task not found. It may have been deleted or does not exist.';
+      } else if (err.statusCode === 401 || err.statusCode === 403) {
+        errorMsg = 'You do not have permission to view this task.';
+      }
+    }
+
+    setSafeHTML(
+      content,
+      `<div class="empty-state" style="padding: 2rem; text-align: center; color: var(--color-error);">
+        <p>${sanitizeHTML(errorMsg)}</p>
+      </div>`
+    );
   }
 }
 
@@ -1632,6 +1678,9 @@ function initTaskDetailModal(): void {
   closeBtn.addEventListener('click', () => modal.close());
   modal.addEventListener('click', (e) => {
     if (e.target === modal) modal.close();
+  });
+  modal.addEventListener('close', () => {
+    state.openTaskId = undefined;
   });
 }
 
@@ -3627,4 +3676,6 @@ export {
   _pendingHistoryEvents,
   _reconcileBuffer,
   _resetProjectionState,
+  openTaskDetail,
+  initTaskDetailModal,
 };
