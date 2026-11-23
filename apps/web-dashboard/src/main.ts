@@ -18,6 +18,8 @@ import {
   type TaskItemResponse,
   type ActivityItemResponse,
   type PaginatedResponse,
+  type ApprovalDecisionRequest,
+  type ApprovalDecisionResult,
   type AgentRecord,
   type DelegationSummary,
   type MemorySearchResultItem,
@@ -864,6 +866,16 @@ function projectTaskStatusChanged(payload: TaskStatusChangedPayload, occurredAt:
       badge.textContent = formatState(payload.state);
     }
 
+    // Phase 4C: If task transitioned away from AWAITING_APPROVAL, remove approval buttons & box
+    if (payload.state !== 'AWAITING_APPROVAL') {
+      const modalApproveBtn = document.getElementById('task-approve-btn');
+      if (modalApproveBtn) modalApproveBtn.remove();
+      const modalRejectBtn = document.getElementById('task-reject-btn');
+      if (modalRejectBtn) modalRejectBtn.remove();
+      const modalApprovalBox = document.getElementById('modal-approval-confirmation-box');
+      if (modalApprovalBox) modalApprovalBox.remove();
+    }
+
     // Phase 4B: If the task transitioned to an ineligible state, remove cancellation controls
     if (!isTaskCancellable(payload.state)) {
       const actionsContainer = document.getElementById('task-detail-actions');
@@ -1000,6 +1012,46 @@ function projectApprovalDecided(payload: ApprovalDecidedPayload): void {
           `<p><strong>Receipt Hash:</strong> <code class="evidence-hash">${sanitizeHTML(payload.receiptHash.substring(0, 16))}…</code></p>`,
         );
       }
+    }
+
+    const confirmBox = card.querySelector<HTMLElement>(`#approval-confirm-${payload.promptId}`);
+    if (confirmBox) {
+      confirmBox.remove();
+    }
+    const actions = card.querySelector<HTMLElement>('.approval-card__actions');
+    if (actions && actions.style) {
+      actions.style.display = '';
+    }
+  }
+
+  // Phase 4C: Update open task modal if applicable
+  if (
+    state.openTaskId &&
+    (state.openTaskId === payload.taskId || (app && state.openTaskId === app.taskId))
+  ) {
+    const isApproved = payload.decision === 'ALLOW' || payload.state === 'APPROVED';
+    const badge = document.querySelector('#task-detail-content .status-badge');
+    if (badge) {
+      badge.className = isApproved
+        ? 'status-badge status-badge--executing'
+        : 'status-badge status-badge--failed';
+      badge.textContent = isApproved ? 'Executing' : 'Failed';
+    }
+    const modalApproveBtn = document.getElementById('task-approve-btn');
+    if (modalApproveBtn) modalApproveBtn.remove();
+    const modalRejectBtn = document.getElementById('task-reject-btn');
+    if (modalRejectBtn) modalRejectBtn.remove();
+    const modalApprovalBox = document.getElementById('modal-approval-confirmation-box');
+    if (modalApprovalBox) modalApprovalBox.remove();
+    if (!isApproved) {
+      const actions = document.getElementById('task-detail-actions');
+      if (actions) actions.remove();
+      const cancelBox = document.getElementById('cancel-confirmation-box');
+      if (cancelBox) cancelBox.remove();
+    }
+    const announcement = document.getElementById('task-detail-announcement');
+    if (announcement) {
+      announcement.textContent = `Task ${state.openTaskId} ${isApproved ? 'approved' : 'rejected'} successfully.`;
     }
   }
 
@@ -1517,6 +1569,123 @@ function isTaskCancellable(state: string): boolean {
   ].includes(state);
 }
 
+function findPendingApprovalForTask(taskId: string): ApprovalViewModel | undefined {
+  const now = Date.now();
+  return state.approvals.find(
+    (a) =>
+      a.taskId === taskId &&
+      a.state === 'PENDING' &&
+      (a.expiresAt === undefined || a.expiresAt > now),
+  );
+}
+
+function isApprovalActionable(item: ApprovalViewModel): boolean {
+  const now = Date.now();
+  return item.state === 'PENDING' && (item.expiresAt === undefined || item.expiresAt > now);
+}
+
+async function executeApprovalDecision(
+  promptId: string,
+  decision: 'ALLOW' | 'DENY',
+  userNotes?: string,
+): Promise<ApprovalDecisionResult> {
+  const item = state.approvals.find((a) => a.promptId === promptId);
+  if (!item) {
+    throw new DashboardAPIError(
+      404,
+      { code: 'PROMPT_NOT_FOUND', message: `Approval prompt '${promptId}' not found.` },
+      `/v1/approvals/${promptId}/decision`,
+    );
+  }
+  if (item.state !== 'PENDING' || (item.expiresAt !== undefined && Date.now() > item.expiresAt)) {
+    throw new DashboardAPIError(
+      410,
+      { code: 'PROMPT_EXPIRED', message: `Approval prompt '${promptId}' has expired.` },
+      `/v1/approvals/${promptId}/decision`,
+    );
+  }
+
+  const nonce = item.nonce || 'web-nonce-default';
+  const leaseHeader = (item.leaseHeader as Record<string, unknown> | undefined) || {
+    lease_id: item.promptId,
+    task_id: item.taskId || item.promptId,
+    tenant_id: apiClient.tenantId,
+    agent_id: item.targetAgentId || '00000000-0000-4000-8000-000000000003',
+    issued_at: new Date().toISOString(),
+    expires_at: new Date(Date.now() + 60000).toISOString(),
+    scopes: ['task:execute'],
+    signature: 'web-authoritative-sig',
+    nonce,
+  };
+
+  const trimmedNotes = userNotes?.trim() ? userNotes.trim().slice(0, 1024) : undefined;
+  const payload: ApprovalDecisionRequest = {
+    promptId,
+    decision,
+    nonce,
+    leaseHeader,
+    tenantId: apiClient.tenantId,
+    ...(trimmedNotes ? { userNotes: trimmedNotes } : {}),
+  };
+
+  const result = await apiClient.submitApprovalDecision(promptId, payload);
+
+  // Authoritative state update
+  item.state = result.state;
+  item.receiptHash = result.receiptHash;
+
+  const targetTaskId = item.taskId || result.taskId;
+  if (targetTaskId) {
+    const task = state.tasks.find((t) => t.taskId === targetTaskId);
+    if (task) {
+      if (decision === 'ALLOW') {
+        task.state = 'EXECUTING';
+      } else if (decision === 'DENY') {
+        task.state = 'FAILED';
+        task.error = {
+          code: 'APPROVAL_DENIED',
+          message: 'Human operator denied approval for task execution.',
+        };
+      }
+      task.updatedAt = new Date().toISOString();
+    }
+
+    if (typeof document !== 'undefined') {
+      const row = document.querySelector<HTMLElement>(`.task-row[data-task-id="${targetTaskId}"]`);
+      if (row) {
+        const badge = row.querySelector<HTMLElement>('.status-badge');
+        if (badge) {
+          if (decision === 'ALLOW') {
+            badge.className = 'status-badge status-badge--executing';
+            badge.textContent = 'Executing';
+          } else {
+            badge.className = 'status-badge status-badge--failed';
+            badge.textContent = 'Failed';
+          }
+        }
+      }
+    }
+  }
+
+  // Decrement approval badge
+  if (typeof document !== 'undefined') {
+    const badge = $('approval-badge');
+    let currentCount = 0;
+    if (badge && !badge.hidden && badge.textContent) {
+      const parsed = parseInt(badge.textContent, 10);
+      if (!isNaN(parsed)) currentCount = parsed;
+    }
+    const newCount = Math.max(0, currentCount - 1);
+    updateApprovalBadge(newCount);
+    if (state.summary) {
+      state.summary.pendingApprovalCount = Math.max(0, state.summary.pendingApprovalCount - 1);
+    }
+    setTextContent('pending-approval-count', String(newCount));
+  }
+
+  return result;
+}
+
 async function openTaskDetail(taskId: string): Promise<void> {
   const modal = $('task-detail-modal') as HTMLDialogElement | null;
   const content = $('task-detail-content');
@@ -1596,28 +1765,100 @@ async function openTaskDetail(taskId: string): Promise<void> {
 
     const stateClass = task.state.toLowerCase().replace(/_/g, '_');
 
-    const actionsSection = isTaskCancellable(task.state)
-      ? `
-        <div class="task-detail-actions" id="task-detail-actions">
-          <button type="button" class="btn btn--danger btn--sm" id="task-cancel-btn">Cancel Task</button>
-        </div>
-        <div class="cancel-confirmation-box" id="cancel-confirmation-box" role="alertdialog" aria-labelledby="cancel-confirm-title" aria-describedby="cancel-confirm-desc" style="display: none;">
-          <h4 id="cancel-confirm-title" class="cancel-confirmation-title">Cancel Task Execution?</h4>
-          <p id="cancel-confirm-desc" class="cancel-confirmation-desc">
-            This will mark task <strong>${sanitizeHTML(task.taskId)}</strong> as cancelled in the control plane and reject subsequent execution receipts. Active in-flight worker steps may continue until exit, and external side effects may not be reversible.
-          </p>
-          <div class="cancel-reason-group">
-            <label for="cancel-reason-input" class="cancel-reason-label">Reason (optional):</label>
-            <input type="text" id="cancel-reason-input" class="form-input cancel-reason-input" placeholder="User cancellation requested." maxlength="256" />
+    // Phase 4C: Correlate pending approval with task if awaiting approval
+    let pendingApproval = findPendingApprovalForTask(task.taskId);
+    if (!pendingApproval && task.state === 'AWAITING_APPROVAL') {
+      try {
+        const appRes = await apiClient.getApprovals();
+        if (appRes.items && appRes.items.length > 0) {
+          for (const item of appRes.items) {
+            if (!state.approvals.some((a) => a.promptId === item.promptId)) {
+              state.approvals.push({
+                promptId: item.promptId,
+                taskId: item.taskId,
+                title: item.title,
+                description: item.description,
+                riskTier: item.riskTier,
+                actionIdentifier: item.actionIdentifier,
+                capabilityId: item.capabilityId,
+                runtimeCategory: 'security',
+                submittedBy: item.deviceId || 'agent',
+                nonce: item.nonce,
+                createdAt: item.createdAt,
+                expiresAt: item.expiresAt,
+                state: item.state,
+              });
+            }
+          }
+          pendingApproval = findPendingApprovalForTask(task.taskId);
+        }
+      } catch {
+        // Query failure non-fatal
+      }
+    }
+
+    let actionsSection = '';
+    const isAwaiting = task.state === 'AWAITING_APPROVAL' && !!pendingApproval;
+    const isCancellable = isTaskCancellable(task.state);
+
+    if (isAwaiting || isCancellable) {
+      const approvalButtons = isAwaiting
+        ? `
+          <button type="button" class="btn btn--primary btn--sm" id="task-approve-btn" data-prompt-id="${pendingApproval!.promptId}">Approve</button>
+          <button type="button" class="btn btn--danger btn--sm" id="task-reject-btn" data-prompt-id="${pendingApproval!.promptId}">Reject</button>
+        `
+        : '';
+      const cancelTrigger = isCancellable
+        ? `<button type="button" class="btn btn--${isAwaiting ? 'ghost' : 'danger'} btn--sm" id="task-cancel-btn">Cancel Task</button>`
+        : '';
+
+      const approvalConfirmBox = isAwaiting
+        ? `
+          <div class="approval-confirmation-box" id="modal-approval-confirmation-box" role="alertdialog" aria-labelledby="modal-approval-confirm-title" aria-describedby="modal-approval-confirm-desc" style="display: none;">
+            <h4 id="modal-approval-confirm-title" class="approval-confirmation-title"></h4>
+            <p id="modal-approval-confirm-desc" class="approval-confirmation-desc"></p>
+            <div class="approval-notes-group">
+              <label for="modal-approval-notes-input" class="approval-notes-label">Notes / Reason (optional, max 1024 chars):</label>
+              <input type="text" id="modal-approval-notes-input" class="form-input approval-notes-input" placeholder="Operator notes..." maxlength="1024" />
+            </div>
+            <div class="approval-confirmation-buttons">
+              <button type="button" class="btn btn--sm" id="modal-confirm-approval-btn"></button>
+              <button type="button" class="btn btn--ghost btn--sm" id="modal-abort-approval-btn">Cancel</button>
+            </div>
+            <div id="modal-approval-error-message" class="approval-error-message" role="alert" style="display: none; color: var(--color-error); margin-top: 0.5rem; font-size: 0.875rem;"></div>
           </div>
-          <div class="cancel-confirmation-buttons">
-            <button type="button" class="btn btn--danger btn--sm" id="confirm-cancel-btn">Confirm Cancellation</button>
-            <button type="button" class="btn btn--ghost btn--sm" id="abort-cancel-btn">Keep Task Running</button>
+        `
+        : '';
+
+      const cancelConfirmBox = isCancellable
+        ? `
+          <div class="cancel-confirmation-box" id="cancel-confirmation-box" role="alertdialog" aria-labelledby="cancel-confirm-title" aria-describedby="cancel-confirm-desc" style="display: none;">
+            <h4 id="cancel-confirm-title" class="cancel-confirmation-title">Cancel Task Execution?</h4>
+            <p id="cancel-confirm-desc" class="cancel-confirmation-desc">
+              This will mark task <strong>${sanitizeHTML(task.taskId)}</strong> as cancelled in the control plane and reject subsequent execution receipts. Active in-flight worker steps may continue until exit, and external side effects may not be reversible.
+            </p>
+            <div class="cancel-reason-group">
+              <label for="cancel-reason-input" class="cancel-reason-label">Reason (optional):</label>
+              <input type="text" id="cancel-reason-input" class="form-input cancel-reason-input" placeholder="User cancellation requested." maxlength="256" />
+            </div>
+            <div class="cancel-confirmation-buttons">
+              <button type="button" class="btn btn--danger btn--sm" id="confirm-cancel-btn">Confirm Cancellation</button>
+              <button type="button" class="btn btn--ghost btn--sm" id="abort-cancel-btn">Keep Task Running</button>
+            </div>
+            <div id="cancel-error-message" class="cancel-error-message" role="alert" style="display: none; color: var(--color-error); margin-top: 0.5rem; font-size: 0.875rem;"></div>
           </div>
-          <div id="cancel-error-message" class="cancel-error-message" role="alert" style="display: none; color: var(--color-error); margin-top: 0.5rem; font-size: 0.875rem;"></div>
+        `
+        : '';
+
+      actionsSection = `
+        <div class="task-detail-actions" id="task-detail-actions" style="display: flex; gap: var(--space-2); justify-content: flex-end;">
+          ${approvalButtons}
+          ${cancelTrigger}
         </div>
-      `
-      : '';
+        ${approvalConfirmBox}
+        ${cancelConfirmBox}
+      `;
+    }
 
     setSafeHTML(
       content,
@@ -1695,6 +1936,171 @@ async function openTaskDetail(taskId: string): Promise<void> {
       });
     });
 
+    const actionsContainer = content.querySelector<HTMLElement>('#task-detail-actions');
+    const announcementEl = content.querySelector<HTMLElement>('#task-detail-announcement');
+
+    // Bind Phase 4C Approval controls in modal
+    const approveBtn = content.querySelector<HTMLButtonElement>('#task-approve-btn');
+    const rejectBtn = content.querySelector<HTMLButtonElement>('#task-reject-btn');
+    const modalApprovalBox = content.querySelector<HTMLElement>('#modal-approval-confirmation-box');
+    const modalTitleEl = content.querySelector<HTMLElement>('#modal-approval-confirm-title');
+    const modalDescEl = content.querySelector<HTMLElement>('#modal-approval-confirm-desc');
+    const modalNotesInput = content.querySelector<HTMLInputElement>('#modal-approval-notes-input');
+    const modalConfirmBtn = content.querySelector<HTMLButtonElement>('#modal-confirm-approval-btn');
+    const modalAbortBtn = content.querySelector<HTMLButtonElement>('#modal-abort-approval-btn');
+    const modalApprovalErrorEl = content.querySelector<HTMLElement>(
+      '#modal-approval-error-message',
+    );
+
+    if (
+      approveBtn &&
+      rejectBtn &&
+      modalApprovalBox &&
+      modalConfirmBtn &&
+      modalAbortBtn &&
+      actionsContainer &&
+      pendingApproval
+    ) {
+      let activeDecision: 'ALLOW' | 'DENY' = 'ALLOW';
+      let isSubmittingDecision = false;
+      const promptId = pendingApproval.promptId;
+
+      const showApprovalConfirmation = (decision: 'ALLOW' | 'DENY') => {
+        activeDecision = decision;
+        actionsContainer.style.display = 'none';
+        modalApprovalBox.style.display = 'block';
+        if (modalApprovalErrorEl) {
+          modalApprovalErrorEl.style.display = 'none';
+          modalApprovalErrorEl.textContent = '';
+        }
+
+        const capability = task.capabilityId || 'capability';
+        const agent = task.targetAgentId || 'agent';
+
+        if (decision === 'ALLOW') {
+          if (modalTitleEl) modalTitleEl.textContent = 'Approve Task Execution?';
+          if (modalDescEl) {
+            modalDescEl.innerHTML = `Granting human authorization for capability <strong>${sanitizeHTML(capability)}</strong> on agent <strong>${sanitizeHTML(agent)}</strong> will transition task <strong>${sanitizeHTML(task.taskId)}</strong> to EXECUTING and allow runtime operations to proceed.`;
+          }
+          modalConfirmBtn.textContent = 'Confirm Approval';
+          modalConfirmBtn.className = 'btn btn--primary btn--sm';
+        } else {
+          if (modalTitleEl) modalTitleEl.textContent = 'Reject Task Execution?';
+          if (modalDescEl) {
+            modalDescEl.innerHTML = `Denying human authorization will immediately transition task <strong>${sanitizeHTML(task.taskId)}</strong> to FAILED with error code APPROVAL_DENIED. This decision is terminal and cannot be undone.`;
+          }
+          modalConfirmBtn.textContent = 'Confirm Rejection';
+          modalConfirmBtn.className = 'btn btn--danger btn--sm';
+        }
+
+        if (modalNotesInput) {
+          modalNotesInput.value = '';
+          modalNotesInput.focus();
+        } else {
+          modalAbortBtn.focus();
+        }
+      };
+
+      approveBtn.addEventListener('click', () => showApprovalConfirmation('ALLOW'));
+      rejectBtn.addEventListener('click', () => showApprovalConfirmation('DENY'));
+
+      modalAbortBtn.addEventListener('click', () => {
+        modalApprovalBox.style.display = 'none';
+        actionsContainer.style.display = '';
+        if (modalApprovalErrorEl) {
+          modalApprovalErrorEl.style.display = 'none';
+          modalApprovalErrorEl.textContent = '';
+        }
+        if (activeDecision === 'ALLOW') {
+          approveBtn.focus();
+        } else {
+          rejectBtn.focus();
+        }
+      });
+
+      modalConfirmBtn.addEventListener('click', async () => {
+        if (isSubmittingDecision) return; // Duplicate submission guard
+        isSubmittingDecision = true;
+
+        modalConfirmBtn.disabled = true;
+        modalConfirmBtn.setAttribute('aria-disabled', 'true');
+        modalAbortBtn.disabled = true;
+        modalConfirmBtn.textContent = activeDecision === 'ALLOW' ? 'Approving...' : 'Rejecting...';
+        if (modalApprovalErrorEl) {
+          modalApprovalErrorEl.style.display = 'none';
+          modalApprovalErrorEl.textContent = '';
+        }
+
+        const notes = modalNotesInput?.value?.trim() || undefined;
+
+        try {
+          const result = await executeApprovalDecision(promptId, activeDecision, notes);
+
+          // Stale response check
+          if (state.openTaskId !== taskId) return;
+
+          const isApproved = result.decision === 'ALLOW' || result.state === 'APPROVED';
+
+          // Update modal status badge
+          const modalBadge = content.querySelector('.status-badge');
+          if (modalBadge) {
+            modalBadge.className = isApproved
+              ? 'status-badge status-badge--executing'
+              : 'status-badge status-badge--failed';
+            modalBadge.textContent = isApproved ? 'Executing' : 'Failed';
+          }
+
+          // Remove controls and confirmation boxes
+          actionsContainer.remove();
+          modalApprovalBox.remove();
+          const cancelBox = content.querySelector('#cancel-confirmation-box');
+          if (cancelBox) cancelBox.remove();
+
+          if (announcementEl) {
+            announcementEl.textContent = `Task ${taskId} ${isApproved ? 'approved' : 'rejected'} successfully.`;
+          }
+        } catch (err: unknown) {
+          if (state.openTaskId !== taskId) return;
+
+          isSubmittingDecision = false;
+          modalConfirmBtn.disabled = false;
+          modalConfirmBtn.removeAttribute('aria-disabled');
+          modalConfirmBtn.textContent =
+            activeDecision === 'ALLOW' ? 'Confirm Approval' : 'Confirm Rejection';
+          modalAbortBtn.disabled = false;
+
+          let errorMsg = 'Failed to submit decision. Please try again.';
+          if (err instanceof DashboardAPIError) {
+            if (err.statusCode === 409) {
+              errorMsg = 'This approval prompt has already been resolved.';
+              const item = state.approvals.find((a) => a.promptId === promptId);
+              if (item) item.state = 'APPROVED';
+            } else if (err.statusCode === 410) {
+              errorMsg = 'This approval prompt has expired.';
+              const item = state.approvals.find((a) => a.promptId === promptId);
+              if (item) item.state = 'EXPIRED';
+            } else if (err.statusCode === 400) {
+              errorMsg = 'Nonce mismatch or invalid input. Approval prompt is stale.';
+            } else if (err.statusCode === 403) {
+              errorMsg = 'Access denied: tenant mismatch.';
+            } else if (err.statusCode === 404) {
+              errorMsg = 'Approval prompt not found or no longer active.';
+            } else if (err.statusCode === 503) {
+              errorMsg = 'Approval host service is currently unavailable.';
+            }
+          } else if (err instanceof Error && err.message.includes('fetch failed')) {
+            errorMsg =
+              'Decision status uncertain due to network failure. Please verify connection.';
+          }
+
+          if (modalApprovalErrorEl) {
+            modalApprovalErrorEl.style.display = 'block';
+            modalApprovalErrorEl.textContent = errorMsg;
+          }
+        }
+      });
+    }
+
     // Bind Phase 4B Task Cancellation controls
     const cancelBtn = content.querySelector<HTMLButtonElement>('#task-cancel-btn');
     const confirmBox = content.querySelector<HTMLElement>('#cancel-confirmation-box');
@@ -1702,11 +2108,11 @@ async function openTaskDetail(taskId: string): Promise<void> {
     const abortBtn = content.querySelector<HTMLButtonElement>('#abort-cancel-btn');
     const reasonInput = content.querySelector<HTMLInputElement>('#cancel-reason-input');
     const cancelErrorEl = content.querySelector<HTMLElement>('#cancel-error-message');
-    const announcementEl = content.querySelector<HTMLElement>('#task-detail-announcement');
 
     if (cancelBtn && confirmBox && confirmBtn && abortBtn) {
       cancelBtn.addEventListener('click', () => {
         cancelBtn.style.display = 'none';
+        if (actionsContainer && actionsContainer.style) actionsContainer.style.display = 'none';
         confirmBox.style.display = 'block';
         if (cancelErrorEl) {
           cancelErrorEl.style.display = 'none';
@@ -1723,6 +2129,7 @@ async function openTaskDetail(taskId: string): Promise<void> {
       abortBtn.addEventListener('click', () => {
         confirmBox.style.display = 'none';
         cancelBtn.style.display = '';
+        if (actionsContainer && actionsContainer.style) actionsContainer.style.display = '';
         cancelBtn.focus();
         if (cancelErrorEl) {
           cancelErrorEl.style.display = 'none';
@@ -1785,6 +2192,8 @@ async function openTaskDetail(taskId: string): Promise<void> {
           const actionsEl = content.querySelector('#task-detail-actions');
           if (actionsEl) actionsEl.remove();
           confirmBox.remove();
+          const modalApproval = content.querySelector('#modal-approval-confirmation-box');
+          if (modalApproval) modalApproval.remove();
 
           if (announcementEl) {
             announcementEl.textContent = `Task ${taskId} cancelled successfully.`;
@@ -1893,11 +2302,25 @@ function initTaskDetailModal(): void {
   modal.addEventListener('keydown', (e: Event) => {
     const keyEvent = e as KeyboardEvent;
     if (keyEvent.key === 'Escape') {
+      const approvalBox = modal.querySelector<HTMLElement>('#modal-approval-confirmation-box');
+      if (approvalBox && approvalBox.style.display !== 'none') {
+        keyEvent.preventDefault();
+        keyEvent.stopPropagation();
+        approvalBox.style.display = 'none';
+        const actions = modal.querySelector<HTMLElement>('#task-detail-actions');
+        if (actions) actions.style.display = '';
+        const approveBtn = modal.querySelector<HTMLElement>('#task-approve-btn');
+        if (approveBtn) approveBtn.focus();
+        return;
+      }
+
       const confirmBox = modal.querySelector<HTMLElement>('#cancel-confirmation-box');
       if (confirmBox && confirmBox.style.display !== 'none') {
         keyEvent.preventDefault();
         keyEvent.stopPropagation();
         confirmBox.style.display = 'none';
+        const actions = modal.querySelector<HTMLElement>('#task-detail-actions');
+        if (actions) actions.style.display = '';
         const cancelBtn = modal.querySelector<HTMLElement>('#task-cancel-btn');
         if (cancelBtn) {
           cancelBtn.style.display = '';
@@ -2049,7 +2472,7 @@ function generateApprovalCardHTML(item: ApprovalViewModel): string {
       }
       <div class="approval-card__actions">
         <button class="btn btn--primary btn--sm approval-action-btn" data-action="ALLOW" data-prompt-id="${promptId}" ${isActionable ? '' : 'disabled'}>
-          ${item.state === 'RECONCILING' ? 'Authorizing...' : 'Approve'}
+          Approve
         </button>
         <button class="btn btn--danger btn--sm approval-action-btn" data-action="DENY" data-prompt-id="${promptId}" ${isActionable ? '' : 'disabled'}>
           Reject
@@ -2058,67 +2481,258 @@ function generateApprovalCardHTML(item: ApprovalViewModel): string {
           View Details
         </button>
       </div>
+      <div class="approval-confirmation-box" id="approval-confirm-${promptId}" role="alertdialog" aria-labelledby="approval-confirm-title-${promptId}" aria-describedby="approval-confirm-desc-${promptId}" style="display: none;">
+        <h4 id="approval-confirm-title-${promptId}" class="approval-confirmation-title"></h4>
+        <p id="approval-confirm-desc-${promptId}" class="approval-confirmation-desc"></p>
+        <div class="approval-notes-group">
+          <label for="approval-notes-${promptId}" class="approval-notes-label">Notes / Reason (optional, max 1024 chars):</label>
+          <input type="text" id="approval-notes-${promptId}" class="form-input approval-notes-input" placeholder="Operator notes..." maxlength="1024" />
+        </div>
+        <div class="approval-confirmation-buttons">
+          <button type="button" class="btn btn--sm confirm-decision-btn" id="confirm-decision-${promptId}"></button>
+          <button type="button" class="btn btn--ghost btn--sm abort-decision-btn" id="abort-decision-${promptId}">Cancel</button>
+        </div>
+        <div id="approval-error-${promptId}" class="approval-error-message" role="alert" style="display: none; color: var(--color-error); margin-top: 0.5rem; font-size: 0.875rem;"></div>
+      </div>
     </div>
   `;
 }
 
 function bindApprovalActionButtons(containerOrCard: HTMLElement): void {
-  containerOrCard.querySelectorAll<HTMLButtonElement>('.approval-action-btn').forEach((btn) => {
-    if (btn.dataset['bound'] === 'true') return;
-    btn.dataset['bound'] = 'true';
-    btn.addEventListener('click', async (e) => {
-      e.stopPropagation();
-      const promptId = btn.dataset['promptId'];
-      const action = btn.dataset['action'] as 'ALLOW' | 'DENY';
-      if (!promptId || !action) return;
+  containerOrCard.querySelectorAll<HTMLElement>('.approval-card').forEach((card) => {
+    const promptId = card.dataset['promptId'];
+    if (!promptId) return;
 
-      const item = state.approvals.find((a) => a.promptId === promptId);
-      if (!item) return;
+    const actionsContainer = card.querySelector<HTMLElement>('.approval-card__actions');
+    const confirmBox = card.querySelector<HTMLElement>(`#approval-confirm-${promptId}`);
+    const titleEl = card.querySelector<HTMLElement>(`#approval-confirm-title-${promptId}`);
+    const descEl = card.querySelector<HTMLElement>(`#approval-confirm-desc-${promptId}`);
+    const notesInput = card.querySelector<HTMLInputElement>(`#approval-notes-${promptId}`);
+    const confirmBtn = card.querySelector<HTMLButtonElement>(`#confirm-decision-${promptId}`);
+    const abortBtn = card.querySelector<HTMLButtonElement>(`#abort-decision-${promptId}`);
+    const errorEl = card.querySelector<HTMLElement>(`#approval-error-${promptId}`);
 
-      item.state = 'RECONCILING';
-      renderApprovals();
+    if (!actionsContainer || !confirmBox || !confirmBtn || !abortBtn) return;
 
-      try {
-        const nonce = item.nonce || 'web-nonce-default';
-        const leaseHeader = (item.leaseHeader as Record<string, unknown> | undefined) || {
-          lease_id: item.promptId,
-          task_id: item.taskId || item.promptId,
-          tenant_id: apiClient.tenantId,
-          agent_id: item.targetAgentId || '00000000-0000-4000-8000-000000000003',
-          issued_at: new Date().toISOString(),
-          expires_at: new Date(Date.now() + 60000).toISOString(),
-          scopes: ['task:execute'],
-          signature: 'web-authoritative-sig',
-          nonce,
-        };
+    let pendingDecision: 'ALLOW' | 'DENY' = 'ALLOW';
+    let isSubmitting = false;
 
-        const result = await apiClient.submitApprovalDecision(promptId, {
-          promptId,
-          decision: action,
-          nonce,
-          leaseHeader,
-          tenantId: apiClient.tenantId,
-        });
+    // Action triggers (Approve / Reject)
+    actionsContainer.querySelectorAll<HTMLButtonElement>('.approval-action-btn').forEach((btn) => {
+      if (btn.dataset['bound'] === 'true') return;
+      btn.dataset['bound'] = 'true';
 
-        item.state = result.state;
-        item.receiptHash = result.receiptHash;
-        renderApprovals();
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (btn.disabled) return;
+        const action = btn.dataset['action'] as 'ALLOW' | 'DENY';
+        if (!action) return;
 
-        void loadSummary();
-      } catch (err: unknown) {
-        console.error('[Dashboard] Failed to submit approval decision:', err);
-        if (err instanceof DashboardAPIError) {
-          if (err.statusCode === 410) {
-            item.state = 'EXPIRED';
-          } else if (err.statusCode === 409) {
-            item.state = 'APPROVED';
-          } else {
-            item.state = 'PENDING';
+        const item = state.approvals.find((a) => a.promptId === promptId);
+        if (!item || !isApprovalActionable(item)) {
+          if (errorEl) {
+            errorEl.style.display = 'block';
+            errorEl.textContent = 'This approval prompt has expired or is no longer actionable.';
           }
-        } else {
-          item.state = 'PENDING';
+          return;
         }
-        renderApprovals();
+
+        pendingDecision = action;
+        actionsContainer.style.display = 'none';
+        confirmBox.style.display = 'block';
+        if (errorEl) {
+          errorEl.style.display = 'none';
+          errorEl.textContent = '';
+        }
+
+        const capability = item.capabilityId || item.actionIdentifier || 'capability';
+        const agent = item.targetAgentId || 'agent';
+
+        if (action === 'ALLOW') {
+          if (titleEl) titleEl.textContent = 'Approve Task Execution?';
+          if (descEl) {
+            descEl.innerHTML = `Granting human authorization for capability <strong>${sanitizeHTML(capability)}</strong> on agent <strong>${sanitizeHTML(agent)}</strong> will transition the task to EXECUTING and allow runtime operations to proceed.`;
+          }
+          confirmBtn.textContent = 'Confirm Approval';
+          confirmBtn.className = 'btn btn--primary btn--sm confirm-decision-btn';
+        } else {
+          if (titleEl) titleEl.textContent = 'Reject Task Execution?';
+          if (descEl) {
+            descEl.innerHTML = `Denying human authorization will immediately transition the task to FAILED with error code APPROVAL_DENIED. This decision is terminal and cannot be undone.`;
+          }
+          confirmBtn.textContent = 'Confirm Rejection';
+          confirmBtn.className = 'btn btn--danger btn--sm confirm-decision-btn';
+        }
+
+        if (notesInput) {
+          notesInput.value = '';
+          notesInput.focus();
+        } else {
+          abortBtn.focus();
+        }
+      });
+    });
+
+    // Abort button
+    if (abortBtn.dataset['bound'] !== 'true') {
+      abortBtn.dataset['bound'] = 'true';
+      abortBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        confirmBox.style.display = 'none';
+        actionsContainer.style.display = '';
+        if (errorEl) {
+          errorEl.style.display = 'none';
+          errorEl.textContent = '';
+        }
+        const trigger = actionsContainer.querySelector<HTMLButtonElement>(
+          `.approval-action-btn[data-action="${pendingDecision}"]`,
+        );
+        if (trigger) trigger.focus();
+      });
+    }
+
+    // Confirm button
+    if (confirmBtn.dataset['bound'] !== 'true') {
+      confirmBtn.dataset['bound'] = 'true';
+      confirmBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        if (isSubmitting) return; // Duplicate submission guard
+        isSubmitting = true;
+
+        confirmBtn.disabled = true;
+        confirmBtn.setAttribute('aria-disabled', 'true');
+        abortBtn.disabled = true;
+        confirmBtn.textContent = pendingDecision === 'ALLOW' ? 'Approving...' : 'Rejecting...';
+        if (errorEl) {
+          errorEl.style.display = 'none';
+          errorEl.textContent = '';
+        }
+
+        const notes = notesInput?.value?.trim() || undefined;
+
+        try {
+          const result = await executeApprovalDecision(promptId, pendingDecision, notes);
+
+          // Update card UI
+          confirmBox.remove();
+          actionsContainer
+            .querySelectorAll<HTMLButtonElement>('.approval-action-btn')
+            .forEach((b) => {
+              b.disabled = true;
+            });
+
+          const isApproved = result.decision === 'ALLOW' || result.state === 'APPROVED';
+          const badgeHtml = isApproved
+            ? '<span class="status-badge status-badge--completed">✓ Approved</span>'
+            : '<span class="status-badge status-badge--failed">✗ Denied</span>';
+
+          const existingHeaderBadge = card.querySelector<HTMLElement>(
+            '.approval-card__header .status-badge',
+          );
+          if (existingHeaderBadge) {
+            existingHeaderBadge.outerHTML = badgeHtml;
+          } else {
+            const header = card.querySelector<HTMLElement>('.approval-card__header');
+            if (header) header.insertAdjacentHTML('beforeend', badgeHtml);
+          }
+
+          const detail = card.querySelector<HTMLElement>('.approval-card__detail');
+          if (detail) {
+            if (result.decidedBy && !detail.querySelector('.approval-decided-by')) {
+              detail.insertAdjacentHTML(
+                'beforeend',
+                `<p class="approval-decided-by"><strong>Decided by:</strong><span class="decided-by-value"> ${sanitizeHTML(result.decidedBy)}</span></p>`,
+              );
+            }
+            if (result.receiptHash && !detail.querySelector('.evidence-hash')) {
+              detail.insertAdjacentHTML(
+                'beforeend',
+                `<p><strong>Receipt Hash:</strong> <code class="evidence-hash">${sanitizeHTML(result.receiptHash.substring(0, 16))}…</code></p>`,
+              );
+            }
+          }
+
+          // If task detail modal is open for this task, update it too
+          const item = state.approvals.find((a) => a.promptId === promptId);
+          if (state.openTaskId && item && state.openTaskId === item.taskId) {
+            const modalBadge = document.querySelector('#task-detail-content .status-badge');
+            if (modalBadge) {
+              modalBadge.className = isApproved
+                ? 'status-badge status-badge--executing'
+                : 'status-badge status-badge--failed';
+              modalBadge.textContent = isApproved ? 'Executing' : 'Failed';
+            }
+            const modalActions = document.getElementById('task-detail-actions');
+            if (modalActions) modalActions.remove();
+            const modalApprovalBox = document.getElementById('modal-approval-confirmation-box');
+            if (modalApprovalBox) modalApprovalBox.remove();
+            const cancelBox = document.getElementById('cancel-confirmation-box');
+            if (cancelBox && !isApproved) cancelBox.remove();
+          }
+
+          void loadSummary();
+        } catch (err: unknown) {
+          isSubmitting = false;
+          confirmBtn.disabled = false;
+          confirmBtn.removeAttribute('aria-disabled');
+          confirmBtn.textContent =
+            pendingDecision === 'ALLOW' ? 'Confirm Approval' : 'Confirm Rejection';
+          abortBtn.disabled = false;
+
+          let errorMsg = 'Failed to submit decision. Please try again.';
+          if (err instanceof DashboardAPIError) {
+            if (err.statusCode === 409) {
+              errorMsg = 'This approval prompt has already been resolved.';
+              const item = state.approvals.find((a) => a.promptId === promptId);
+              if (item) item.state = 'APPROVED';
+            } else if (err.statusCode === 410) {
+              errorMsg = 'This approval prompt has expired.';
+              const item = state.approvals.find((a) => a.promptId === promptId);
+              if (item) item.state = 'EXPIRED';
+              const badge = card.querySelector<HTMLElement>('.approval-card__header .status-badge');
+              if (badge) {
+                badge.className = 'status-badge status-badge--cancelled';
+                badge.textContent = '⏱ Expired / Stale';
+              }
+              actionsContainer
+                .querySelectorAll<HTMLButtonElement>('.approval-action-btn')
+                .forEach((b) => {
+                  b.disabled = true;
+                });
+            } else if (err.statusCode === 400) {
+              errorMsg = 'Nonce mismatch or invalid input. Approval prompt is stale.';
+            } else if (err.statusCode === 403) {
+              errorMsg = 'Access denied: tenant mismatch.';
+            } else if (err.statusCode === 404) {
+              errorMsg = 'Approval prompt not found or no longer active.';
+            } else if (err.statusCode === 503) {
+              errorMsg = 'Approval host service is currently unavailable.';
+            }
+          } else if (err instanceof Error && err.message.includes('fetch failed')) {
+            errorMsg =
+              'Decision status uncertain due to network failure. Please verify connection.';
+          }
+
+          if (errorEl) {
+            errorEl.style.display = 'block';
+            errorEl.textContent = errorMsg;
+          }
+        }
+      });
+    }
+
+    // Escape key dismisses confirmation on card
+    card.addEventListener('keydown', (e: Event) => {
+      const keyEvent = e as KeyboardEvent;
+      if (keyEvent.key === 'Escape' && confirmBox.style.display !== 'none') {
+        keyEvent.preventDefault();
+        keyEvent.stopPropagation();
+        confirmBox.style.display = 'none';
+        actionsContainer.style.display = '';
+        const trigger = actionsContainer.querySelector<HTMLButtonElement>(
+          `.approval-action-btn[data-action="${pendingDecision}"]`,
+        );
+        if (trigger) trigger.focus();
       }
     });
   });
@@ -3903,4 +4517,10 @@ export {
   openTaskDetail,
   initTaskDetailModal,
   isTaskCancellable,
+  findPendingApprovalForTask,
+  isApprovalActionable,
+  executeApprovalDecision,
+  renderApprovals,
+  bindApprovalActionButtons,
+  updateApprovalBadge,
 };
