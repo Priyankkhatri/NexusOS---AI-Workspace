@@ -863,6 +863,18 @@ function projectTaskStatusChanged(payload: TaskStatusChangedPayload, occurredAt:
       badge.className = `status-badge status-badge--${stateClass}`;
       badge.textContent = formatState(payload.state);
     }
+
+    // Phase 4B: If the task transitioned to an ineligible state, remove cancellation controls
+    if (!isTaskCancellable(payload.state)) {
+      const actionsContainer = document.getElementById('task-detail-actions');
+      if (actionsContainer) {
+        actionsContainer.remove();
+      }
+      const confirmBox = document.getElementById('cancel-confirmation-box');
+      if (confirmBox) {
+        confirmBox.remove();
+      }
+    }
   }
 }
 
@@ -1491,8 +1503,19 @@ function renderTaskList(): void {
 }
 
 // ============================================================
-// Task Detail Modal
+// Task Detail Modal (Phase 4A & 4B)
 // ============================================================
+
+function isTaskCancellable(state: string): boolean {
+  return [
+    'SUBMITTED',
+    'POLICY_EVALUATED',
+    'LEASED',
+    'DISPATCHED',
+    'EXECUTING',
+    'AWAITING_APPROVAL',
+  ].includes(state);
+}
 
 async function openTaskDetail(taskId: string): Promise<void> {
   const modal = $('task-detail-modal') as HTMLDialogElement | null;
@@ -1573,6 +1596,29 @@ async function openTaskDetail(taskId: string): Promise<void> {
 
     const stateClass = task.state.toLowerCase().replace(/_/g, '_');
 
+    const actionsSection = isTaskCancellable(task.state)
+      ? `
+        <div class="task-detail-actions" id="task-detail-actions">
+          <button type="button" class="btn btn--danger btn--sm" id="task-cancel-btn">Cancel Task</button>
+        </div>
+        <div class="cancel-confirmation-box" id="cancel-confirmation-box" role="alertdialog" aria-labelledby="cancel-confirm-title" aria-describedby="cancel-confirm-desc" style="display: none;">
+          <h4 id="cancel-confirm-title" class="cancel-confirmation-title">Cancel Task Execution?</h4>
+          <p id="cancel-confirm-desc" class="cancel-confirmation-desc">
+            This will mark task <strong>${sanitizeHTML(task.taskId)}</strong> as cancelled in the control plane and reject subsequent execution receipts. Active in-flight worker steps may continue until exit, and external side effects may not be reversible.
+          </p>
+          <div class="cancel-reason-group">
+            <label for="cancel-reason-input" class="cancel-reason-label">Reason (optional):</label>
+            <input type="text" id="cancel-reason-input" class="form-input cancel-reason-input" placeholder="User cancellation requested." maxlength="256" />
+          </div>
+          <div class="cancel-confirmation-buttons">
+            <button type="button" class="btn btn--danger btn--sm" id="confirm-cancel-btn">Confirm Cancellation</button>
+            <button type="button" class="btn btn--ghost btn--sm" id="abort-cancel-btn">Keep Task Running</button>
+          </div>
+          <div id="cancel-error-message" class="cancel-error-message" role="alert" style="display: none; color: var(--color-error); margin-top: 0.5rem; font-size: 0.875rem;"></div>
+        </div>
+      `
+      : '';
+
     setSafeHTML(
       content,
       `
@@ -1631,6 +1677,9 @@ async function openTaskDetail(taskId: string): Promise<void> {
           <span class="detail-row__value">${sanitizeHTML(new Date(task.updatedAt).toLocaleString())}</span>
         </div>
       </div>
+
+      ${actionsSection}
+      <div id="task-detail-announcement" class="sr-only" aria-live="polite"></div>
     `,
     );
 
@@ -1645,6 +1694,164 @@ async function openTaskDetail(taskId: string): Promise<void> {
         }, 1500);
       });
     });
+
+    // Bind Phase 4B Task Cancellation controls
+    const cancelBtn = content.querySelector<HTMLButtonElement>('#task-cancel-btn');
+    const confirmBox = content.querySelector<HTMLElement>('#cancel-confirmation-box');
+    const confirmBtn = content.querySelector<HTMLButtonElement>('#confirm-cancel-btn');
+    const abortBtn = content.querySelector<HTMLButtonElement>('#abort-cancel-btn');
+    const reasonInput = content.querySelector<HTMLInputElement>('#cancel-reason-input');
+    const cancelErrorEl = content.querySelector<HTMLElement>('#cancel-error-message');
+    const announcementEl = content.querySelector<HTMLElement>('#task-detail-announcement');
+
+    if (cancelBtn && confirmBox && confirmBtn && abortBtn) {
+      cancelBtn.addEventListener('click', () => {
+        cancelBtn.style.display = 'none';
+        confirmBox.style.display = 'block';
+        if (cancelErrorEl) {
+          cancelErrorEl.style.display = 'none';
+          cancelErrorEl.textContent = '';
+        }
+        if (reasonInput) {
+          reasonInput.value = '';
+          reasonInput.focus();
+        } else {
+          abortBtn.focus();
+        }
+      });
+
+      abortBtn.addEventListener('click', () => {
+        confirmBox.style.display = 'none';
+        cancelBtn.style.display = '';
+        cancelBtn.focus();
+        if (cancelErrorEl) {
+          cancelErrorEl.style.display = 'none';
+          cancelErrorEl.textContent = '';
+        }
+      });
+
+      let isCancelling = false;
+      confirmBtn.addEventListener('click', async () => {
+        if (isCancelling) return; // Duplicate submission guard
+        isCancelling = true;
+
+        confirmBtn.disabled = true;
+        confirmBtn.setAttribute('aria-disabled', 'true');
+        abortBtn.disabled = true;
+        confirmBtn.textContent = 'Cancelling...';
+        if (cancelErrorEl) {
+          cancelErrorEl.style.display = 'none';
+          cancelErrorEl.textContent = '';
+        }
+
+        const reason = reasonInput?.value?.trim() || undefined;
+
+        try {
+          const updated = await apiClient.cancelTask(taskId, reason);
+
+          // Stale response protection: user closed or switched modal while awaiting response
+          if (state.openTaskId !== taskId) return;
+
+          // Update state.tasks
+          const existing = state.tasks.find((t) => t.taskId === taskId);
+          if (existing) {
+            existing.state = 'CANCELLED';
+            existing.updatedAt = updated.updatedAt || new Date().toISOString();
+            if (updated.error) {
+              existing.error = updated.error;
+            }
+          }
+
+          // Update task table row if present
+          if (typeof document !== 'undefined') {
+            const row = document.querySelector<HTMLElement>(`.task-row[data-task-id="${taskId}"]`);
+            if (row) {
+              const badge = row.querySelector<HTMLElement>('.status-badge');
+              if (badge) {
+                badge.className = 'status-badge status-badge--cancelled';
+                badge.textContent = 'Cancelled';
+              }
+            }
+          }
+
+          // Update modal status badge
+          const modalBadge = content.querySelector('.status-badge');
+          if (modalBadge) {
+            modalBadge.className = 'status-badge status-badge--cancelled';
+            modalBadge.textContent = 'Cancelled';
+          }
+
+          // Remove cancellation actions and confirmation box
+          const actionsEl = content.querySelector('#task-detail-actions');
+          if (actionsEl) actionsEl.remove();
+          confirmBox.remove();
+
+          if (announcementEl) {
+            announcementEl.textContent = `Task ${taskId} cancelled successfully.`;
+          }
+        } catch (err: unknown) {
+          // Stale response protection
+          if (state.openTaskId !== taskId) return;
+
+          confirmBtn.disabled = false;
+          confirmBtn.removeAttribute('aria-disabled');
+          confirmBtn.textContent = 'Confirm Cancellation';
+          abortBtn.disabled = false;
+
+          let errorMsg = 'Failed to cancel task. Please try again.';
+          if (err instanceof DashboardAPIError) {
+            if (err.statusCode === 404) {
+              errorMsg = 'Task not found or access denied.';
+            } else if (err.statusCode === 401 || err.statusCode === 403) {
+              errorMsg = 'You do not have permission to cancel this task.';
+            } else if (err.statusCode === 500) {
+              if (
+                err.errorDetail &&
+                typeof err.errorDetail === 'object' &&
+                'message' in err.errorDetail
+              ) {
+                const msg = String(err.errorDetail.message);
+                if (
+                  msg.includes('COMPLETED') ||
+                  msg.includes('FAILED') ||
+                  msg.includes('RECEIPT_VERIFIED') ||
+                  msg.includes('Illegal task state transition')
+                ) {
+                  errorMsg =
+                    'Cannot cancel task: task is in an ineligible state or already completed.';
+                } else {
+                  errorMsg = `Server error: ${msg}`;
+                }
+              } else {
+                errorMsg = 'Cannot cancel task: task is in an ineligible state or server error.';
+              }
+            }
+          } else if (err instanceof Error) {
+            if (
+              err.message.includes('fetch') ||
+              err.message.includes('Network') ||
+              err.name === 'AbortError'
+            ) {
+              errorMsg =
+                'Cancellation status uncertain due to network failure. Please refresh task details to verify.';
+            } else {
+              errorMsg = err.message;
+            }
+          }
+
+          if (cancelErrorEl) {
+            cancelErrorEl.textContent = errorMsg;
+            cancelErrorEl.style.display = 'block';
+          }
+
+          if (announcementEl) {
+            announcementEl.textContent = errorMsg;
+          }
+        } finally {
+          isCancelling = false;
+        }
+      });
+    }
   } catch (err: unknown) {
     if (state.openTaskId !== taskId) return; // Prevent race conditions
 
@@ -1680,6 +1887,24 @@ function initTaskDetailModal(): void {
   });
   modal.addEventListener('close', () => {
     state.openTaskId = undefined;
+  });
+
+  // Handle Escape key: dismiss confirmation if open without closing the whole dialog
+  modal.addEventListener('keydown', (e: Event) => {
+    const keyEvent = e as KeyboardEvent;
+    if (keyEvent.key === 'Escape') {
+      const confirmBox = modal.querySelector<HTMLElement>('#cancel-confirmation-box');
+      if (confirmBox && confirmBox.style.display !== 'none') {
+        keyEvent.preventDefault();
+        keyEvent.stopPropagation();
+        confirmBox.style.display = 'none';
+        const cancelBtn = modal.querySelector<HTMLElement>('#task-cancel-btn');
+        if (cancelBtn) {
+          cancelBtn.style.display = '';
+          cancelBtn.focus();
+        }
+      }
+    }
   });
 }
 
@@ -3677,4 +3902,5 @@ export {
   _resetProjectionState,
   openTaskDetail,
   initTaskDetailModal,
+  isTaskCancellable,
 };
