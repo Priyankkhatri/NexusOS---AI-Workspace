@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { z } from 'zod';
 
 /**
@@ -10,6 +12,7 @@ export const BackendConfigSchema = z.object({
   logLevel: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
   apiPrefix: z.string().default('/v1'),
   databaseUrl: z.string().optional(),
+  tasksDbPath: z.string().optional(),
   shutdownTimeoutMs: z.coerce.number().int().positive().default(5000),
 });
 
@@ -29,6 +32,7 @@ export function loadBackendConfig(
     logLevel: env.LOG_LEVEL,
     apiPrefix: env.API_PREFIX,
     databaseUrl: env.DATABASE_URL,
+    tasksDbPath: env.TASKS_DB_PATH ?? env.TASK_DB_PATH,
     shutdownTimeoutMs: env.SHUTDOWN_TIMEOUT_MS,
   };
 
@@ -41,4 +45,38 @@ export function loadBackendConfig(
   }
 
   return result.data;
+}
+
+/**
+ * Resolves the SQLite task database path in accordance with environment and security rules:
+ * - Does not silently default production execution to :memory:
+ * - Does not treat arbitrary databaseUrl as a SQLite filesystem path
+ * - Ensures database directories exist safely
+ */
+export function resolveTasksDbPath(config: BackendConfig): string {
+  if (config.tasksDbPath) {
+    if (config.tasksDbPath === ':memory:') {
+      if (config.nodeEnv === 'production') {
+        throw new Error('Production environment cannot use in-memory SQLite storage (:memory:).');
+      }
+      return ':memory:';
+    }
+    const resolved = path.resolve(config.tasksDbPath);
+    const parentDir = path.dirname(resolved);
+    if (!fs.existsSync(parentDir)) {
+      fs.mkdirSync(parentDir, { recursive: true });
+    }
+    return resolved;
+  }
+
+  if (config.nodeEnv === 'test') {
+    return ':memory:';
+  }
+
+  // Stable default directory outside ephemeral build dirs
+  const defaultDir = path.resolve(process.env.NEXUSOS_DATA_DIR ?? path.join(process.cwd(), 'data'));
+  if (!fs.existsSync(defaultDir)) {
+    fs.mkdirSync(defaultDir, { recursive: true });
+  }
+  return path.join(defaultDir, 'nexusos-tasks.db');
 }

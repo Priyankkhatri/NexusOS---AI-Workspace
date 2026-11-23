@@ -31,6 +31,7 @@ import { EventPublisherBoundary } from '../events/publisher-boundary.js';
 import { ACPDispatchBridge } from '../server/acp-dispatch-bridge.js';
 import { IPlannerService, PlannerService } from '../planner/index.js';
 import { TenantStreamEventBus } from '../events/stream-event-bus.js';
+import { TaskRepository, InMemoryTaskRepository } from './repository.js';
 
 /**
  * Authoritative Approval Authority Boundary
@@ -200,10 +201,11 @@ export interface TaskControllerOptions {
   pluginRegistry?: PluginRegistryAuthorityBoundary;
   plannerService?: IPlannerService;
   streamEventBus?: TenantStreamEventBus;
+  taskRepository?: TaskRepository;
 }
 
 export class TaskController {
-  private readonly tasks = new Map<string, TaskRecord>();
+  private readonly tasks: TaskRepository;
   private readonly leaseIssuer: LeaseIssuer;
   private readonly receiptVerifier: ReceiptVerifier;
   private readonly policyEvaluator: PolicyEvaluatorBoundary;
@@ -216,6 +218,7 @@ export class TaskController {
   private streamEventBus?: TenantStreamEventBus;
 
   constructor(options: TaskControllerOptions) {
+    this.tasks = options.taskRepository ?? new InMemoryTaskRepository();
     this.leaseIssuer = options.leaseIssuer;
     this.receiptVerifier = options.receiptVerifier;
     this.policyEvaluator = options.policyEvaluator;
@@ -248,6 +251,42 @@ export class TaskController {
 
   public getPlannerService(): IPlannerService {
     return this.plannerService;
+  }
+
+  public getTaskRepository(): TaskRepository {
+    return this.tasks;
+  }
+
+  public close(): void {
+    this.tasks.close();
+  }
+
+  /**
+   * Reconciles tasks whose execution lease has expired.
+   * Transitions active tasks with expired leases to FAILED with error LEASE_EXPIRED.
+   */
+  public async reconcileExpiredLeases(now: Date = new Date()): Promise<TaskRecord[]> {
+    const expired = this.tasks.findExpiredLeasedTasks(now);
+    const reconciled: TaskRecord[] = [];
+
+    for (const task of expired) {
+      if (TaskStateMachine.canTransition(task.state, TaskLifecycleState.FAILED)) {
+        const updated = TaskStateMachine.transition(
+          task,
+          TaskLifecycleState.FAILED,
+          'Execution lease expired before receipt was settled.',
+        );
+        updated.error = {
+          code: 'LEASE_EXPIRED',
+          message: 'Execution lease expired before receipt was settled.',
+        };
+        this.tasks.set(task.taskId, updated);
+        await this.publishTaskStatusChanged(updated, task.state, updated.error);
+        reconciled.push(updated);
+      }
+    }
+
+    return reconciled;
   }
 
   public async planGoal(
@@ -461,35 +500,7 @@ export class TaskController {
     tenantId: string,
     query: TaskQuery,
   ): { items: TaskRecord[]; nextCursor?: string; total: number } {
-    let filtered = Array.from(this.tasks.values()).filter((t) => t.tenantId === tenantId);
-
-    // Status filter
-    if (query.status) {
-      filtered = filtered.filter((t) => t.state === query.status);
-    }
-
-    // Sort by createdAt descending (most recent first)
-    filtered.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-
-    const total = filtered.length;
-
-    // Cursor-based pagination: cursor is the taskId of the last seen item
-    if (query.cursor) {
-      const cursorIndex = filtered.findIndex((t) => t.taskId === query.cursor);
-      if (cursorIndex >= 0) {
-        filtered = filtered.slice(cursorIndex + 1);
-      } else {
-        // 053-SEC-05: Invalid/manipulated or cross-tenant cursor fails safely
-        return { items: [], nextCursor: undefined, total };
-      }
-    }
-
-    const limit = query.limit ?? 50;
-    const page = filtered.slice(0, limit);
-    const nextCursor =
-      page.length === limit && filtered.length > limit ? page[limit - 1].taskId : undefined;
-
-    return { items: page, nextCursor, total };
+    return this.tasks.findByTenant(tenantId, query);
   }
 
   /**
@@ -705,32 +716,17 @@ export class TaskController {
    * 053-SEC-02: Strict tenant isolation.
    */
   public getDashboardSummary(tenantId: string): DashboardSummary {
-    const allTasks = Array.from(this.tasks.values()).filter((t) => t.tenantId === tenantId);
-
-    const activeStates = new Set([
-      TaskLifecycleState.SUBMITTED,
-      TaskLifecycleState.POLICY_EVALUATED,
-      TaskLifecycleState.LEASED,
-      TaskLifecycleState.DISPATCHED,
-      TaskLifecycleState.EXECUTING,
-      TaskLifecycleState.AWAITING_APPROVAL,
-    ]);
-
-    const activeTaskCount = allTasks.filter((t) => activeStates.has(t.state)).length;
+    const counts = this.tasks.getStatusCounts(tenantId);
     const pendingApprovalCount = this.approvalHost
       ? this.approvalHost.listPendingPrompts(tenantId).length
-      : allTasks.filter((t) => t.state === TaskLifecycleState.AWAITING_APPROVAL).length;
-    const completedTaskCount = allTasks.filter(
-      (t) => t.state === TaskLifecycleState.COMPLETED,
-    ).length;
-    const failedTaskCount = allTasks.filter((t) => t.state === TaskLifecycleState.FAILED).length;
+      : counts.pendingApprovalCount;
 
     return {
       tenantId,
-      activeTaskCount,
+      activeTaskCount: counts.activeTaskCount,
       pendingApprovalCount,
-      completedTaskCount,
-      failedTaskCount,
+      completedTaskCount: counts.completedTaskCount,
+      failedTaskCount: counts.failedTaskCount,
       connectedDeviceCount: 0, // Production: populated by device registry
       healthStatus: 'HEALTHY',
       updatedAt: new Date().toISOString(),

@@ -33,6 +33,19 @@ Configuration is managed via typed Zod schemas in `src/config/`:
 | `LOG_LEVEL`          | `'debug' \| 'info' \| 'warn' \| 'error'`  | `'info'`        | Log verbosity level      |
 | `API_PREFIX`         | string                                    | `'/v1'`         | REST API endpoint prefix |
 | `DATABASE_URL`       | string (optional)                         | `undefined`     | Database connection URL  |
+| `TASKS_DB_PATH`      | string (optional)                         | `undefined`     | SQLite task store path   |
+
+---
+
+## 🗄️ Task Persistence Layer
+
+The backend task execution engine uses a durable, ACID-compliant SQLite repository architecture:
+
+- **`TaskRepository`**: Interface governing task operations, lifecycle queries, lease expirations, and status counters.
+- **`SqliteTaskRepository`**: Authoritative disk-backed persistent repository powered by Node 24 native `node:sqlite` (`DatabaseSync`). Configures WAL journaling mode, foreign key enforcement, parameterized SQL queries, versioned migrations, and graceful deserialization recovery for corrupted records.
+- **`InMemoryTaskRepository`**: Isolated in-memory repository for lightweight unit test runs.
+
+Production configuration resolves `TASKS_DB_PATH` (or defaults to `data/nexusos-tasks.db`), ensuring directory creation and rejecting volatile `:memory:` storage in production.
 
 ---
 

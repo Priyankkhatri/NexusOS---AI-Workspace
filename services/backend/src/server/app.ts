@@ -17,6 +17,7 @@ import {
   DelegationQuerySchema,
 } from '@nexusos/contracts';
 import { TaskController, AuthenticatedContextLike } from '../tasks/controller.js';
+import { TaskRepository } from '../tasks/repository.js';
 import { MemoryController } from '../memory/memory-controller.js';
 import { MemoryService } from '../memory/memory-service.js';
 import { IMemoryStore } from '../memory/types.js';
@@ -35,6 +36,7 @@ export type RequestAuthenticator = (req: IncomingMessage, res: ServerResponse) =
 
 export interface BackendAppOptions {
   taskController?: TaskController;
+  taskRepository?: TaskRepository;
   memoryController?: MemoryController;
   memoryService?: MemoryService;
   memoryStore?: IMemoryStore;
@@ -973,6 +975,13 @@ export class BackendApp {
       const store = (this.memoryController.getService() as any)?.store;
       if (store && typeof store.close === 'function') {
         store.close();
+      }
+    }
+
+    if (this.taskController) {
+      const repo = this.taskController.getTaskRepository?.();
+      if (repo && typeof repo.close === 'function') {
+        repo.close();
       }
     }
 

@@ -13,6 +13,7 @@ export * from './events/publisher-boundary.js';
 export * from './events/stream-event-bus.js';
 export * from './events/sse-handler.js';
 export * from './tasks/state-machine.js';
+export * from './tasks/repository.js';
 export * from './tasks/controller.js';
 export * from './leases/lease-issuer.js';
 export * from './receipts/receipt-verifier.js';
